@@ -1,0 +1,29 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "dokops.fullname" . }}-role
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+rules:
+  # WARNING: grants cluster-admin equivalent access. Required for God Mode (cross-namespace
+  # K8s operations). Set rbac.create=false and bind your own Role if you need least-privilege.
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "dokops.fullname" . }}-binding
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "dokops.fullname" . }}-sa
+  namespace: {{ include "dokops.namespace" . }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "dokops.fullname" . }}-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dokops-aio-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dokops-aio-cluster-role
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"] # Full access for God Mode capability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dokops-aio-binding
+subjects:
+- kind: ServiceAccount
+  name: dokops-aio-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: dokops-aio-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dokops-aio-db-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dokops-aio-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dokops-aio-server
+  template:
+    metadata:
+      labels:
+        app: dokops-aio-server
+    spec:
+      serviceAccountName: dokops-aio-sa
+      containers:
+      - name: dokops-aio
+        image: krupz/dokops-aio:latest
+        imagePullPolicy: Always
+        env:
+        - name: K8S_IN_CLUSTER_CONFIG
+          value: "true"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        # Overwrite DB location to the persistent mount
+        - name: SQLITE_URL
+          value: "sqlite:////data/sql_app.db"
+        - name: AUTH_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: auth-secret
+              optional: true
+        ports:
+        - name: ui
+          containerPort: 3000
+        - name: api
+          containerPort: 8000
+        volumeMounts:
+        - name: db-storage
+          mountPath: /data
+      volumes:
+      - name: db-storage
+        persistentVolumeClaim:
+          claimName: mcp-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dokops-aio-service
+spec:
+  selector:
+    app: dokops-aio-server
+  ports:
+  - name: frontend
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+  - name: backend
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  type: LoadBalancer

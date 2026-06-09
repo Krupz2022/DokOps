@@ -1,0 +1,65 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dokops.fullname" . }}-backend-config
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+data:
+  # ── Core ────────────────────────────────────────────────────────
+  K8S_IN_CLUSTER_CONFIG: {{ .Values.backend.env.K8S_IN_CLUSTER_CONFIG | quote }}
+  PYTHONUNBUFFERED: "1"
+
+  # ── SSO / OAuth2 ────────────────────────────────────────────────
+  SSO_ENABLED: {{ .Values.sso.enabled | toString | quote }}
+  SSO_AUTO_PROVISION: {{ .Values.sso.autoProvision | toString | quote }}
+  FRONTEND_URL: {{ .Values.sso.frontendUrl | quote }}
+  BACKEND_PUBLIC_URL: {{ .Values.sso.backendPublicUrl | quote }}
+  {{- if .Values.sso.allowedDomains }}
+  SSO_ALLOWED_DOMAINS: {{ .Values.sso.allowedDomains | quote }}
+  {{- end }}
+
+  # ── Microsoft Entra ID ──────────────────────────────────────────
+  {{- if .Values.sso.entra.clientId }}
+  ENTRA_CLIENT_ID: {{ .Values.sso.entra.clientId | quote }}
+  {{- end }}
+  {{- if .Values.sso.entra.tenantId }}
+  ENTRA_TENANT_ID: {{ .Values.sso.entra.tenantId | quote }}
+  {{- end }}
+  ENTRA_ROLES_CLAIM: {{ .Values.sso.entra.rolesClaimName | quote }}
+  ENTRA_ADMIN_ROLE: {{ .Values.sso.entra.adminRole | quote }}
+
+  # ── Google Workspace ────────────────────────────────────────────
+  {{- if .Values.sso.google.clientId }}
+  GOOGLE_CLIENT_ID: {{ .Values.sso.google.clientId | quote }}
+  {{- end }}
+  {{- if .Values.sso.google.allowedDomain }}
+  GOOGLE_ALLOWED_DOMAIN: {{ .Values.sso.google.allowedDomain | quote }}
+  {{- end }}
+  GOOGLE_ADMIN_GROUP: {{ .Values.sso.google.adminGroup | quote }}
+
+  # ── Authentik ───────────────────────────────────────────────────
+  {{- if .Values.sso.authentik.clientId }}
+  AUTHENTIK_CLIENT_ID: {{ .Values.sso.authentik.clientId | quote }}
+  {{- end }}
+  {{- if .Values.sso.authentik.baseUrl }}
+  AUTHENTIK_BASE_URL: {{ .Values.sso.authentik.baseUrl | quote }}
+  {{- end }}
+  AUTHENTIK_ROLES_CLAIM: {{ .Values.sso.authentik.rolesClaimName | quote }}
+  AUTHENTIK_ADMIN_ROLE: {{ .Values.sso.authentik.adminRole | quote }}
+
+  # ── AWS Cognito ─────────────────────────────────────────────────
+  {{- if .Values.sso.cognito.clientId }}
+  COGNITO_CLIENT_ID: {{ .Values.sso.cognito.clientId | quote }}
+  {{- end }}
+  {{- if .Values.sso.cognito.userPoolId }}
+  COGNITO_USER_POOL_ID: {{ .Values.sso.cognito.userPoolId | quote }}
+  {{- end }}
+  {{- if .Values.sso.cognito.region }}
+  COGNITO_REGION: {{ .Values.sso.cognito.region | quote }}
+  {{- end }}
+  COGNITO_ROLES_CLAIM: {{ .Values.sso.cognito.rolesClaimName | quote }}
+  COGNITO_ADMIN_ROLE: {{ .Values.sso.cognito.adminRole | quote }}
+{{- end }}

@@ -1,0 +1,101 @@
+helm_toolset:
+  description: "Comprehensive Helm release management - inspect releases, manage revisions, search charts, and perform controlled upgrades across your cluster."
+  tools:
+
+    # --- READ: Release Inspection ---
+
+    - name: helm_list
+      description: "List all Helm releases in a specific namespace with their status, chart version, and app version."
+      command: "helm list -n {{ namespace }} --output table"
+
+    - name: helm_list_all_namespaces
+      description: "List every Helm release across all namespaces in the cluster. Use for a full cluster-wide Helm inventory."
+      command: "helm list --all-namespaces --output table"
+
+    - name: helm_status
+      description: "Get the current deployment status, last deployed time, and description for a Helm release."
+      command: "helm status {{ name }} -n {{ namespace }}"
+
+    - name: helm_history
+      description: "Show the full revision history of a Helm release - all installs, upgrades, and rollbacks with timestamps and status. Use before rollback to identify target revision."
+      command: "helm history {{ name }} -n {{ namespace }} --output table"
+
+    - name: helm_get_values
+      description: "Get the user-supplied override values for a Helm release. Shows only what was customized from the chart defaults."
+      command: "helm get values {{ name }} -n {{ namespace }}"
+
+    - name: helm_get_values_all
+      description: "Get all computed values (user overrides merged with chart defaults) for a Helm release. Useful for full config audit."
+      command: "helm get values {{ name }} -n {{ namespace }} --all"
+
+    - name: helm_get_manifest
+      description: "Get the rendered Kubernetes manifests that were applied to the cluster for a Helm release. Equivalent to kubectl get -o yaml for the whole release."
+      command: "helm get manifest {{ name }} -n {{ namespace }}"
+
+    - name: helm_get_notes
+      description: "Get the post-install release notes for a Helm release (connection strings, next steps, warnings from chart authors)."
+      command: "helm get notes {{ name }} -n {{ namespace }}"
+
+    # --- READ: Repository & Chart Discovery ---
+
+    - name: helm_repo_list
+      description: "List all configured Helm chart repositories with their URLs."
+      command: "helm repo list"
+
+    - name: helm_search_repo
+      description: "Search all configured Helm repositories for charts matching a keyword. Use to discover available charts and versions."
+      command: "helm search repo {{ keyword }}"
+
+    - name: helm_search_hub
+      description: "Search Artifact Hub for publicly available Helm charts matching a keyword."
+      command: "helm search hub {{ keyword }}"
+
+    - name: helm_show_values
+      description: "Show the default values.yaml for a chart before installing. Use to understand available configuration options."
+      command: "helm show values {{ chart }}"
+
+    - name: helm_show_chart
+      description: "Show chart metadata (name, version, description, maintainers, dependencies) for a chart."
+      command: "helm show chart {{ chart }}"
+
+    - name: helm_show_readme
+      description: "Show the README for a chart - contains usage instructions and example values."
+      command: "helm show readme {{ chart }}"
+
+    # --- READ: Diff & Template Preview ---
+
+    - name: helm_template
+      description: "Render chart templates locally without installing. Useful to preview what Kubernetes objects would be created."
+      command: "helm template {{ name }} {{ chart }} -n {{ namespace }} --reuse-values"
+
+    - name: helm_diff_upgrade
+      description: "Preview what Kubernetes resource changes a Helm upgrade would apply (requires helm-diff plugin). Always run before upgrading in production."
+      command: "helm diff upgrade {{ name }} {{ chart }} -n {{ namespace }} --reuse-values"
+
+    # --- WRITE: Safe Operations ---
+
+    - name: helm_repo_update
+      description: "Refresh all configured Helm repositories to fetch the latest chart index and versions."
+      command: "helm repo update"
+
+    - name: helm_repo_add
+      description: "Add a new Helm chart repository. Requires a name and URL."
+      command: "helm repo add {{ name }} {{ url }}"
+
+    # --- WRITE: DESTRUCTIVE - Require Explicit God Mode Confirmation ---
+
+    - name: helm_rollback
+      description: "DESTRUCTIVE: Roll back a Helm release to a specific revision. Only execute after the user explicitly confirms the target revision. Use helm_history to identify valid revision numbers."
+      command: "helm rollback {{ name }} {{ revision }} -n {{ namespace }}"
+
+    - name: helm_upgrade_set_tag
+      description: "DESTRUCTIVE: Upgrade a Helm release setting a new image tag while reusing all other values. Triggers a rolling deployment. Requires God Mode confirmation."
+      command: "helm upgrade {{ name }} {{ chart }} -n {{ namespace }} --set image.tag={{ tag }} --reuse-values"
+
+    - name: helm_upgrade_values_file
+      description: "DESTRUCTIVE: Upgrade a Helm release using a values file path. Requires God Mode. Use helm_diff_upgrade first to preview changes."
+      command: "helm upgrade {{ name }} {{ chart }} -n {{ namespace }} -f {{ values_file }}"
+
+    - name: helm_delete
+      description: "DESTRUCTIVE: Permanently delete a Helm release and ALL its Kubernetes resources. This is irreversible. Only execute if the user has explicitly confirmed deletion by name. Requires God Mode."
+      command: "helm delete {{ name }} -n {{ namespace }}"

@@ -1,0 +1,186 @@
+import logging as _logging
+
+from sqlmodel import SQLModel, create_engine, Session, select
+from app.core.config import settings
+from app.core.security import get_password_hash
+from app.models.user import User
+from app.models.audit import AuditLog  # noqa: F401
+from app.models.setting import SystemSetting
+from app.models.chat import ChatConversation, ChatMessage  # noqa: F401
+from app.models.rag import RagDocument  # noqa: F401
+from app.models.integration import AzureConnection, AzureFeatureConfig, IntegrationSettings  # noqa: F401
+from app.models.mcp import MCPServer, MCPTool  # noqa: F401
+from app.models.oauth_state import OAuthState  # noqa: F401
+from app.models.workflow import Workflow, WorkflowRun  # noqa: F401
+from app.models.activation import Activation  # noqa: F401
+from app.models.minion import Minion, MinionJob  # noqa: F401
+from app.models.cluster import ClusterConnection, CloudCredential  # noqa: F401
+from app.models.patch import (  # noqa: F401 — imported for SQLModel table creation
+    Organisation, MinionGroup, MinionGroupMember, MinionPatch,
+    PatchPipeline, PipelineStage, PatchPromotion, PatchSchedule,
+    PatchAlertEvent,
+)
+from app.models.service_diag import ServiceCredential, DiscoveredService  # noqa: F401
+from app.models.alert_incident import AlertIncident  # noqa: F401
+from app.models.registry import RegistryConnection  # noqa: F401
+from app.models.analytics import AITokenUsage  # noqa: F401
+
+_log = _logging.getLogger(__name__)
+
+_db_url = settings.DATABASE_URL or settings.SQLITE_URL
+_connect_args = {"check_same_thread": False} if _db_url.startswith("sqlite") else {}
+engine = create_engine(_db_url, connect_args=_connect_args)
+
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+
+def seed_from_env(db: Session, s) -> None:
+    """Seed DB from DOKOPS_* env vars. Insert-if-missing unless DOKOPS_FORCE_SEED=true."""
+
+    # --- Admin user ---
+    if s.DOKOPS_ADMIN_USERNAME and s.DOKOPS_ADMIN_PASSWORD:
+        user = db.exec(select(User).where(User.username == s.DOKOPS_ADMIN_USERNAME)).first()
+        if not user:
+            db.add(User(
+                username=s.DOKOPS_ADMIN_USERNAME,
+                hashed_password=get_password_hash(s.DOKOPS_ADMIN_PASSWORD),
+                is_superuser=True,
+                role="admin",
+                is_active=True,
+            ))
+        elif s.DOKOPS_FORCE_SEED:
+            user.hashed_password = get_password_hash(s.DOKOPS_ADMIN_PASSWORD)
+            db.add(user)
+
+    # --- SystemSetting keys ---
+    # Bool values stored as "true"/"false" to match the rest of the app.
+    # Int/str values stored as str(value).
+    seed_map = {
+        "ai_provider": s.DOKOPS_AI_PROVIDER,
+        "ai_api_key": s.DOKOPS_AI_API_KEY,
+        "ai_model": s.DOKOPS_AI_MODEL,
+        "ai_base_url": s.DOKOPS_AI_BASE_URL,
+        "ai_api_version": s.DOKOPS_AI_API_VERSION,
+        "rag_enabled": None if s.DOKOPS_RAG_ENABLED is None else ("true" if s.DOKOPS_RAG_ENABLED else "false"),
+        "rag_chroma_host": s.DOKOPS_RAG_CHROMA_HOST,
+        "rag_chroma_port": s.DOKOPS_RAG_CHROMA_PORT,
+        "signup_enabled": None if s.DOKOPS_SIGNUP_ENABLED is None else ("true" if s.DOKOPS_SIGNUP_ENABLED else "false"),
+        "signup_default_role": s.DOKOPS_SIGNUP_DEFAULT_ROLE,
+        "rag_embedding_provider": s.DOKOPS_RAG_EMBEDDING_PROVIDER,
+        "rag_embedding_api_key": s.DOKOPS_RAG_EMBEDDING_API_KEY,
+        "rag_embedding_model": s.DOKOPS_RAG_EMBEDDING_MODEL,
+        "rag_embedding_base_url": s.DOKOPS_RAG_EMBEDDING_BASE_URL,
+    }
+
+    for key, value in seed_map.items():
+        if not value:
+            continue
+        row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+        if not row:
+            db.add(SystemSetting(key=key, value=value))
+        elif s.DOKOPS_FORCE_SEED:
+            row.value = value
+            db.add(row)
+
+    db.commit()
+
+    # --- Observability integrations ---
+    _seed_obs_integrations(db, s)
+
+
+def _seed_obs_integrations(db: Session, s) -> None:
+    """Seed observability integrations from DOKOPS_ES_* env vars."""
+    if not s.DOKOPS_ES_URL or not s.DOKOPS_ES_AUTH_TYPE:
+        return
+
+    from app.models.integration import IntegrationSettings
+    from app.services.integrations.base import encrypt_credentials
+
+    auth_type = s.DOKOPS_ES_AUTH_TYPE.lower()
+    if auth_type == "api_key" and s.DOKOPS_ES_API_KEY:
+        creds = {"api_key": s.DOKOPS_ES_API_KEY, "header_name": s.DOKOPS_ES_HEADER_NAME or "Authorization"}
+    elif auth_type == "basic" and s.DOKOPS_ES_USERNAME and s.DOKOPS_ES_PASSWORD:
+        creds = {"username": s.DOKOPS_ES_USERNAME, "password": s.DOKOPS_ES_PASSWORD}
+    elif auth_type == "bearer" and s.DOKOPS_ES_API_KEY:
+        creds = {"token": s.DOKOPS_ES_API_KEY}
+    else:
+        creds = None
+
+    encrypted = encrypt_credentials(creds) if creds else None
+
+    existing = db.exec(
+        select(IntegrationSettings).where(IntegrationSettings.backend == "elasticsearch")
+    ).first()
+
+    if existing and not s.DOKOPS_FORCE_SEED:
+        return  # already configured, don't overwrite
+
+    if existing:
+        existing.base_url = s.DOKOPS_ES_URL
+        existing.auth_type = auth_type
+        existing.encrypted_credentials = encrypted
+        existing.is_active = True
+        existing.display_name = "Elasticsearch"
+        db.add(existing)
+    else:
+        db.add(IntegrationSettings(
+            backend="elasticsearch",
+            display_name="Elasticsearch",
+            base_url=s.DOKOPS_ES_URL,
+            auth_type=auth_type,
+            encrypted_credentials=encrypted,
+            is_active=True,
+        ))
+    db.commit()
+    _log.info("seed: elasticsearch integration seeded from env vars (url=%s)", s.DOKOPS_ES_URL)
+
+
+def _migrate_schema() -> None:
+    """Add new columns to existing tables without dropping data (PostgreSQL + SQLite safe)."""
+    from sqlalchemy import text
+
+    is_postgres = not _db_url.startswith("sqlite")
+
+    def _col(table: str, col: str, typedef: str) -> str:
+        if is_postgres:
+            return f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typedef}"
+        return f"ALTER TABLE {table} ADD COLUMN {col} {typedef}"
+
+    migrations = [
+        _col("clusterconnection", "client_cert_data", "TEXT"),
+        _col("clusterconnection", "client_key_data", "TEXT"),
+        _col("workflows", "workflow_type", "TEXT DEFAULT 'scripted'"),
+        _col("workflows", "agent_goal", "TEXT"),
+        _col("workflows", "agent_approved_tools", "TEXT DEFAULT '[]'"),
+        _col("workflows", "agent_cluster_ids", "TEXT DEFAULT '[]'"),
+        _col("workflows", "agent_minion_ids", "TEXT DEFAULT '[]'"),
+        _col("workflows", "agent_max_retries", "INTEGER DEFAULT 3"),
+        _col("workflows", "agent_timeout_seconds", "INTEGER DEFAULT 900"),
+        _col("workflows", "agent_approval_timeout_seconds", "INTEGER DEFAULT 600"),
+        _col("workflows", "trigger_config", "TEXT"),
+        _col("patchschedule", "auto_reboot", "INTEGER DEFAULT 0"),
+        _col("patchschedule", "week_of_month", "INTEGER"),
+        _col("servicecredential", "host", "TEXT"),
+        _col("servicecredential", "instance_name", "TEXT DEFAULT ''"),
+        _col("user", "god_mode_active", "INTEGER DEFAULT 0"),
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # PostgreSQL: reset aborted transaction before next statement
+
+
+def init_db():
+    create_db_and_tables()
+    _migrate_schema()
+    with Session(engine) as db:
+        try:
+            seed_from_env(db, settings)
+        except Exception:
+            _log.critical("seed_from_env failed during startup — check DOKOPS_* env vars", exc_info=True)
+            raise

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: dokops
+description: DokOps Kubernetes DevOps Platform — 4-service split deployment
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - kubernetes
+  - devops
+  - mcp
+  - ai
+maintainers:
+  - name: DokOps
+    email: ops@dokops.local

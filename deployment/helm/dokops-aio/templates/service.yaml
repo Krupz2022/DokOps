@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dokops-aio.fullname" . }}
+  labels:
+    {{- include "dokops-aio.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: http
+    - port: {{ .Values.service.apiPort }}
+      targetPort: {{ .Values.service.apiPort }}
+      protocol: TCP
+      name: api
+  selector:
+    {{- include "dokops-aio.selectorLabels" . | nindent 4 }}

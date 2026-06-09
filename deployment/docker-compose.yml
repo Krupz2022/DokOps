@@ -1,0 +1,137 @@
+version: '3.8'
+
+# =============================================================================
+# SSL MODE — choose one, comment out the other
+#
+#   OPTION A — Let's Encrypt (auto cert, needs port 80 open):
+#     - Keep the ACME lines in the traefik command block
+#     - Keep   tls.certresolver=le   label on dokops
+#     - Remove tls=true              label on dokops
+#     - Set ACME_EMAIL in .env
+#
+#   OPTION B — Bring your own cert:
+#     - Comment out the ACME lines in the traefik command block
+#     - Keep   tls=true              label on dokops
+#     - Remove tls.certresolver=le   label on dokops
+#     - Place cert.pem + key.pem in ./certs/
+#     - traefik-dynamic.yml references those files (already wired)
+# =============================================================================
+
+networks:
+  dokops-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  chroma-data:
+  dokops-data:
+  traefik-certs:
+
+services:
+
+  # ── Traefik — reverse proxy + SSL ─────────────────────────────────────────
+  traefik:
+    image: traefik:v3.6.6
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # File provider — loads traefik-dynamic.yml (used for custom cert)
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # HTTP → HTTPS redirect
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # ── OPTION A: Let's Encrypt (comment out these 4 lines for custom cert) ─
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL:-admin@example.com}"
+      - "--certificatesresolvers.le.acme.storage=/certs/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/certs
+      # Dynamic config file (custom cert paths live here)
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+      # Custom cert folder — place cert.pem + key.pem here (OPTION B)
+      - ./certs:/etc/traefik/certs:ro
+    networks:
+      - dokops-net
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: dokops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dokops}
+      POSTGRES_USER: ${POSTGRES_USER:-dokops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - dokops-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dokops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ChromaDB ───────────────────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: dokops-chromadb
+    restart: unless-stopped
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - dokops-net
+
+  # ── DokOps (standalone all-in-one) ────────────────────────────────────────
+  dokops:
+    image: krupz/dokops-aio:latest
+    container_name: dokops-aio
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    environment:
+      PYTHONUNBUFFERED: "1"
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      FRONTEND_URL: "https://${DOMAIN}"
+      BACKEND_PUBLIC_URL: "https://${DOMAIN}"
+      DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-dokops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dokops}"
+      LOG_RAG_USE_LOCAL_CHROMA: "false"
+      DOKOPS_RAG_CHROMA_HOST: "chromadb"
+      DOKOPS_RAG_CHROMA_PORT: "8000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      KUBECONFIG: /root/.kube/config
+    volumes:
+      - ~/.kube/config:/root/.kube/config:ro
+      - dokops-data:/data
+    networks:
+      - dokops-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dokops.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.dokops.entrypoints=websecure"
+      # ── OPTION A: Let's Encrypt ─────────────────────────────────────────────
+      - "traefik.http.routers.dokops.tls.certresolver=le"
+      # ── OPTION B: Custom cert — comment line above, uncomment line below ────
+      # - "traefik.http.routers.dokops.tls=true"
+      - "traefik.http.services.dokops.loadbalancer.server.port=3000"

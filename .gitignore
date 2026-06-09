@@ -1,0 +1,142 @@
+# Origin / project roots (Go prototype, pre-rewrite history)
+origin/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.pdb
+*.egg-info/
+*.egg
+.eggs/
+.venv/
+venv/
+env/
+
+# Secrets & env files (never commit real credentials)
+.env
+.env.*
+*.env
+# But DO track the example/template — it has no real secrets
+!.env.example
+!**/.env.example
+
+# Secrets & Runtime Config
+backend/app/toolsets/.env_vars.json
+
+# Database (local dev only)
+*.db
+*.sqlite
+*.sqlite3
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Logs & PIDs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pids/
+
+# OS
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ── AI tool artifacts ─────────────────────────────────────────────────────────
+# Claude Code
+.claude/
+/.playwright-mcp/
+.mcp.json
+
+# Antigravity / Superpowers
+/.superpowers/
+/.agent/
+.graphify_python
+graphify-out/
+
+# Gemini CLI / other AI coding assistants
+GEMINI.md
+AGENTS.md
+.gemini/
+.cursor/
+.cursorrules
+.windsurfrules
+.codeium/
+.roomodes
+.aider*
+
+# Internal dev planning docs (keep locally, not on GitHub)
+docs/superpowers/
+
+# Temp / migration backups
+backend/.async_migration_backup/
+
+# Dev debug / scratch files
+backend/debug_*.py
+backend/server_mode.json
+backend/mcp_info.txt
+backend/runbook_tools.json
+frontend/build_error.txt
+frontend/build_output.txt
+PROGRESS.md
+summary.md
+implementation_plan.md.resolved
+ai_feature_ideas.md.resolved
+walkthrough.md.resolved
+*.resolved
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Vector DB data (runtime, not source)
+chroma/
+chroma_data/
+backend/chroma_data/
+
+# Compiled binaries
+backend/bin/*.exe
+backend/bin/*.bin
+
+# TLS certificates & private keys — never commit real certs
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+acme.json
+deployment/certs/
+
+# Root-level dev/scratch files
+readme-preview.html
+svg-preview.html
+patch_ai.py
+/package-lock.json
+
+# Root-level development screenshots (not documentation assets)
+architecture-preview*.png
+cloud-path.png
+clusters-fixed.png
+clusters-page.png
+login.png
+modal-*.png
+readme-options.png

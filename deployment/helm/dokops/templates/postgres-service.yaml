@@ -1,0 +1,19 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dokops.fullname" . }}-postgres
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: {{ .Values.postgres.service.type }}
+  selector:
+    {{- include "dokops.selectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  ports:
+  - name: postgres
+    port: {{ .Values.postgres.service.port }}
+    targetPort: {{ .Values.postgres.containerPort }}
+    protocol: TCP
+{{- end }}

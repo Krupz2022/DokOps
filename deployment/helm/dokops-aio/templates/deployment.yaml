@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dokops-aio.fullname" . }}
+  labels:
+    {{- include "dokops-aio.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "dokops-aio.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dokops-aio.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "dokops-aio.serviceAccountName" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: K8S_IN_CLUSTER_CONFIG
+              value: "{{ .Values.env.k8sInClusterConfig }}"
+            - name: PYTHONUNBUFFERED
+              value: "{{ .Values.env.pythonUnbuffered }}"
+            - name: SQLITE_URL
+              {{- if .Values.persistence.enabled }}
+              value: "sqlite:////data/sql_app.db"
+              {{- else }}
+              value: "sqlite:///./sql_app.db"
+              {{- end }}
+            - name: AUTH_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.secretKey }}
+                  optional: true
+          ports:
+            - name: ui
+              containerPort: 3000
+              protocol: TCP
+            - name: api
+              containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: db-storage
+              mountPath: /data
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: {{ include "dokops-aio.fullname" . }}-pvc
+        {{- end }}

@@ -1,0 +1,66 @@
+{{- if .Values.chromadb.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dokops.fullname" . }}-chromadb
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: chromadb
+spec:
+  replicas: {{ .Values.chromadb.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dokops.selectorLabels" (dict "root" . "component" "chromadb") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dokops.selectorLabels" (dict "root" . "component" "chromadb") | nindent 8 }}
+    spec:
+      containers:
+      - name: chromadb
+        image: "{{ .Values.chromadb.image.repository }}:{{ .Values.chromadb.image.tag }}"
+        imagePullPolicy: {{ .Values.chromadb.image.pullPolicy }}
+        {{- if .Values.chromadb.resources }}
+        resources:
+          {{- toYaml .Values.chromadb.resources | nindent 10 }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.chromadb.containerPort }}
+          protocol: TCP
+        env:
+        - name: IS_PERSISTENT
+          value: {{ if .Values.chromadb.persistence.enabled }}"1"{{ else }}"0"{{ end }}
+        - name: PERSIST_DIRECTORY
+          value: /chroma/chroma
+        - name: ANONYMIZED_TELEMETRY
+          value: "false"
+        readinessProbe:
+          httpGet:
+            path: /api/v1/heartbeat
+            port: {{ .Values.chromadb.containerPort }}
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /api/v1/heartbeat
+            port: {{ .Values.chromadb.containerPort }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+        - name: chromadb-data
+          mountPath: /chroma/chroma
+      volumes:
+      - name: chromadb-data
+        {{- if .Values.chromadb.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "dokops.fullname" . }}-chromadb-pvc
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+{{- end }}

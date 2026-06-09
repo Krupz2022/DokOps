@@ -1,0 +1,69 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dokops.fullname" . }}-postgres
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: {{ .Values.postgres.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dokops.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dokops.selectorLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      containers:
+      - name: postgres
+        image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+        imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+        {{- if .Values.postgres.resources }}
+        resources:
+          {{- toYaml .Values.postgres.resources | nindent 10 }}
+        {{- end }}
+        ports:
+        - name: postgres
+          containerPort: {{ .Values.postgres.containerPort }}
+          protocol: TCP
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ if .Values.postgres.secrets.existingSecret }}{{ .Values.postgres.secrets.existingSecret }}{{ else }}{{ include "dokops.fullname" . }}-secret{{ end }}
+              key: {{ if .Values.postgres.secrets.existingSecret }}{{ .Values.postgres.secrets.existingSecretPasswordKey }}{{ else }}postgres-password{{ end }}
+        - name: POSTGRES_USER
+          value: {{ .Values.postgres.username | quote }}
+        - name: POSTGRES_DB
+          value: {{ .Values.postgres.database | quote }}
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        {{- if .Values.postgres.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "dokops.fullname" . }}-postgres-pvc
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+{{- end }}

@@ -1,0 +1,57 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Database files — must never be baked into an image; use runtime volumes
+*.db
+*.sqlite
+*.sqlite3
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+backend/tests/
+
+# tools
+backend/bin/
+
+# Node
+**/node_modules/
+npm-debug.log
+yarn-error.log
+frontend/dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tooling / CI / local artifacts
+.agent/
+.claude/
+.superpowers/
+.pids/
+.playwright-mcp/
+.pytest_cache/
+.github/
+
+# Docs & local vector stores
+docs/
+chroma/

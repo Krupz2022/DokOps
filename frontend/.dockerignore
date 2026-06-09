@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build output (rebuilt in Docker)
+dist/
+
+# Secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git
+.gitignore
+
+# Tooling / local artifacts
+.agent/
+.claude/
+.superpowers/
+.pids/
+.playwright-mcp/
+
+# Docs & local vector stores
+docs/
+chroma/

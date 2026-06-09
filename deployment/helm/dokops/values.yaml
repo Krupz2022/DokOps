@@ -1,0 +1,156 @@
+global:
+  namespace: "dokops"   # defaults to Helm release namespace (--namespace flag); set explicitly to override
+
+nameOverride: ""
+fullnameOverride: "dokops"
+
+backend:
+  enabled: true
+  image:
+    repository: your-registry/dokops-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  containerPort: 8000
+  service:
+    type: ClusterIP
+    port: 8000
+  persistence:
+    # Only needed when postgres.enabled=false (SQLite fallback). With PostgreSQL enabled this PVC is unused.
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      memory: "1Gi"
+  env:
+    K8S_IN_CLUSTER_CONFIG: "true"
+  secrets:
+    existingSecret: ""        # if set, use this K8s Secret name instead of creating one
+    existingSecretKey: "auth-secret-key"  # key inside the existing secret (only used when existingSecret is set)
+    authSecretKey: "changeme-replace-in-production"
+
+frontend:
+  enabled: true
+  image:
+    repository: your-registry/dokops-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  containerPort: 80
+  service:
+    type: ClusterIP
+    port: 80
+  resources: {}
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16"
+    pullPolicy: IfNotPresent
+  # WARNING: replicas > 1 is NOT supported with persistence.enabled=true (ReadWriteOnce PVC
+  # can only mount to one node at a time). Keep at 1 unless using an HA PostgreSQL operator.
+  replicas: 1
+  containerPort: 5432
+  service:
+    type: ClusterIP
+    port: 5432
+  database: dokops
+  username: dokops
+  secrets:
+    existingSecret: ""        # if set, use this K8s Secret name instead of creating one
+    existingSecretPasswordKey: "postgres-password"  # key inside the existing secret
+    password: "changeme-replace-in-production"
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      memory: "512Mi"
+
+chromadb:
+  enabled: true
+  image:
+    repository: chromadb/chroma
+    tag: "0.5.20"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  containerPort: 8000
+  service:
+    type: ClusterIP
+    port: 8000
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      memory: "1Gi"
+
+ingress:
+  enabled: false
+  className: nginx
+  host: dokops.local
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: dokops-tls
+
+rbac:
+  # WARNING: creates a ClusterRole with full ["*"]["*"]["*"] access (cluster-admin equivalent).
+  # Set to false to manage RBAC externally with least-privilege roles.
+  create: true
+
+# ── SSO / OAuth2 ──────────────────────────────────────────────────────────────
+# Non-sensitive fields go into the backend ConfigMap.
+# Client secrets go into the backend Secret (only created when non-empty).
+sso:
+  enabled: false
+  autoProvision: true
+  allowedDomains: ""          # comma-separated, e.g. "example.com,corp.example.com"
+  frontendUrl: "http://localhost:5173"
+  backendPublicUrl: "http://localhost:8000"
+
+  # Microsoft Entra ID
+  entra:
+    clientId: ""
+    tenantId: ""
+    rolesClaimName: "roles"
+    adminRole: "Admin"
+    clientSecret: ""          # sensitive — stored in Secret
+
+  # Google Workspace
+  google:
+    clientId: ""
+    allowedDomain: ""
+    adminGroup: "dokops-admins"
+    clientSecret: ""          # sensitive — stored in Secret
+    serviceAccountJson: ""    # sensitive — stored in Secret
+
+  # Authentik
+  authentik:
+    clientId: ""
+    baseUrl: ""
+    rolesClaimName: "roles"
+    adminRole: "Admin"
+    clientSecret: ""          # sensitive — stored in Secret
+
+  # AWS Cognito
+  cognito:
+    clientId: ""
+    userPoolId: ""
+    region: ""
+    rolesClaimName: "cognito:groups"
+    adminRole: "Admin"
+    clientSecret: ""          # sensitive — stored in Secret

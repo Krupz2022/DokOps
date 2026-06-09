@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dokops
+---
+# --- Backend Service ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: dokops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dokops-backend
+  template:
+    metadata:
+      labels:
+        app: dokops-backend
+    spec:
+      serviceAccountName: default # Ensure this SA has permissions!
+      containers:
+        - name: backend
+          image: dokops-backend:latest # Replace with your registry image
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            # When running In-Cluster, we don't need KUBECONFIG env var usually,
+            # we rely on In-Cluster Config (ServiceAccount).
+            - name: MODULE_NAME
+              value: "app.main"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: dokops
+spec:
+  selector:
+    app: dokops-backend
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+# --- Frontend Service ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: dokops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dokops-frontend
+  template:
+    metadata:
+      labels:
+        app: dokops-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: dokops-frontend:latest # Replace with your registry image
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: dokops
+spec:
+  selector:
+    app: dokops-frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      nodePort: 30000 # Access via NodeIP:30000
+  type: NodePort

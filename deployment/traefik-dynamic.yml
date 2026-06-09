@@ -1,0 +1,11 @@
+# Traefik dynamic configuration
+# Used for OPTION B (bring your own cert).
+# Place your cert.pem and key.pem in the ./certs/ folder next to this file.
+#
+# For OPTION A (Let's Encrypt) this file can stay as-is — it has no effect
+# when the tls block is empty.
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile: /etc/traefik/certs/key.pem

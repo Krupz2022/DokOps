@@ -1,0 +1,19 @@
+{{- if .Values.chromadb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dokops.fullname" . }}-chromadb
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: chromadb
+spec:
+  type: {{ .Values.chromadb.service.type }}
+  selector:
+    {{- include "dokops.selectorLabels" (dict "root" . "component" "chromadb") | nindent 4 }}
+  ports:
+  - name: http
+    port: {{ .Values.chromadb.service.port }}
+    targetPort: {{ .Values.chromadb.containerPort }}
+    protocol: TCP
+{{- end }}

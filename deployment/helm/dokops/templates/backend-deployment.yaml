@@ -1,0 +1,128 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dokops.fullname" . }}-backend
+  namespace: {{ include "dokops.namespace" . }}
+  labels:
+    {{- include "dokops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dokops.selectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dokops.selectorLabels" (dict "root" . "component" "backend") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "dokops.fullname" . }}-sa
+      containers:
+      - name: backend
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        {{- with .Values.backend.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.backend.containerPort }}
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: {{ include "dokops.fullname" . }}-backend-config
+        env:
+        # Auth secret — defined first so it is always available
+        - name: AUTH_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ if .Values.backend.secrets.existingSecret }}{{ .Values.backend.secrets.existingSecret }}{{ else }}{{ include "dokops.fullname" . }}-secret{{ end }}
+              key: {{ if .Values.backend.secrets.existingSecret }}{{ .Values.backend.secrets.existingSecretKey }}{{ else }}auth-secret-key{{ end }}
+        # Postgres — POSTGRES_PASSWORD must come before DATABASE_URL (K8s env substitution)
+        {{- if .Values.postgres.enabled }}
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ if .Values.postgres.secrets.existingSecret }}{{ .Values.postgres.secrets.existingSecret }}{{ else }}{{ include "dokops.fullname" . }}-secret{{ end }}
+              key: {{ if .Values.postgres.secrets.existingSecret }}{{ .Values.postgres.secrets.existingSecretPasswordKey }}{{ else }}postgres-password{{ end }}
+        - name: DATABASE_URL
+          value: "postgresql://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@{{ include "dokops.fullname" . }}-postgres:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}"
+        {{- end }}
+        # ChromaDB wiring — always sets LOG_RAG_USE_LOCAL_CHROMA
+        {{- if .Values.chromadb.enabled }}
+        - name: LOG_RAG_USE_LOCAL_CHROMA
+          value: "false"
+        - name: DOKOPS_RAG_CHROMA_HOST
+          value: "{{ include "dokops.fullname" . }}-chromadb"
+        - name: DOKOPS_RAG_CHROMA_PORT
+          value: {{ .Values.chromadb.service.port | quote }}
+        {{- else }}
+        - name: LOG_RAG_USE_LOCAL_CHROMA
+          value: "true"
+        {{- end }}
+        # ── SSO secrets (only injected when values are set) ──────────
+        {{- if .Values.sso.entra.clientSecret }}
+        - name: ENTRA_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "dokops.fullname" . }}-secret
+              key: entra-client-secret
+        {{- end }}
+        {{- if .Values.sso.google.clientSecret }}
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "dokops.fullname" . }}-secret
+              key: google-client-secret
+        {{- end }}
+        {{- if .Values.sso.google.serviceAccountJson }}
+        - name: GOOGLE_SERVICE_ACCOUNT_JSON
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "dokops.fullname" . }}-secret
+              key: google-service-account-json
+        {{- end }}
+        {{- if .Values.sso.authentik.clientSecret }}
+        - name: AUTHENTIK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "dokops.fullname" . }}-secret
+              key: authentik-client-secret
+        {{- end }}
+        {{- if .Values.sso.cognito.clientSecret }}
+        - name: COGNITO_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "dokops.fullname" . }}-secret
+              key: cognito-client-secret
+        {{- end }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.backend.containerPort }}
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.backend.containerPort }}
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 6
+        {{- if .Values.backend.persistence.enabled }}
+        volumeMounts:
+        - name: backend-data
+          mountPath: /data
+        {{- end }}
+      {{- if .Values.backend.persistence.enabled }}
+      volumes:
+      - name: backend-data
+        persistentVolumeClaim:
+          claimName: {{ include "dokops.fullname" . }}-backend-pvc
+      {{- end }}
+{{- end }}

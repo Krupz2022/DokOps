@@ -354,7 +354,7 @@ On first start, navigate to `https://<DOMAIN>/setup` to create the initial admin
 | `traefik` | `traefik:v3.6.6` | Reverse proxy, SSL termination, HTTP→HTTPS redirect |
 | `dokops-postgres` | `postgres:16-alpine` | Primary database |
 | `dokops-chromadb` | `chromadb/chroma:latest` | Vector store (RAG knowledge base) |
-| `dokops-aio` | `krupz/dokops-aio:latest` | Backend + Frontend bundled |
+| `dokops-aio` | `krupz/dokops-aio:v1.0` | Backend + Frontend bundled |
 
 All services communicate on an internal `dokops-net` bridge network. Only ports 80 and 443 are exposed externally (via Traefik).
 

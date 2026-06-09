@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: dokops-aio
-          image: krupz/dokops-aio:latest
+          image: krupz/dokops-aio:v1.0
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

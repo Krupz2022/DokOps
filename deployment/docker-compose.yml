@@ -94,7 +94,7 @@ services:
 
   # ── DokOps (standalone all-in-one) ────────────────────────────────────────
   dokops:
-    image: krupz/dokops-aio:latest
+    image: krupz/dokops-aio:v1.0
     container_name: dokops-aio
     restart: unless-stopped
     depends_on:

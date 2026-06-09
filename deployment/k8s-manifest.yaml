@@ -53,7 +53,7 @@ spec:
       serviceAccountName: dokops-aio-sa
       containers:
       - name: dokops-aio
-        image: krupz/dokops-aio:latest
+        image: krupz/dokops-aio:v1.0
         imagePullPolicy: Always
         env:
         - name: K8S_IN_CLUSTER_CONFIG

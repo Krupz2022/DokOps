@@ -97,7 +97,15 @@ export default function AIChats() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  useEffect(() => { loadConversations(); }, [loadConversations]);
+  useEffect(() => {
+    loadConversations();
+    // Resync message thread from DB when navigating back to this page
+    // (stream may have completed or errored while on another page)
+    if (activeConversationId && !isStreaming) {
+      loadConversation(activeConversationId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally run only on mount — context values are already initialized
 
   useEffect(() => {
     const deepDive = sessionStorage.getItem("azureResourcesDeepDive");

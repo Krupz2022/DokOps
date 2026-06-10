@@ -1507,7 +1507,7 @@ When done, give a per-pod root cause analysis.
                 try:
                     from app.services.rag_service import rag_service as _rag
                     kb_hits = _rag.retrieve(query, "knowledge_base", n_results=3)
-                    incident_hits = _rag.retrieve(query, "incidents", n_results=2)
+                    incident_hits = _rag.retrieve(query, "incidents", n_results=5)
                     combined = "\n\n".join(
                         part for part in [kb_hits, incident_hits]
                         if part and "No relevant documents found" not in part and "unavailable" not in part

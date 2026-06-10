@@ -1,9 +1,10 @@
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { Button } from "../ui/Button";
-import { Shield, ShieldAlert, LogOut } from "lucide-react";
+import { Shield, ShieldAlert, LogOut, MessageSquare } from "lucide-react";
 import { ClusterContextSelector } from "./ClusterContextSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { cn } from "../../lib/utils";
+import { useChatContext } from "../../context/ChatContext";
 
 interface HeaderProps {
   godModeActive: boolean;
@@ -19,6 +20,7 @@ export function Header({
   sidebarCollapsed, setSidebarCollapsed,
 }: HeaderProps) {
   const isGod = godModeActive;
+  const { isStreaming, setPanelOpen } = useChatContext();
 
   return (
     <div className="flex items-center gap-2.5 w-full">
@@ -54,6 +56,22 @@ export function Header({
 
       {/* Cluster selector */}
       <ClusterContextSelector />
+
+      {/* AI streaming indicator — visible from any page */}
+      {isStreaming && (
+        <button
+          onClick={() => {
+            if (window.location.pathname === "/ai-chats") return;
+            setPanelOpen(true);
+          }}
+          title="AI is responding — click to view"
+          className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 text-xs hover:bg-cyan-500/20 transition-colors"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
+          <MessageSquare className="w-3 h-3 flex-shrink-0" />
+          <span className="font-mono hidden sm:inline">AI responding</span>
+        </button>
+      )}
 
       {/* God Mode tag */}
       {isGod && (

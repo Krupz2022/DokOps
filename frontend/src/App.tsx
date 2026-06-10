@@ -34,6 +34,7 @@ import Analytics from "./pages/Analytics";
 import { ThemeProvider } from "./components/ui/ThemeProvider";
 import { AppProvider, useAppContext } from "./context/AppContext";
 import { ChatProvider } from "./context/ChatContext";
+import { ChatPanel } from "./components/ai/ChatPanel";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ToastProvider } from "./context/ToastContext";
 import { ConfirmProvider } from "./context/ConfirmContext";
@@ -126,6 +127,8 @@ function App() {
                                     </Routes>
                                 </StartupGuard>
                             </BrowserRouter>
+                            {/* Global chat panel — persists across all route navigations */}
+                            <ChatPanel />
                         </ChatProvider>
                     </AppProvider>
                 </ConfirmProvider>

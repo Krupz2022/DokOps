@@ -228,17 +228,47 @@ async def _maybe_compact(conversation_id: str) -> None:
 
 
 def _maybe_index_incident(conversation_id: str, result_text: str, db: Session) -> None:
-    """Background-safe: index the assistant's final answer into the RAG incidents collection."""
+    """Background-safe: index the full conversation thread into the RAG incidents collection.
+
+    Indexes the complete user+AI dialogue (not just the final answer) so that
+    specific facts found mid-conversation (e.g. correct port numbers, patch
+    values, root-cause details) are preserved in the vector store and
+    retrievable by future queries.
+    """
     try:
         from app.services.rag_service import rag_service
         if not rag_service.is_enabled():
             return
         conv = db.get(ChatConversation, conversation_id)
         title = conv.title if conv else conversation_id
+
+        # Build a full dialogue transcript for richer retrieval.
+        # Include "step" messages (tool outputs) so that raw resource data
+        # such as configmap contents, port numbers, and patch values are indexed
+        # alongside the user/AI text — not just the final summary.
+        msgs = db.exec(
+            select(ChatMessage)
+            .where(ChatMessage.conversation_id == conversation_id)
+            .where(ChatMessage.message_type.in_(["text", "step"]))
+            .order_by(ChatMessage.created_at.asc())
+        ).all()
+
+        parts: List[str] = []
+        for m in msgs:
+            if not m.content or not m.content.strip():
+                continue
+            if m.message_type == "step":
+                parts.append("[Tool output]\n" + m.content.strip())
+            else:
+                prefix = "User: " if m.role == "user" else "AI: "
+                parts.append(prefix + m.content.strip())
+
+        full_text = "\n\n".join(parts) if parts else result_text
+
         rag_service.ingest_incident(
             conversation_id=conversation_id,
             conversation_title=title,
-            text=result_text,
+            text=full_text,
         )
     except Exception:
         pass  # Never fail the chat stream due to RAG indexing errors
@@ -254,18 +284,28 @@ async def _stream_and_save(
     user_id: Optional[int] = None,
 ):
     """Async generator: streams SSE events, saves messages to DB, then emits token_usage."""
+    import asyncio
     from app.core.token_context import set_token_context
     set_token_context(user_id=user_id, source="chat")
 
     collected: List[Dict] = []
 
+    inner = ai_service.run_global_agentic_loop(
+        query, context=cluster_context, runbook_id=runbook_id, history=history
+    )
     try:
-        async for event in ai_service.run_global_agentic_loop(
-            query, context=cluster_context, runbook_id=runbook_id, history=history
-        ):
-            collected.append(event)
-            yield f"data: {json.dumps(event)}\n\n"
+        while True:
+            try:
+                event = await asyncio.wait_for(inner.__anext__(), timeout=20.0)
+                collected.append(event)
+                yield f"data: {json.dumps(event)}\n\n"
+            except asyncio.TimeoutError:
+                # Send SSE comment to keep the connection alive while AI is working
+                yield ": keepalive\n\n"
+            except StopAsyncIteration:
+                break
     finally:
+        await inner.aclose()
         if collected:
             result_message: Optional[str] = None
             output_tokens = 0

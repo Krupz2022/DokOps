@@ -327,9 +327,8 @@ class RAGService:
             lines = []
             for i, (doc, meta) in enumerate(zip(docs, metas), 1):
                 title = meta.get("title") or meta.get("conversation_title") or "Unknown"
-                excerpt = doc[:500]
                 lines.append(
-                    f'<retrieved_document index="{i}" source="{title}">\n{excerpt}\n</retrieved_document>'
+                    f'<retrieved_document index="{i}" source="{title}">\n{doc}\n</retrieved_document>'
                 )
             return "\n\n".join(lines)
         except Exception as e:

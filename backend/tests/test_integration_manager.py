@@ -83,3 +83,32 @@ def test_get_active_tools_description_for_prompt(isolated_db):
     mgr = IntegrationManager()
     prompt_section = mgr.get_tools_description_for_prompt()
     assert "elasticsearch_search" in prompt_section
+
+
+def test_registry_is_cached_until_invalidated(isolated_db):
+    from app.services.integration_manager import (
+        IntegrationManager, invalidate_registry_cache,
+    )
+    from app.models.integration import IntegrationSettings
+
+    invalidate_registry_cache()
+    mgr = IntegrationManager()
+    assert mgr.get_active_tool_registry() == {}   # populates cache with empty
+
+    # Add an active integration directly in the DB.
+    with Session(isolated_db) as s:
+        s.add(IntegrationSettings(
+            backend="prometheus",
+            display_name="Prom",
+            base_url="http://prometheus:9090",
+            auth_type="bearer",
+            is_active=True,
+        ))
+        s.commit()
+
+    # Cache still serves the empty snapshot.
+    assert mgr.get_active_tool_registry() == {}
+
+    # After invalidation the new tools appear.
+    invalidate_registry_cache()
+    assert "prometheus_instant_query" in mgr.get_active_tool_registry()

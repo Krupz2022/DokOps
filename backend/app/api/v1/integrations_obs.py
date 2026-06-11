@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from app.api import deps
 from app.core.db import engine
 from app.models.integration import IntegrationSettings
+from app.services.integration_manager import invalidate_registry_cache
 from app.services.integrations.base import build_auth_headers, encrypt_credentials
 from app.services.integrations.prometheus import PrometheusService
 from app.services.integrations.loki import LokiService
@@ -108,6 +109,7 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
             existing.last_checked_at = datetime.now(timezone.utc)
             session.add(existing)
             session.commit()
+            invalidate_registry_cache()
             session.refresh(existing)
             row = existing
         else:
@@ -124,6 +126,7 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
             )
             session.add(row)
             session.commit()
+            invalidate_registry_cache()
             session.refresh(row)
 
     if not ok:
@@ -155,6 +158,7 @@ async def test_integration(integration_id: int, _user=Depends(deps.get_current_u
         row.last_checked_at = datetime.now(timezone.utc)
         session.add(row)
         session.commit()
+        invalidate_registry_cache()
 
     return {"ok": ok, "message": msg}
 
@@ -167,6 +171,7 @@ async def disconnect_integration(integration_id: int, _user=Depends(deps.get_cur
             raise HTTPException(status_code=404, detail="Integration not found")
         session.delete(row)
         session.commit()
+        invalidate_registry_cache()
     return {"deleted": True}
 
 

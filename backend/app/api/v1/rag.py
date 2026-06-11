@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 from app.api import deps
 from app.core.db import engine
+from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.models.setting import SystemSetting
 from app.models.user import User
 from app.services.rag_service import rag_service, _MAX_FILE_BYTES
@@ -228,6 +229,7 @@ def save_confluence_config(
         _save("confluence_api_token", config.api_token)
     _save("confluence_sync_spaces", json.dumps(config.sync_spaces))
     _save("confluence_sync_interval_hours", str(config.sync_interval_hours))
+    _invalidate_settings_cache()
 
     # Re-register (or remove) the scheduler job with the new interval
     from app.main import scheduler

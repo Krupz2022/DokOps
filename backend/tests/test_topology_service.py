@@ -405,3 +405,21 @@ def test_blast_radius_no_downstream():
     svc = _make_svc_with_connected_graph()
     result = svc.get_blast_radius("ConfigMap", "rabbitmq-config", "default", "test-ctx")
     assert "No downstream" in result
+
+
+def test_service_selects_only_same_namespace_pod_among_many(minimal_k8s_mock):
+    """With same-labelled pods in two namespaces, the service only selects its own."""
+    mock_k8s, core, *_ = minimal_k8s_mock
+    pod_same = _make_pod("api-1", "default", {"app": "api"})
+    pod_other = _make_pod("api-2", "other-ns", {"app": "api"})
+    svc_obj = _make_service("api-svc", "default", {"app": "api"})
+    core.list_pod_for_all_namespaces.return_value = _make_list([pod_same, pod_other])
+    core.list_service_for_all_namespaces.return_value = _make_list([svc_obj])
+
+    svc = TopologyService()
+    with patch("app.services.topology_service.k8s_service", mock_k8s):
+        g = svc._build_graph_for_context_sync("test-ctx")
+
+    svc_id = _node_id("Service", "default", "api-svc")
+    assert g.has_edge(svc_id, _node_id("Pod", "default", "api-1"))
+    assert not g.has_edge(svc_id, _node_id("Pod", "other-ns", "api-2"))

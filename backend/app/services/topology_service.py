@@ -92,293 +92,262 @@ class TopologyService:
         auto_api = k8s_service._get_api("AutoscalingV2Api", context)
         storage_api = k8s_service._get_api("StorageV1Api", context)
 
-        pods: list = []
+        (ns_res, pod_res, dep_res, ss_res, ds_res, job_res, cj_res,
+         svc_res, ing_res, hpa_res, pvc_res, pv_res, sc_res) = await asyncio.gather(
+            core_api.list_namespace(limit=500),
+            core_api.list_pod_for_all_namespaces(limit=500),
+            apps_api.list_deployment_for_all_namespaces(limit=500),
+            apps_api.list_stateful_set_for_all_namespaces(limit=500),
+            apps_api.list_daemon_set_for_all_namespaces(limit=500),
+            batch_api.list_job_for_all_namespaces(limit=500),
+            batch_api.list_cron_job_for_all_namespaces(limit=500),
+            core_api.list_service_for_all_namespaces(limit=500),
+            net_api.list_ingress_for_all_namespaces(limit=500),
+            auto_api.list_horizontal_pod_autoscaler_for_all_namespaces(limit=500),
+            core_api.list_persistent_volume_claim_for_all_namespaces(limit=500),
+            core_api.list_persistent_volume(limit=500),
+            storage_api.list_storage_class(limit=500),
+            return_exceptions=True,
+        )
+
+        def _items(res: Any) -> list:
+            """Return .items for a successful result, or [] if that fetch failed."""
+            if isinstance(res, Exception):
+                logger.debug(f"[{context}] resource scan failed: {res}")
+                return []
+            return res.items
 
         # 1. Namespaces
-        try:
-            ns_list = await core_api.list_namespace(limit=500)
-            for ns in ns_list.items:
-                nid = _node_id("Namespace", "", ns.metadata.name)
-                g.add_node(nid, kind="Namespace", name=ns.metadata.name,
-                           namespace="", labels=ns.metadata.labels or {},
-                           status=ns.status.phase or "")
-        except Exception as e:
-            logger.debug(f"[{context}] Namespace scan failed: {e}")
+        for ns in _items(ns_res):
+            nid = _node_id("Namespace", "", ns.metadata.name)
+            g.add_node(nid, kind="Namespace", name=ns.metadata.name,
+                       namespace="", labels=ns.metadata.labels or {},
+                       status=ns.status.phase or "")
 
         # 2. Pods (must be fetched before Services for selector matching)
-        try:
-            pod_list = await core_api.list_pod_for_all_namespaces(limit=500)
-            pods = pod_list.items
-            for pod in pods:
-                ns = pod.metadata.namespace
-                name = pod.metadata.name
-                nid = _node_id("Pod", ns, name)
-                g.add_node(nid, kind="Pod", name=name, namespace=ns,
-                           labels=pod.metadata.labels or {},
-                           status=pod.status.phase or "Unknown")
-                for ref in (pod.metadata.owner_references or []):
-                    owner_id = _node_id(ref.kind, ns, ref.name)
-                    if not g.has_node(owner_id):
-                        g.add_node(owner_id, kind=ref.kind, name=ref.name,
+        pods = _items(pod_res)
+        for pod in pods:
+            ns = pod.metadata.namespace
+            name = pod.metadata.name
+            nid = _node_id("Pod", ns, name)
+            g.add_node(nid, kind="Pod", name=name, namespace=ns,
+                       labels=pod.metadata.labels or {},
+                       status=pod.status.phase or "Unknown")
+            for ref in (pod.metadata.owner_references or []):
+                owner_id = _node_id(ref.kind, ns, ref.name)
+                if not g.has_node(owner_id):
+                    g.add_node(owner_id, kind=ref.kind, name=ref.name,
+                               namespace=ns, labels={}, status="")
+                g.add_edge(owner_id, nid, relation="owns")
+            for vol in (pod.spec.volumes or []):
+                if vol.config_map:
+                    cm_id = _node_id("ConfigMap", ns, vol.config_map.name)
+                    if not g.has_node(cm_id):
+                        g.add_node(cm_id, kind="ConfigMap",
+                                   name=vol.config_map.name,
                                    namespace=ns, labels={}, status="")
-                    g.add_edge(owner_id, nid, relation="owns")
-                for vol in (pod.spec.volumes or []):
-                    if vol.config_map:
-                        cm_id = _node_id("ConfigMap", ns, vol.config_map.name)
+                    g.add_edge(nid, cm_id, relation="mounts")
+                if vol.secret:
+                    sec_id = _node_id("Secret", ns, vol.secret.secret_name)
+                    if not g.has_node(sec_id):
+                        g.add_node(sec_id, kind="Secret",
+                                   name=vol.secret.secret_name,
+                                   namespace=ns, labels={}, status="")
+                    g.add_edge(nid, sec_id, relation="mounts")
+                if vol.persistent_volume_claim:
+                    pvc_id = _node_id("PVC", ns,
+                                      vol.persistent_volume_claim.claim_name)
+                    if not g.has_node(pvc_id):
+                        g.add_node(pvc_id, kind="PVC",
+                                   name=vol.persistent_volume_claim.claim_name,
+                                   namespace=ns, labels={}, status="")
+                    g.add_edge(nid, pvc_id, relation="mounts")
+            for container in (pod.spec.containers or []):
+                for env_from in (container.env_from or []):
+                    if env_from.config_map_ref:
+                        cm_id = _node_id("ConfigMap", ns,
+                                         env_from.config_map_ref.name)
                         if not g.has_node(cm_id):
                             g.add_node(cm_id, kind="ConfigMap",
-                                       name=vol.config_map.name,
+                                       name=env_from.config_map_ref.name,
                                        namespace=ns, labels={}, status="")
                         g.add_edge(nid, cm_id, relation="mounts")
-                    if vol.secret:
-                        sec_id = _node_id("Secret", ns, vol.secret.secret_name)
+                    if env_from.secret_ref:
+                        sec_id = _node_id("Secret", ns,
+                                          env_from.secret_ref.name)
                         if not g.has_node(sec_id):
                             g.add_node(sec_id, kind="Secret",
-                                       name=vol.secret.secret_name,
+                                       name=env_from.secret_ref.name,
                                        namespace=ns, labels={}, status="")
                         g.add_edge(nid, sec_id, relation="mounts")
-                    if vol.persistent_volume_claim:
-                        pvc_id = _node_id("PVC", ns,
-                                          vol.persistent_volume_claim.claim_name)
-                        if not g.has_node(pvc_id):
-                            g.add_node(pvc_id, kind="PVC",
-                                       name=vol.persistent_volume_claim.claim_name,
-                                       namespace=ns, labels={}, status="")
-                        g.add_edge(nid, pvc_id, relation="mounts")
-                for container in (pod.spec.containers or []):
-                    for env_from in (container.env_from or []):
-                        if env_from.config_map_ref:
-                            cm_id = _node_id("ConfigMap", ns,
-                                             env_from.config_map_ref.name)
-                            if not g.has_node(cm_id):
-                                g.add_node(cm_id, kind="ConfigMap",
-                                           name=env_from.config_map_ref.name,
-                                           namespace=ns, labels={}, status="")
-                            g.add_edge(nid, cm_id, relation="mounts")
-                        if env_from.secret_ref:
-                            sec_id = _node_id("Secret", ns,
-                                              env_from.secret_ref.name)
-                            if not g.has_node(sec_id):
-                                g.add_node(sec_id, kind="Secret",
-                                           name=env_from.secret_ref.name,
-                                           namespace=ns, labels={}, status="")
-                            g.add_edge(nid, sec_id, relation="mounts")
-        except Exception as e:
-            logger.debug(f"[{context}] Pod scan failed: {e}")
 
         # 3. Deployments
-        try:
-            dep_list = await apps_api.list_deployment_for_all_namespaces(limit=500)
-            for dep in dep_list.items:
-                ns = dep.metadata.namespace
-                name = dep.metadata.name
-                ready = dep.status.ready_replicas or 0
-                desired = dep.spec.replicas or 0
-                nid = _node_id("Deployment", ns, name)
-                g.add_node(nid, kind="Deployment", name=name, namespace=ns,
-                           labels=dep.metadata.labels or {},
-                           status=f"{ready}/{desired}")
-        except Exception as e:
-            logger.debug(f"[{context}] Deployment scan failed: {e}")
+        for dep in _items(dep_res):
+            ns = dep.metadata.namespace
+            name = dep.metadata.name
+            ready = dep.status.ready_replicas or 0
+            desired = dep.spec.replicas or 0
+            nid = _node_id("Deployment", ns, name)
+            g.add_node(nid, kind="Deployment", name=name, namespace=ns,
+                       labels=dep.metadata.labels or {},
+                       status=f"{ready}/{desired}")
 
         # 4. StatefulSets
-        try:
-            ss_list = await apps_api.list_stateful_set_for_all_namespaces(limit=500)
-            for ss in ss_list.items:
-                ns = ss.metadata.namespace
-                name = ss.metadata.name
-                ready = ss.status.ready_replicas or 0
-                desired = ss.spec.replicas or 0
-                nid = _node_id("StatefulSet", ns, name)
-                g.add_node(nid, kind="StatefulSet", name=name, namespace=ns,
-                           labels=ss.metadata.labels or {},
-                           status=f"{ready}/{desired}")
-        except Exception as e:
-            logger.debug(f"[{context}] StatefulSet scan failed: {e}")
+        for ss in _items(ss_res):
+            ns = ss.metadata.namespace
+            name = ss.metadata.name
+            ready = ss.status.ready_replicas or 0
+            desired = ss.spec.replicas or 0
+            nid = _node_id("StatefulSet", ns, name)
+            g.add_node(nid, kind="StatefulSet", name=name, namespace=ns,
+                       labels=ss.metadata.labels or {},
+                       status=f"{ready}/{desired}")
 
         # 5. DaemonSets
-        try:
-            ds_list = await apps_api.list_daemon_set_for_all_namespaces(limit=500)
-            for ds in ds_list.items:
-                ns = ds.metadata.namespace
-                name = ds.metadata.name
-                desired = ds.status.desired_number_scheduled or 0
-                ready = ds.status.number_ready or 0
-                nid = _node_id("DaemonSet", ns, name)
-                g.add_node(nid, kind="DaemonSet", name=name, namespace=ns,
-                           labels=ds.metadata.labels or {},
-                           status=f"{ready}/{desired}")
-        except Exception as e:
-            logger.debug(f"[{context}] DaemonSet scan failed: {e}")
+        for ds in _items(ds_res):
+            ns = ds.metadata.namespace
+            name = ds.metadata.name
+            desired = ds.status.desired_number_scheduled or 0
+            ready = ds.status.number_ready or 0
+            nid = _node_id("DaemonSet", ns, name)
+            g.add_node(nid, kind="DaemonSet", name=name, namespace=ns,
+                       labels=ds.metadata.labels or {},
+                       status=f"{ready}/{desired}")
 
         # 6. Jobs
-        try:
-            job_list = await batch_api.list_job_for_all_namespaces(limit=500)
-            for job in job_list.items:
-                ns = job.metadata.namespace
-                name = job.metadata.name
-                succeeded = job.status.succeeded or 0
-                failed = job.status.failed or 0
-                nid = _node_id("Job", ns, name)
-                if succeeded > 0:
-                    job_status = "Succeeded"
-                elif failed > 0:
-                    job_status = "Failed"
-                else:
-                    job_status = "Running"
-                g.add_node(nid, kind="Job", name=name, namespace=ns,
-                           labels=job.metadata.labels or {},
-                           status=job_status)
-                for ref in (job.metadata.owner_references or []):
-                    if ref.kind == "CronJob":
-                        cj_id = _node_id("CronJob", ns, ref.name)
-                        if not g.has_node(cj_id):
-                            g.add_node(cj_id, kind="CronJob", name=ref.name,
-                                       namespace=ns, labels={}, status="")
-                        g.add_edge(cj_id, nid, relation="owns")
-        except Exception as e:
-            logger.debug(f"[{context}] Job scan failed: {e}")
+        for job in _items(job_res):
+            ns = job.metadata.namespace
+            name = job.metadata.name
+            succeeded = job.status.succeeded or 0
+            failed = job.status.failed or 0
+            nid = _node_id("Job", ns, name)
+            if succeeded > 0:
+                job_status = "Succeeded"
+            elif failed > 0:
+                job_status = "Failed"
+            else:
+                job_status = "Running"
+            g.add_node(nid, kind="Job", name=name, namespace=ns,
+                       labels=job.metadata.labels or {},
+                       status=job_status)
+            for ref in (job.metadata.owner_references or []):
+                if ref.kind == "CronJob":
+                    cj_id = _node_id("CronJob", ns, ref.name)
+                    if not g.has_node(cj_id):
+                        g.add_node(cj_id, kind="CronJob", name=ref.name,
+                                   namespace=ns, labels={}, status="")
+                    g.add_edge(cj_id, nid, relation="owns")
 
         # 7. CronJobs
-        try:
-            cj_list = await batch_api.list_cron_job_for_all_namespaces(limit=500)
-            for cj in cj_list.items:
-                ns = cj.metadata.namespace
-                name = cj.metadata.name
-                nid = _node_id("CronJob", ns, name)
-                status = "Suspended" if cj.spec.suspend else "Active"
-                if not g.has_node(nid):
-                    g.add_node(nid, kind="CronJob", name=name, namespace=ns,
-                               labels=cj.metadata.labels or {}, status=status)
-                else:
-                    g.nodes[nid]["status"] = status
-        except Exception as e:
-            logger.debug(f"[{context}] CronJob scan failed: {e}")
+        for cj in _items(cj_res):
+            ns = cj.metadata.namespace
+            name = cj.metadata.name
+            nid = _node_id("CronJob", ns, name)
+            status = "Suspended" if cj.spec.suspend else "Active"
+            if not g.has_node(nid):
+                g.add_node(nid, kind="CronJob", name=name, namespace=ns,
+                           labels=cj.metadata.labels or {}, status=status)
+            else:
+                g.nodes[nid]["status"] = status
 
-        # 8. Services + label selector → pod matching
-        try:
-            svc_list = await core_api.list_service_for_all_namespaces(limit=500)
-            for svc in svc_list.items:
-                ns = svc.metadata.namespace
-                name = svc.metadata.name
-                nid = _node_id("Service", ns, name)
-                g.add_node(nid, kind="Service", name=name, namespace=ns,
-                           labels=svc.metadata.labels or {},
-                           status=svc.spec.type or "")
-                if svc.spec.selector:
-                    for pod in pods:
-                        if pod.metadata.namespace != ns:
-                            continue
-                        pod_labels = pod.metadata.labels or {}
-                        if all(pod_labels.get(k) == v
-                               for k, v in svc.spec.selector.items()):
-                            pod_id = _node_id("Pod", ns, pod.metadata.name)
-                            if g.has_node(pod_id):
-                                g.add_edge(nid, pod_id, relation="selects")
-        except Exception as e:
-            logger.debug(f"[{context}] Service scan failed: {e}")
+        # Build a namespace -> pods index once (replaces the O(services x pods) scan).
+        pods_by_ns: Dict[str, list] = {}
+        for pod in pods:
+            pods_by_ns.setdefault(pod.metadata.namespace, []).append(pod)
+
+        # 8. Services + label selector -> pod matching
+        for svc in _items(svc_res):
+            ns = svc.metadata.namespace
+            name = svc.metadata.name
+            nid = _node_id("Service", ns, name)
+            g.add_node(nid, kind="Service", name=name, namespace=ns,
+                       labels=svc.metadata.labels or {},
+                       status=svc.spec.type or "")
+            if svc.spec.selector:
+                for pod in pods_by_ns.get(ns, []):
+                    pod_labels = pod.metadata.labels or {}
+                    if all(pod_labels.get(k) == v for k, v in svc.spec.selector.items()):
+                        pod_id = _node_id("Pod", ns, pod.metadata.name)
+                        if g.has_node(pod_id):
+                            g.add_edge(nid, pod_id, relation="selects")
 
         # 9. Ingresses
-        try:
-            ing_list = await net_api.list_ingress_for_all_namespaces(limit=500)
-            for ing in ing_list.items:
-                ns = ing.metadata.namespace
-                name = ing.metadata.name
-                nid = _node_id("Ingress", ns, name)
-                g.add_node(nid, kind="Ingress", name=name, namespace=ns,
-                           labels=ing.metadata.labels or {}, status="")
-                for rule in (ing.spec.rules or []):
-                    if rule.http:
-                        for path in (rule.http.paths or []):
-                            svc_name = (
-                                path.backend.service.name
-                                if path.backend and path.backend.service
-                                else None
-                            )
-                            if svc_name:
-                                svc_id = _node_id("Service", ns, svc_name)
-                                if g.has_node(svc_id):
-                                    g.add_edge(nid, svc_id, relation="routes-to")
-        except Exception as e:
-            logger.debug(f"[{context}] Ingress scan failed: {e}")
+        for ing in _items(ing_res):
+            ns = ing.metadata.namespace
+            name = ing.metadata.name
+            nid = _node_id("Ingress", ns, name)
+            g.add_node(nid, kind="Ingress", name=name, namespace=ns,
+                       labels=ing.metadata.labels or {}, status="")
+            for rule in (ing.spec.rules or []):
+                if rule.http:
+                    for path in (rule.http.paths or []):
+                        svc_name = (
+                            path.backend.service.name
+                            if path.backend and path.backend.service
+                            else None
+                        )
+                        if svc_name:
+                            svc_id = _node_id("Service", ns, svc_name)
+                            if g.has_node(svc_id):
+                                g.add_edge(nid, svc_id, relation="routes-to")
 
         # 10. HPAs
-        try:
-            hpa_list = await auto_api.list_horizontal_pod_autoscaler_for_all_namespaces(
-                limit=500
-            )
-            for hpa in hpa_list.items:
-                ns = hpa.metadata.namespace
-                name = hpa.metadata.name
-                nid = _node_id("HPA", ns, name)
-                g.add_node(nid, kind="HPA", name=name, namespace=ns,
-                           labels=hpa.metadata.labels or {}, status="")
-                ref = hpa.spec.scale_target_ref
-                if ref:
-                    target_id = _node_id(ref.kind, ns, ref.name)
-                    if g.has_node(target_id):
-                        g.add_edge(nid, target_id, relation="scales")
-        except Exception as e:
-            logger.debug(f"[{context}] HPA scan failed: {e}")
+        for hpa in _items(hpa_res):
+            ns = hpa.metadata.namespace
+            name = hpa.metadata.name
+            nid = _node_id("HPA", ns, name)
+            g.add_node(nid, kind="HPA", name=name, namespace=ns,
+                       labels=hpa.metadata.labels or {}, status="")
+            ref = hpa.spec.scale_target_ref
+            if ref:
+                target_id = _node_id(ref.kind, ns, ref.name)
+                if g.has_node(target_id):
+                    g.add_edge(nid, target_id, relation="scales")
 
         # 11. PVCs
-        try:
-            pvc_list = await core_api.list_persistent_volume_claim_for_all_namespaces(
-                limit=500
-            )
-            for pvc in pvc_list.items:
-                ns = pvc.metadata.namespace
-                name = pvc.metadata.name
-                nid = _node_id("PVC", ns, name)
-                if not g.has_node(nid):
-                    g.add_node(nid, kind="PVC", name=name, namespace=ns,
-                               labels=pvc.metadata.labels or {},
-                               status=pvc.status.phase or "")
-                else:
-                    g.nodes[nid]["status"] = pvc.status.phase or ""
-                if pvc.spec.volume_name:
-                    pv_id = _node_id("PV", "", pvc.spec.volume_name)
-                    if not g.has_node(pv_id):
-                        g.add_node(pv_id, kind="PV", name=pvc.spec.volume_name,
-                                   namespace="", labels={}, status="")
-                    g.add_edge(nid, pv_id, relation="bound-to")
-                if pvc.spec.storage_class_name:
-                    sc_id = _node_id("StorageClass", "",
-                                     pvc.spec.storage_class_name)
-                    if not g.has_node(sc_id):
-                        g.add_node(sc_id, kind="StorageClass",
-                                   name=pvc.spec.storage_class_name,
-                                   namespace="", labels={}, status="")
-                    g.add_edge(nid, sc_id, relation="requests")
-        except Exception as e:
-            logger.debug(f"[{context}] PVC scan failed: {e}")
+        for pvc in _items(pvc_res):
+            ns = pvc.metadata.namespace
+            name = pvc.metadata.name
+            nid = _node_id("PVC", ns, name)
+            if not g.has_node(nid):
+                g.add_node(nid, kind="PVC", name=name, namespace=ns,
+                           labels=pvc.metadata.labels or {},
+                           status=pvc.status.phase or "")
+            else:
+                g.nodes[nid]["status"] = pvc.status.phase or ""
+            if pvc.spec.volume_name:
+                pv_id = _node_id("PV", "", pvc.spec.volume_name)
+                if not g.has_node(pv_id):
+                    g.add_node(pv_id, kind="PV", name=pvc.spec.volume_name,
+                               namespace="", labels={}, status="")
+                g.add_edge(nid, pv_id, relation="bound-to")
+            if pvc.spec.storage_class_name:
+                sc_id = _node_id("StorageClass", "",
+                                 pvc.spec.storage_class_name)
+                if not g.has_node(sc_id):
+                    g.add_node(sc_id, kind="StorageClass",
+                               name=pvc.spec.storage_class_name,
+                               namespace="", labels={}, status="")
+                g.add_edge(nid, sc_id, relation="requests")
 
         # 12. PVs
-        try:
-            pv_list = await core_api.list_persistent_volume(limit=500)
-            for pv in pv_list.items:
-                pv_id = _node_id("PV", "", pv.metadata.name)
-                cap = (pv.spec.capacity.get("storage", "")
-                       if pv.spec.capacity else "")
-                if not g.has_node(pv_id):
-                    g.add_node(pv_id, kind="PV", name=pv.metadata.name,
-                               namespace="", labels={}, status=pv.status.phase or "")
-                else:
-                    g.nodes[pv_id]["status"] = pv.status.phase or ""
-                g.nodes[pv_id]["capacity"] = cap
-        except Exception as e:
-            logger.debug(f"[{context}] PV scan failed: {e}")
+        for pv in _items(pv_res):
+            pv_id = _node_id("PV", "", pv.metadata.name)
+            cap = (pv.spec.capacity.get("storage", "")
+                   if pv.spec.capacity else "")
+            if not g.has_node(pv_id):
+                g.add_node(pv_id, kind="PV", name=pv.metadata.name,
+                           namespace="", labels={}, status=pv.status.phase or "")
+            else:
+                g.nodes[pv_id]["status"] = pv.status.phase or ""
+            g.nodes[pv_id]["capacity"] = cap
 
         # 13. StorageClasses
-        try:
-            sc_list = await storage_api.list_storage_class(limit=500)
-            for sc in sc_list.items:
-                sc_id = _node_id("StorageClass", "", sc.metadata.name)
-                if not g.has_node(sc_id):
-                    g.add_node(sc_id, kind="StorageClass", name=sc.metadata.name,
-                               namespace="", labels={}, status="")
-        except Exception as e:
-            logger.debug(f"[{context}] StorageClass scan failed: {e}")
+        for sc in _items(sc_res):
+            sc_id = _node_id("StorageClass", "", sc.metadata.name)
+            if not g.has_node(sc_id):
+                g.add_node(sc_id, kind="StorageClass", name=sc.metadata.name,
+                           namespace="", labels={}, status="")
 
         return g
 

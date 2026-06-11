@@ -3,7 +3,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.core import security
@@ -13,16 +14,16 @@ from app.models.user import User
 router = APIRouter()
 
 @router.post("/login/access-token")
-def login_access_token(
+async def login_access_token(
     response: Response,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     form_data: OAuth2PasswordRequestForm = Depends(),
 ) -> Any:
     """
     OAuth2 compatible token login. Sets a httpOnly cookie and also returns token in body.
     """
     statement = select(User).where(User.username == form_data.username)
-    user = db.exec(statement).first()
+    user = (await db.exec(statement)).first()
 
     if not user or not security.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
@@ -51,7 +52,7 @@ def login_access_token(
 
 
 @router.post("/logout")
-def logout(response: Response) -> Any:
+async def logout(response: Response) -> Any:
     """Clear the auth cookie."""
     response.delete_cookie(key="access_token", httponly=True, samesite="lax")
     return {"message": "Logged out"}
@@ -63,28 +64,28 @@ class RegisterRequest(BaseModel):
 
 
 @router.post("/register")
-def register_user(
+async def register_user(
     payload: RegisterRequest,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
     if settings.SSO_ENABLED:
         raise HTTPException(status_code=403, detail="Registration is disabled when SSO is enabled")
 
     from app.models.setting import SystemSetting
 
-    signup_enabled_row = db.exec(
+    signup_enabled_row = (await db.exec(
         select(SystemSetting).where(SystemSetting.key == "signup_enabled")
-    ).first()
+    )).first()
     if not signup_enabled_row or signup_enabled_row.value != "true":
         raise HTTPException(status_code=403, detail="Public signups are disabled")
 
-    existing = db.exec(select(User).where(User.username == payload.username)).first()
+    existing = (await db.exec(select(User).where(User.username == payload.username))).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username already taken")
 
-    signup_default_role_row = db.exec(
+    signup_default_role_row = (await db.exec(
         select(SystemSetting).where(SystemSetting.key == "signup_default_role")
-    ).first()
+    )).first()
     role = signup_default_role_row.value if signup_default_role_row else "user"
 
     user = User(
@@ -95,8 +96,8 @@ def register_user(
         is_active=True,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
 
     expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     token = security.create_access_token(user.username, expires_delta=expires)

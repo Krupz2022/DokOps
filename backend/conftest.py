@@ -15,4 +15,9 @@ def _reset_module_caches():
         settings_cache.invalidate()
     except Exception:
         pass
+    try:
+        from app.services import integration_manager as _im
+        _im.invalidate_registry_cache()
+    except Exception:
+        pass
     yield

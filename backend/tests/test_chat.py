@@ -1,4 +1,5 @@
 # backend/tests/test_chat.py
+import asyncio
 import json
 import os
 import tempfile
@@ -53,6 +54,10 @@ def client_fixture(session: Session):
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
+    # Dispose the async engine before the session fixture tears down and unlinks
+    # the temp DB file — aiosqlite holds an open handle until dispose() is called,
+    # causing WinError 32 (file in use) on Windows if we unlink first.
+    asyncio.run(_async_engine.dispose())
 
 
 @pytest.fixture(name="auth_headers")

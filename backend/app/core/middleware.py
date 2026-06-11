@@ -37,7 +37,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 from jose import jwt
                 payload = jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=[settings.ALGORITHM])
                 actor = payload.get("sub", "unknown")
-            except:
+            except Exception:
                 pass
 
         path = request.url.path

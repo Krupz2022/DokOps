@@ -53,6 +53,10 @@ async def get_current_user(
             detail="Could not validate credentials",
         )
     user = (await db.exec(select(User).where(User.username == token_data))).first()
+    # Release the pooled connection now — generator deps stay open until the response
+    # completes, and long-lived (SSE) responses must not pin a connection that long.
+    # expire_on_commit=False keeps `user` fully loaded after commit.
+    await db.commit()
     if not user:
         logger.debug("User not found in DB")
         raise HTTPException(status_code=404, detail="User not found")
@@ -99,4 +103,9 @@ async def get_optional_current_user(
         token_data = payload.get("sub")
     except (JWTError, ValidationError):
         return None
-    return (await db.exec(select(User).where(User.username == token_data))).first()
+    user = (await db.exec(select(User).where(User.username == token_data))).first()
+    # Release the pooled connection now — generator deps stay open until the response
+    # completes, and long-lived (SSE) responses must not pin a connection that long.
+    # expire_on_commit=False keeps `user` fully loaded after commit.
+    await db.commit()
+    return user

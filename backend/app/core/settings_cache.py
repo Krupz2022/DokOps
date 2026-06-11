@@ -19,8 +19,9 @@ def _load_all() -> Dict[str, str]:
     from app.core.db import sync_engine
     from app.models.setting import SystemSetting
 
-    # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
-    # contexts and hot caches. See async-db-migration plan, Recipe R8.
+    # NOTE: deliberately synchronous against sync_engine. Cache hit rate is ~100% after
+    # warmup; a miss blocks the event loop for one short SQLite/PG round-trip, which we
+    # accept to keep these callable from sync, non-event-loop contexts too (Recipe R8).
     with Session(sync_engine) as session:
         rows = session.exec(select(SystemSetting)).all()
         return {row.key: row.value for row in rows}

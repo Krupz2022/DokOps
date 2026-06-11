@@ -93,7 +93,7 @@ async def _run_patch_migrations() -> None:
                 await conn.execute(text(sql))
                 await conn.commit()
             except Exception:
-                await conn.rollback()
+                await conn.rollback()  # PostgreSQL: reset aborted transaction before next statement
 
 
 _scheduler = AsyncIOScheduler()

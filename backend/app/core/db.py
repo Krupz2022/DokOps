@@ -106,16 +106,22 @@ if _db_url.startswith("sqlite"):
     event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_wal)
 
 
-def create_db_and_tables():
+async def create_db_and_tables() -> None:
+    async with async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+
+
+def create_db_and_tables_sync() -> None:
+    """Synchronous shim retained for tests that cannot run in an event loop (e.g. TestClient fixtures)."""
     SQLModel.metadata.create_all(engine)
 
 
-def seed_from_env(db: Session, s) -> None:
+async def seed_from_env(db: AsyncSession, s) -> None:
     """Seed DB from DOKOPS_* env vars. Insert-if-missing unless DOKOPS_FORCE_SEED=true."""
 
     # --- Admin user ---
     if s.DOKOPS_ADMIN_USERNAME and s.DOKOPS_ADMIN_PASSWORD:
-        user = db.exec(select(User).where(User.username == s.DOKOPS_ADMIN_USERNAME)).first()
+        user = (await db.exec(select(User).where(User.username == s.DOKOPS_ADMIN_USERNAME))).first()
         if not user:
             db.add(User(
                 username=s.DOKOPS_ADMIN_USERNAME,
@@ -151,20 +157,20 @@ def seed_from_env(db: Session, s) -> None:
     for key, value in seed_map.items():
         if not value:
             continue
-        row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+        row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
         if not row:
             db.add(SystemSetting(key=key, value=value))
         elif s.DOKOPS_FORCE_SEED:
             row.value = value
             db.add(row)
 
-    db.commit()
+    await db.commit()
 
     # --- Observability integrations ---
-    _seed_obs_integrations(db, s)
+    await _seed_obs_integrations(db, s)
 
 
-def _seed_obs_integrations(db: Session, s) -> None:
+async def _seed_obs_integrations(db: AsyncSession, s) -> None:
     """Seed observability integrations from DOKOPS_ES_* env vars."""
     if not s.DOKOPS_ES_URL or not s.DOKOPS_ES_AUTH_TYPE:
         return
@@ -184,9 +190,9 @@ def _seed_obs_integrations(db: Session, s) -> None:
 
     encrypted = encrypt_credentials(creds) if creds else None
 
-    existing = db.exec(
+    existing = (await db.exec(
         select(IntegrationSettings).where(IntegrationSettings.backend == "elasticsearch")
-    ).first()
+    )).first()
 
     if existing and not s.DOKOPS_FORCE_SEED:
         return  # already configured, don't overwrite
@@ -207,11 +213,11 @@ def _seed_obs_integrations(db: Session, s) -> None:
             encrypted_credentials=encrypted,
             is_active=True,
         ))
-    db.commit()
+    await db.commit()
     _log.info("seed: elasticsearch integration seeded from env vars (url=%s)", s.DOKOPS_ES_URL)
 
 
-def _migrate_schema() -> None:
+async def _migrate_schema() -> None:
     """Add new columns to existing tables without dropping data (PostgreSQL + SQLite safe)."""
     from sqlalchemy import text
 
@@ -240,21 +246,21 @@ def _migrate_schema() -> None:
         _col("servicecredential", "instance_name", "TEXT DEFAULT ''"),
         _col("user", "god_mode_active", "INTEGER DEFAULT 0"),
     ]
-    with engine.connect() as conn:
+    async with async_engine.connect() as conn:
         for stmt in migrations:
             try:
-                conn.execute(text(stmt))
-                conn.commit()
+                await conn.execute(text(stmt))
+                await conn.commit()
             except Exception:
-                conn.rollback()  # PostgreSQL: reset aborted transaction before next statement
+                await conn.rollback()
 
 
-def init_db():
-    create_db_and_tables()
-    _migrate_schema()
-    with Session(engine) as db:
+async def init_db() -> None:
+    await create_db_and_tables()
+    await _migrate_schema()
+    async with AsyncSessionLocal() as db:
         try:
-            seed_from_env(db, settings)
+            await seed_from_env(db, settings)
         except Exception:
             _log.critical("seed_from_env failed during startup — check DOKOPS_* env vars", exc_info=True)
             raise

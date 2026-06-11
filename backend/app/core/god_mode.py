@@ -9,9 +9,11 @@ _mcp_god_mode: contextvars.ContextVar[bool] = contextvars.ContextVar("mcp_god_mo
 def _set_db(user_id: int, active: bool) -> None:
     try:
         from sqlmodel import Session, select
-        from app.core.db import engine
+        from app.core.db import sync_engine
         from app.models.user import User
-        with Session(engine) as db:
+        # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
+        # contexts and hot caches. See async-db-migration plan, Recipe R8.
+        with Session(sync_engine) as db:
             user = db.exec(select(User).where(User.id == user_id)).first()
             if user:
                 user.god_mode_active = active
@@ -24,9 +26,11 @@ def _set_db(user_id: int, active: bool) -> None:
 def _read_db(user_id: int) -> bool:
     try:
         from sqlmodel import Session, select
-        from app.core.db import engine
+        from app.core.db import sync_engine
         from app.models.user import User
-        with Session(engine) as db:
+        # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
+        # contexts and hot caches. See async-db-migration plan, Recipe R8.
+        with Session(sync_engine) as db:
             user = db.exec(select(User).where(User.id == user_id)).first()
             return bool(user.god_mode_active) if user else False
     except Exception:

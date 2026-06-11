@@ -16,10 +16,12 @@ _cache = TTLCache(ttl_seconds=10.0)
 
 def _load_all() -> Dict[str, str]:
     from sqlmodel import Session, select
-    from app.core.db import engine
+    from app.core.db import sync_engine
     from app.models.setting import SystemSetting
 
-    with Session(engine) as session:
+    # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
+    # contexts and hot caches. See async-db-migration plan, Recipe R8.
+    with Session(sync_engine) as session:
         rows = session.exec(select(SystemSetting)).all()
         return {row.key: row.value for row in rows}
 

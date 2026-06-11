@@ -30,12 +30,16 @@ export default function Resources({ initialTab, standalone }: { initialTab?: str
     };
 
     useEffect(() => {
-        fetchNamespaces();
-        fetchRunbooks();
+        const loadInitial = () => {
+            Promise.all([fetchNamespaces(), fetchRunbooks()]).catch((err) =>
+                console.error(err)
+            );
+        };
+        loadInitial();
 
         const handleContextChange = () => {
             fetchNamespaces();
-            setRefreshKey(k => k + 1);
+            setRefreshKey((k) => k + 1);
         };
         window.addEventListener("clusterContextChanged", handleContextChange);
         return () => window.removeEventListener("clusterContextChanged", handleContextChange);

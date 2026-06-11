@@ -1,7 +1,7 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from app.core.license_constants import ACTIVATION_ENABLED
 
@@ -25,15 +25,12 @@ class ActivationMiddleware(BaseHTTPMiddleware):
         if request.url.path in _BYPASS_PATHS or request.url.path.startswith("/minion/"):
             return await call_next(request)
 
-        from app.core.db import engine
+        from app.core.db import AsyncSessionLocal
         from app.models.activation import Activation
 
-        with Session(engine) as db:
-            row = db.exec(select(Activation)).first()
+        async with AsyncSessionLocal() as db:
+            row = (await db.exec(select(Activation))).first()
             if not row or not row.is_active:
-                return JSONResponse(
-                    status_code=423,
-                    content={"detail": "activation_required"},
-                )
+                return JSONResponse(status_code=423, content={"detail": "activation_required"})
 
         return await call_next(request)

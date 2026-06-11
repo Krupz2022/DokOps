@@ -1,6 +1,7 @@
 from typing import Any, List, Dict, Optional, Set
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Header
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api import deps
 from app.api.deps import require_god_mode
 from app.services.k8s_service import k8s_service
@@ -9,18 +10,18 @@ from app.models.user import User
 router = APIRouter()
 
 
-def _get_registered_context_names(db: Session) -> Set[str]:
+async def _get_registered_context_names(db: AsyncSession) -> Set[str]:
     """Return the set of context names for all registered cluster connections."""
     from app.models.cluster import ClusterConnection
-    clusters = db.exec(select(ClusterConnection)).all()
+    clusters = (await db.exec(select(ClusterConnection))).all()
     return {c.name for c in clusters if c.name}
 
 
-def _validate_cluster_context(context: Optional[str], db: Session) -> Optional[str]:
+async def _validate_cluster_context(context: Optional[str], db: AsyncSession) -> Optional[str]:
     """Raise 403 if context is set but not in the list of registered cluster contexts."""
     if context is None:
         return None
-    allowed = _get_registered_context_names(db)
+    allowed = await _get_registered_context_names(db)
     if allowed and context not in allowed:
         raise HTTPException(
             status_code=403,
@@ -33,11 +34,11 @@ def _validate_cluster_context(context: Optional[str], db: Session) -> Optional[s
 @router.get("/namespaces")
 async def list_namespaces(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context")
 ) -> List[str]:
     """List all Kubernetes namespaces."""
-    cluster_context = _validate_cluster_context(cluster_context, db)
+    cluster_context = await _validate_cluster_context(cluster_context, db)
     try:
         return await k8s_service.list_namespaces(context=cluster_context)
     except Exception as e:
@@ -46,11 +47,11 @@ async def list_namespaces(
 @router.get("/cluster/health")
 async def get_cluster_health(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context")
 ) -> Dict[str, str]:
     """Get cluster health report."""
-    cluster_context = _validate_cluster_context(cluster_context, db)
+    cluster_context = await _validate_cluster_context(cluster_context, db)
     try:
         report = await k8s_service.get_cluster_health(context=cluster_context)
         return {"report": report}

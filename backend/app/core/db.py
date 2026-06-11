@@ -1,6 +1,8 @@
 import logging as _logging
 
 from sqlmodel import SQLModel, create_engine, Session, select
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.models.user import User
@@ -52,19 +54,51 @@ def _engine_kwargs(url: str) -> dict:
     }
 
 
-engine = create_engine(_db_url, **_engine_kwargs(_db_url))
+def _to_async_url(url: str) -> str:
+    """Rewrite a sync DB URL to its async-driver equivalent."""
+    if url.startswith("sqlite+aiosqlite") or "+asyncpg" in url:
+        return url
+    if url.startswith("sqlite"):
+        return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    if url.startswith("postgresql+psycopg2"):
+        return url.replace("postgresql+psycopg2", "postgresql+asyncpg", 1)
+    if url.startswith("postgresql"):
+        return url.replace("postgresql", "postgresql+asyncpg", 1)
+    return url
+
+
+def _async_engine_kwargs(url: str) -> dict:
+    """Async pools: drop check_same_thread (aiosqlite handles threading)."""
+    if "sqlite" in url:
+        from sqlalchemy.pool import StaticPool
+        kw: dict = {"pool_pre_ping": True}
+        if ":memory:" in url:
+            kw["poolclass"] = StaticPool
+        return kw
+    return {"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20, "pool_recycle": 1800}
+
+
+# Sync engine retained ONLY for startup DDL/seed + synchronous escape-hatch readers.
+sync_engine = create_engine(_db_url, **_engine_kwargs(_db_url))
+engine = sync_engine  # back-compat alias; removed in Phase 7
+
+# Async engine — the runtime engine for all event-loop code paths.
+async_engine = create_async_engine(_to_async_url(_db_url), **_async_engine_kwargs(_to_async_url(_db_url)))
+AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 # Enable WAL on SQLite for better concurrent read/write behaviour in dev.
 if _db_url.startswith("sqlite"):
     from sqlalchemy import event
 
-    @event.listens_for(engine, "connect")
     def _set_sqlite_wal(dbapi_conn, _rec):  # pragma: no cover - driver callback
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
+
+    event.listens_for(sync_engine, "connect")(_set_sqlite_wal)
+    event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_wal)
 
 
 def create_db_and_tables():

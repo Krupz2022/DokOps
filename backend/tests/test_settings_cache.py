@@ -11,7 +11,12 @@ def isolated_db(monkeypatch):
     import app.models.setting  # noqa: F401
     SQLModel.metadata.create_all(test_engine)
     monkeypatch.setattr("app.core.db.engine", test_engine)
+    monkeypatch.setattr("app.core.db.sync_engine", test_engine)
+    # Invalidate any cached settings snapshot from a previous test.
+    from app.core import settings_cache
+    settings_cache.invalidate()
     yield test_engine
+    settings_cache.invalidate()
 
 
 def _insert(engine, key, value):

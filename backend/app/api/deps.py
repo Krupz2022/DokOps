@@ -4,7 +4,7 @@ from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import ValidationError
-from sqlmodel import Session
+from sqlmodel import Session, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
@@ -29,8 +29,8 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_current_user(
-    db: Session = Depends(get_db),
+async def get_current_user(
+    db: AsyncSession = Depends(get_async_db),
     token_from_header: Optional[str] = Depends(reusable_oauth2),
     access_token: Optional[str] = Cookie(default=None),
 ) -> User:
@@ -52,7 +52,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
         )
-    user = db.query(User).filter(User.username == token_data).first()
+    user = (await db.exec(select(User).where(User.username == token_data))).first()
     if not user:
         logger.debug("User not found in DB")
         raise HTTPException(status_code=404, detail="User not found")
@@ -61,7 +61,7 @@ def get_current_user(
         raise HTTPException(status_code=400, detail="Inactive user")
     return user
 
-def get_current_active_superuser(
+async def get_current_active_superuser(
     current_user: User = Depends(get_current_user),
 ) -> User:
     if not current_user.is_superuser:
@@ -86,7 +86,7 @@ async def require_god_mode(
 
 
 async def get_optional_current_user(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     token: Optional[str] = Depends(OAuth2PasswordBearer(
         tokenUrl=f"{settings.API_V1_STR}/login/access-token",
         auto_error=False,
@@ -99,4 +99,4 @@ async def get_optional_current_user(
         token_data = payload.get("sub")
     except (JWTError, ValidationError):
         return None
-    return db.query(User).filter(User.username == token_data).first()
+    return (await db.exec(select(User).where(User.username == token_data))).first()

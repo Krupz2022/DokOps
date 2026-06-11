@@ -58,3 +58,11 @@ async def test_get_async_db_yields_session():
     from sqlmodel.ext.asyncio.session import AsyncSession
     assert isinstance(db, AsyncSession)
     await gen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_is_coroutine():
+    import inspect
+    from app.api.deps import get_current_user, get_optional_current_user
+    assert inspect.iscoroutinefunction(get_current_user)
+    assert inspect.iscoroutinefunction(get_optional_current_user)

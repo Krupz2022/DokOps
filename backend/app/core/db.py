@@ -247,7 +247,7 @@ async def _migrate_schema() -> None:
                 await conn.execute(text(stmt))
                 await conn.commit()
             except Exception:
-                await conn.rollback()
+                await conn.rollback()  # PostgreSQL: reset aborted transaction before next statement
 
 
 async def init_db() -> None:

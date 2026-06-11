@@ -25,7 +25,13 @@ def _make_async_session():
 
 @pytest.fixture(name="session")
 def session_fixture():
-    """Synchronous fixture that yields an AsyncSession via asyncio.run()."""
+    """Synchronous fixture that yields an AsyncSession via asyncio.run().
+
+    Workaround for pytest-asyncio 0.23.5 + Python 3.13 async-fixture bug. Each
+    asyncio.run() uses a fresh event loop, so __aenter__/__aexit__ run on
+    different loops — safe with aiosqlite (thread-backed), NOT safe with
+    native-asyncio drivers like asyncpg. Revisit if the test driver changes.
+    """
     engine, session_factory = _make_async_session()
 
     async def _setup():

@@ -311,6 +311,7 @@ async def _run_loop_for_cluster(
 
     summary = f"Agent loop did not produce a result for cluster {cluster_name}."
     approved_names = {t["name"] for t in wf.agent_approved_tools}
+    catalog_map = _get_catalog_map()
 
     try:
         async for event in ai_service.run_global_agentic_loop(query=system_query):
@@ -328,7 +329,7 @@ async def _run_loop_for_cluster(
 
             # Handle destructive tools that need approval
             if tool_name:
-                catalog_entry = _get_catalog_map().get(tool_name, {})
+                catalog_entry = catalog_map.get(tool_name, {})
                 is_destructive = catalog_entry.get("is_destructive", False)
                 approved_tool = next((t for t in wf.agent_approved_tools if t["name"] == tool_name), None)
                 pre_approved = approved_tool.get("pre_approved", False) if approved_tool else False

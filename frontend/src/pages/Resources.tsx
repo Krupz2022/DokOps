@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -30,12 +30,16 @@ export default function Resources({ initialTab, standalone }: { initialTab?: str
     };
 
     useEffect(() => {
-        fetchNamespaces();
-        fetchRunbooks();
+        const loadInitial = () => {
+            Promise.all([fetchNamespaces(), fetchRunbooks()]).catch((err) =>
+                console.error(err)
+            );
+        };
+        loadInitial();
 
         const handleContextChange = () => {
             fetchNamespaces();
-            setRefreshKey(k => k + 1);
+            setRefreshKey((k) => k + 1);
         };
         window.addEventListener("clusterContextChanged", handleContextChange);
         return () => window.removeEventListener("clusterContextChanged", handleContextChange);
@@ -542,15 +546,19 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
         } catch (err: any) { toast(err.message, "error"); } finally { setAiLoading(false); }
     };
 
-    const filteredPods = pods
-        .filter(p => p.name.toLowerCase().includes(podSearch.toLowerCase()))
-        .sort((a, b) => {
-            if (!sortRunning) return 0;
-            const aRunning = a.status === "Running";
-            const bRunning = b.status === "Running";
-            if (sortRunning === "running-first") return aRunning === bRunning ? 0 : aRunning ? -1 : 1;
-            return aRunning === bRunning ? 0 : aRunning ? 1 : -1;
-        });
+    const filteredPods = useMemo(
+        () =>
+            pods
+                .filter(p => p.name.toLowerCase().includes(podSearch.toLowerCase()))
+                .sort((a, b) => {
+                    if (!sortRunning) return 0;
+                    const aRunning = a.status === "Running";
+                    const bRunning = b.status === "Running";
+                    if (sortRunning === "running-first") return aRunning === bRunning ? 0 : aRunning ? -1 : 1;
+                    return aRunning === bRunning ? 0 : aRunning ? 1 : -1;
+                }),
+        [pods, podSearch, sortRunning]
+    );
 
     return (
         <>
@@ -665,15 +673,19 @@ function DeploymentsView({ namespace, godModeActive }: { namespace: string; godM
         } catch (err: any) { toast(err.response?.data?.detail || "Failed to delete deployment", "error"); }
     };
 
-    const filteredDeployments = deployments
-        .filter(d => d.name.toLowerCase().includes(depSearch.toLowerCase()))
-        .sort((a, b) => {
-            if (!sortAvailable) return 0;
-            const aOk = a.available === a.replicas && a.replicas > 0;
-            const bOk = b.available === b.replicas && b.replicas > 0;
-            if (sortAvailable === "available-first") return aOk === bOk ? 0 : aOk ? -1 : 1;
-            return aOk === bOk ? 0 : aOk ? 1 : -1;
-        });
+    const filteredDeployments = useMemo(
+        () =>
+            deployments
+                .filter(d => d.name.toLowerCase().includes(depSearch.toLowerCase()))
+                .sort((a, b) => {
+                    if (!sortAvailable) return 0;
+                    const aOk = a.available === a.replicas && a.replicas > 0;
+                    const bOk = b.available === b.replicas && b.replicas > 0;
+                    if (sortAvailable === "available-first") return aOk === bOk ? 0 : aOk ? -1 : 1;
+                    return aOk === bOk ? 0 : aOk ? 1 : -1;
+                }),
+        [deployments, depSearch, sortAvailable]
+    );
 
     return (
         <Card>

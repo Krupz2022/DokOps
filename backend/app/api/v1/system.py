@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.setting import SystemSetting
 from app.core import security as _security
 from app.core.config import settings as _settings
+from app.core.settings_cache import invalidate as _invalidate_settings_cache
 
 router = APIRouter()
 
@@ -69,6 +70,7 @@ def first_run_setup(
         db.add(SystemSetting(key=key, value=value))
 
     db.commit()
+    _invalidate_settings_cache()
     db.refresh(user)
 
     expires = timedelta(minutes=_settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -108,6 +110,7 @@ def update_signup_settings(
         else:
             db.add(SystemSetting(key=key, value=value))
     db.commit()
+    _invalidate_settings_cache()
     return {"status": "updated"}
 
 
@@ -178,6 +181,7 @@ def update_openai_compat_config(
     if payload.enabled is not None:
         _upsert_setting("openai_compat_enabled", "true" if payload.enabled else "false", db)
         db.commit()
+        _invalidate_settings_cache()
     return {"status": "updated"}
 
 
@@ -192,4 +196,5 @@ def regenerate_openai_compat_key(
     _upsert_setting("openai_compat_api_key_hash", key_hash, db)
     _upsert_setting("openai_compat_key_created_at", created_at, db)
     db.commit()
+    _invalidate_settings_cache()
     return {"key": plaintext}

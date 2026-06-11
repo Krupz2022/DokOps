@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 logger = logging.getLogger(__name__)
 
 from app.core.db import engine
+from app.core.ttl_cache import TTLCache
 from app.models.integration import IntegrationSettings
 from app.services.integrations.base import build_auth_headers
 from app.services.integrations.prometheus import PrometheusService
@@ -23,10 +24,26 @@ _SERVICE_MAP = {
     "datadog": DatadogService,
 }
 
+_REGISTRY_KEY = "active_tool_registry"
+_registry_cache = TTLCache(ttl_seconds=30.0)
+
+
+def invalidate_registry_cache() -> None:
+    """Drop the cached integration registry. Call after any IntegrationSettings write."""
+    _registry_cache.invalidate(_REGISTRY_KEY)
+
 
 class IntegrationManager:
 
     def get_active_tool_registry(self) -> Dict[str, Any]:
+        cached = _registry_cache.get(_REGISTRY_KEY)
+        if cached is not None:
+            return cached
+        registry = self._build_active_tool_registry()
+        _registry_cache.set(_REGISTRY_KEY, registry)
+        return registry
+
+    def _build_active_tool_registry(self) -> Dict[str, Any]:
         """Query DB for active integrations and return merged TOOL_REGISTRY-compatible dict."""
         merged: Dict[str, Any] = {}
         try:

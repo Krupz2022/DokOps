@@ -213,9 +213,8 @@ def _build_kubeconfig_for_cluster(cluster_id: str) -> Optional[str]:
 
 class AIService:
     def _get_setting(self, key: str) -> str:
-        with Session(engine) as session:
-            setting = session.get(SystemSetting, key)
-            return setting.value if setting else None
+        from app.core.settings_cache import get_setting
+        return get_setting(key)
 
     def _get_client(self, config_override: Optional[Dict[str, str]] = None):
         def get_val(k):

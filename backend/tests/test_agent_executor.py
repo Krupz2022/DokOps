@@ -283,3 +283,62 @@ async def test_multi_cluster_runs_loop_per_cluster(engine):
                 await svc.run_agent_background(run.id, wf.id, db)
 
     assert cluster_ids_seen == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_catalog_built_once_per_run(engine):
+    """The tool catalog must be built at most once per cluster loop, not per event."""
+    from app.services import agent_executor_service as aes
+    from app.services import workflow_service as wf_svc
+    from app.models.workflow import Workflow, WorkflowRun
+    import asyncio
+
+    with Session(engine) as db:
+        wf = Workflow(
+            name="catalog-test",
+            workflow_type="agent",
+            agent_goal="inspect logs repeatedly",
+            agent_approved_tools=[
+                {"name": "get_pod_logs", "is_destructive": False, "pre_approved": False},
+            ],
+            agent_cluster_ids=[],
+            agent_minion_ids=[],
+            agent_max_retries=3,
+            agent_timeout_seconds=30,
+            agent_approval_timeout_seconds=10,
+            created_by="admin",
+        )
+        db.add(wf); db.commit(); db.refresh(wf)
+        run = WorkflowRun(workflow_id=wf.id, triggered_by="manual",
+                          trigger_input={}, status="pending", step_results=[])
+        db.add(run); db.commit(); db.refresh(run)
+        wf_svc._run_queues[run.id] = asyncio.Queue()
+        wf_id, run_id = wf.id, run.id
+
+    # Several tool events for the same approved tool.
+    events = [
+        {"type": "step", "tool_name": "get_pod_logs", "message": "logs 1"},
+        {"type": "step", "tool_name": "get_pod_logs", "message": "logs 2"},
+        {"type": "step", "tool_name": "get_pod_logs", "message": "logs 3"},
+        {"type": "result", "message": "done"},
+    ]
+
+    async def mock_loop(**kwargs):
+        for e in events:
+            yield e
+
+    build_calls = {"n": 0}
+    real_build = aes._build_agent_tool_catalog
+
+    def counting_build():
+        build_calls["n"] += 1
+        return real_build()
+
+    with patch("app.services.ai_service.ai_service.run_global_agentic_loop", side_effect=mock_loop):
+        with patch("app.services.agent_executor_service._post_final_report", new=AsyncMock()):
+            with patch("app.services.agent_executor_service._build_agent_tool_catalog", side_effect=counting_build):
+                with Session(engine) as db:
+                    await aes.run_agent_background(run_id, wf_id, db)
+
+    # One cluster loop, three tool events -> catalog built at most once.
+    assert build_calls["n"] <= 1

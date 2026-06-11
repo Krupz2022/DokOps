@@ -2,7 +2,8 @@ from typing import Any, List
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.core import security
@@ -21,7 +22,7 @@ class UserCreate(BaseModel):
 
 
 @router.get("/me", response_model=User)
-def read_user_me(
+async def read_user_me(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """
@@ -30,29 +31,29 @@ def read_user_me(
     return current_user
 
 @router.get("/", response_model=List[User])
-def read_users(
+async def read_users(
     skip: int = 0,
     limit: int = 100,
     current_user: User = Depends(deps.get_current_active_superuser),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
     """
     Retrieve users.
     """
-    users = db.exec(select(User).offset(skip).limit(limit)).all()
+    users = (await db.exec(select(User).offset(skip).limit(limit))).all()
     return users
 
 @router.post("/", response_model=User)
-def create_user(
+async def create_user(
     *,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     user_in: UserCreate,
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """
     Create new user. Only superusers can create new users.
     """
-    existing = db.exec(select(User).where(User.username == user_in.username)).first()
+    existing = (await db.exec(select(User).where(User.username == user_in.username))).first()
     if existing:
         raise HTTPException(
             status_code=400,
@@ -67,14 +68,14 @@ def create_user(
         is_active=True,
     )
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    await db.commit()
+    await db.refresh(new_user)
     return new_user
 
 @router.put("/{user_id}", response_model=User)
-def update_user(
+async def update_user(
     *,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     user_id: int,
     user_in: User,
     current_user: User = Depends(deps.get_current_active_superuser),
@@ -82,19 +83,19 @@ def update_user(
     """
     Update a user.
     """
-    user = db.get(User, user_id)
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=404,
             detail="The user with this id does not exist in the system",
         )
-    
+
     # Update fields
     user.username = user_in.username
     user.is_active = user_in.is_active
     user.is_superuser = user_in.is_superuser
     user.role = user_in.role
-    
+
     if user_in.hashed_password and user_in.hashed_password != user.hashed_password:
          # Basic check if it's a new password string (not already hashed)
          # In a real app we'd use a separate schema (UserUpdate)
@@ -102,8 +103,8 @@ def update_user(
              user.hashed_password = security.get_password_hash(user_in.hashed_password)
 
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 class RoleUpdate(BaseModel):
@@ -111,15 +112,15 @@ class RoleUpdate(BaseModel):
 
 
 @router.patch("/{user_id}/role", response_model=User)
-def update_user_role(
+async def update_user_role(
     *,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     user_id: int,
     payload: RoleUpdate,
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """Change a user's role. Superusers only."""
-    user = db.get(User, user_id)
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.id == current_user.id:
@@ -130,27 +131,27 @@ def update_user_role(
     user.role = payload.role
     user.is_superuser = payload.role == "admin"
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
 @router.delete("/{user_id}", response_model=User)
-def delete_user(
+async def delete_user(
     *,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     user_id: int,
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """
     Delete a user.
     """
-    user = db.get(User, user_id)
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=404,
             detail="The user with this id does not exist in the system",
         )
-    db.delete(user)
-    db.commit()
+    await db.delete(user)
+    await db.commit()
     return user

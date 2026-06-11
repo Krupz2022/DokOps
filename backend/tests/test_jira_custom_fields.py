@@ -781,6 +781,7 @@ async def test_search_jira_users_server_uses_username_param():
 # ---------------------------------------------------------------------------
 
 def test_get_jira_config_returns_empty_when_not_set():
+    import asyncio
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.api.v1.alerts import router as alerts_router
@@ -789,7 +790,7 @@ def test_get_jira_config_returns_empty_when_not_set():
     from app.models.user import User
 
     app = FastAPI()
-    create_db_and_tables()
+    asyncio.run(create_db_and_tables())
     mock_user = MagicMock(spec=User)
     mock_user.is_superuser = True
     app.include_router(alerts_router, prefix="/alerts")
@@ -803,6 +804,7 @@ def test_get_jira_config_returns_empty_when_not_set():
 
 
 def test_put_jira_config_saves_and_masks_token_on_get():
+    import asyncio
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.api.v1.alerts import router as alerts_router
@@ -811,7 +813,7 @@ def test_put_jira_config_saves_and_masks_token_on_get():
     from app.models.user import User
 
     app = FastAPI()
-    create_db_and_tables()
+    asyncio.run(create_db_and_tables())
     mock_user = MagicMock(spec=User)
     mock_user.is_superuser = True
     app.include_router(alerts_router, prefix="/alerts")
@@ -841,6 +843,7 @@ def test_put_jira_config_saves_and_masks_token_on_get():
 
 
 def test_put_jira_config_empty_token_preserves_existing():
+    import asyncio
     import json as json_lib
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -853,7 +856,7 @@ def test_put_jira_config_empty_token_preserves_existing():
     from app.core.db import engine
 
     app = FastAPI()
-    create_db_and_tables()
+    asyncio.run(create_db_and_tables())
     mock_user = MagicMock(spec=User)
     mock_user.is_superuser = True
     app.include_router(alerts_router, prefix="/alerts")

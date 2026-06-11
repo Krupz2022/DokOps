@@ -11,8 +11,9 @@ def _set_db(user_id: int, active: bool) -> None:
         from sqlmodel import Session, select
         from app.core.db import sync_engine
         from app.models.user import User
-        # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
-        # contexts and hot caches. See async-db-migration plan, Recipe R8.
+        # NOTE: deliberately synchronous against sync_engine. Cache hit rate is ~100% after
+        # warmup; a miss blocks the event loop for one short SQLite/PG round-trip, which we
+        # accept to keep these callable from sync, non-event-loop contexts too (Recipe R8).
         with Session(sync_engine) as db:
             user = db.exec(select(User).where(User.id == user_id)).first()
             if user:
@@ -28,8 +29,9 @@ def _read_db(user_id: int) -> bool:
         from sqlmodel import Session, select
         from app.core.db import sync_engine
         from app.models.user import User
-        # NOTE: intentionally synchronous against sync_engine — called from non-event-loop
-        # contexts and hot caches. See async-db-migration plan, Recipe R8.
+        # NOTE: deliberately synchronous against sync_engine. Cache hit rate is ~100% after
+        # warmup; a miss blocks the event loop for one short SQLite/PG round-trip, which we
+        # accept to keep these callable from sync, non-event-loop contexts too (Recipe R8).
         with Session(sync_engine) as db:
             user = db.exec(select(User).where(User.id == user_id)).first()
             return bool(user.god_mode_active) if user else False

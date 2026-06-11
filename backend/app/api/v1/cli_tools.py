@@ -1,10 +1,10 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 from datetime import datetime
 
-from app.api.deps import get_current_active_superuser, get_db, require_god_mode
+from app.api.deps import get_current_active_superuser, get_async_db, require_god_mode
 from app.models.user import User
 from app.models.audit import AuditLog
 from app.services.cli_tool_service import cli_tool_service
@@ -12,7 +12,7 @@ from app.services.cli_tool_service import cli_tool_service
 router = APIRouter()
 
 
-async def _write_audit(db: Session, actor: str, action: str, resource: str, result: str, mode: str, details: Optional[str] = None):
+async def _write_audit(db: AsyncSession, actor: str, action: str, resource: str, result: str, mode: str, details: Optional[str] = None):
     log = AuditLog(
         timestamp=datetime.utcnow(),
         actor=actor,
@@ -24,7 +24,7 @@ async def _write_audit(db: Session, actor: str, action: str, resource: str, resu
         details=details,
     )
     db.add(log)
-    db.commit()
+    await db.commit()
 
 
 @router.get("/")
@@ -36,7 +36,7 @@ async def detect_tools(current_user: User = Depends(get_current_active_superuser
 @router.post("/{tool_name}/install")
 async def install_tool(
     tool_name: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(require_god_mode),
 ):
     """Install a pre-defined tool. Requires God Mode."""
@@ -93,7 +93,7 @@ async def delete_custom_tool(
 @router.post("/custom/{tool_name}/install")
 async def install_custom_tool(
     tool_name: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(require_god_mode),
 ):
     """Run a custom tool's install command. Requires God Mode."""

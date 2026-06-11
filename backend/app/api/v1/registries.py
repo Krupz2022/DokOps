@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from app.api import deps
 from app.core.db import engine
 from app.core.encryption import decrypt, encrypt
+from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.models.registry import RegistryConnection
 from app.models.setting import SystemSetting
 from app.services.registry_service import registry_service
@@ -93,6 +94,7 @@ async def update_settings(body: RegistrySettings, _user=Depends(deps.get_current
         else:
             db.add(SystemSetting(key="registry_lookup_enabled", value=value))
         db.commit()
+        _invalidate_settings_cache()
     return RegistrySettings(enabled=body.enabled)
 
 

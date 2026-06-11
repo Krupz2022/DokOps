@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.api import deps
 from app.api.deps import get_current_active_superuser
+from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.models.alert_incident import AlertIncident
 from app.models.setting import SystemSetting
 from app.models.user import User
@@ -135,6 +136,7 @@ def update_policy(
         row.value = json.dumps(policy)
         db.add(row)
     db.commit()
+    _invalidate_settings_cache()
     return {"status": "saved"}
 
 
@@ -169,6 +171,7 @@ def update_webhook_config(
         row.value = json.dumps(filtered)
         db.add(row)
     db.commit()
+    _invalidate_settings_cache()
     return {"status": "saved"}
 
 
@@ -229,6 +232,7 @@ def save_jira_alert_config(
     else:
         db.add(SystemSetting(key="alert_jira_config", value=json.dumps(data)))
     db.commit()
+    _invalidate_settings_cache()
     return {"status": "saved"}
 
 

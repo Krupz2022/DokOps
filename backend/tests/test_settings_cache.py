@@ -51,3 +51,12 @@ def test_value_is_cached_until_invalidated(isolated_db):
     # After invalidation the fresh value is loaded.
     settings_cache.invalidate()
     assert settings_cache.get_setting("ai_model") == "gpt-5"
+
+
+def test_ai_service_get_setting_uses_cache(isolated_db):
+    from app.services.ai_service import ai_service
+    from app.core import settings_cache
+    _insert(isolated_db, "ai_provider", "AZURE")
+    assert ai_service._get_setting("ai_provider") == "AZURE"
+    # Delegation means the shared snapshot is now populated:
+    assert settings_cache._cache.get(settings_cache._ALL_KEY) is not None

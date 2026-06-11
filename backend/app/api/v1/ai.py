@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from app.api import deps
 from app.models.user import User
 from app.models.setting import SystemSetting
+from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.services.ai_service import ai_service
 from app.services.runbook_service import runbook_service
 from app.services.k8s_service import k8s_service
@@ -49,6 +50,7 @@ def save_ai_config(
             db.add(setting)
 
     db.commit()
+    _invalidate_settings_cache()
     return {"message": "Configuration saved"}
 
 @router.get("/config")

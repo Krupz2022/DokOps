@@ -38,8 +38,7 @@ async def push_token_usage(model: str, input_tokens: int, output_tokens: int) ->
 
 async def drain_token_queue() -> None:
     """Background coroutine: drain queue every 2 s and batch-insert into AITokenUsage."""
-    from sqlmodel import Session
-    from app.core.db import engine
+    from app.core.db import AsyncSessionLocal
     from app.models.analytics import AITokenUsage
 
     while True:
@@ -53,9 +52,9 @@ async def drain_token_queue() -> None:
         if not batch:
             continue
         try:
-            with Session(engine) as db:
+            async with AsyncSessionLocal() as db:
                 for rec in batch:
                     db.add(AITokenUsage(**rec))
-                db.commit()
+                await db.commit()
         except Exception as exc:
             _log.warning("drain_token_queue: DB write failed: %s", exc)

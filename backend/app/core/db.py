@@ -28,8 +28,43 @@ from app.models.analytics import AITokenUsage  # noqa: F401
 _log = _logging.getLogger(__name__)
 
 _db_url = settings.DATABASE_URL or settings.SQLITE_URL
-_connect_args = {"check_same_thread": False} if _db_url.startswith("sqlite") else {}
-engine = create_engine(_db_url, connect_args=_connect_args)
+
+
+def _engine_kwargs(url: str) -> dict:
+    """Build create_engine kwargs with pool hardening per backend."""
+    from sqlalchemy.pool import StaticPool
+
+    if url.startswith("sqlite"):
+        kw: dict = {
+            "connect_args": {"check_same_thread": False},
+            "pool_pre_ping": True,
+        }
+        if ":memory:" in url:
+            # Single shared connection so in-memory DB survives across threads.
+            kw["poolclass"] = StaticPool
+        return kw
+    return {
+        "connect_args": {},
+        "pool_pre_ping": True,
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_recycle": 1800,
+    }
+
+
+engine = create_engine(_db_url, **_engine_kwargs(_db_url))
+
+
+# Enable WAL on SQLite for better concurrent read/write behaviour in dev.
+if _db_url.startswith("sqlite"):
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_wal(dbapi_conn, _rec):  # pragma: no cover - driver callback
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
 
 
 def create_db_and_tables():

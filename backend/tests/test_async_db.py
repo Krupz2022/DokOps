@@ -1,5 +1,8 @@
 import pytest
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel import SQLModel, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db import _to_async_url, AsyncSessionLocal, async_engine
 from app.models.user import User
 from app.core import security
@@ -16,10 +19,30 @@ def test_to_async_url_postgres():
 
 @pytest.mark.asyncio
 async def test_async_session_roundtrip():
-    async with async_engine.begin() as conn:
+    # Use a fresh in-memory engine so this test is fully isolated and idempotent.
+    test_engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        poolclass=StaticPool,
+        pool_pre_ping=True,
+    )
+    TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
-    async with AsyncSessionLocal() as db:
+    async with TestSessionLocal() as db:
         db.add(User(username="async_rt", hashed_password=security.get_password_hash("x")))
         await db.commit()
         found = (await db.exec(select(User).where(User.username == "async_rt"))).first()
         assert found is not None and found.username == "async_rt"
+
+    await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_async_db_yields_session():
+    from app.api.deps import get_async_db
+    gen = get_async_db()
+    db = await gen.__anext__()
+    from sqlmodel.ext.asyncio.session import AsyncSession
+    assert isinstance(db, AsyncSession)
+    await gen.aclose()

@@ -52,7 +52,7 @@ from app.models.audit import AuditLog
 from app.api.api import api_router
 from app.api.openai_compat import router as openai_compat_router
 
-from app.core.db import create_db_and_tables, init_db
+from app.core.db import create_db_and_tables, init_db, async_engine, _db_url as _db_url_main
 
 
 def _assert_secret_changed(secret: str) -> None:
@@ -68,12 +68,11 @@ if "pytest" not in _sys.modules and os.getenv("PYTEST_CURRENT_TEST") is None:
     _assert_secret_changed(settings.AUTH_SECRET_KEY)
 
 
-def _run_patch_migrations() -> None:
+async def _run_patch_migrations() -> None:
     """Idempotent ALTER TABLE statements for new columns added after initial schema creation."""
     from sqlalchemy import text
-    from app.core.db import engine, _db_url
 
-    is_postgres = not _db_url.startswith("sqlite")
+    is_postgres = not _db_url_main.startswith("sqlite")
 
     def _col(table: str, col: str, typedef: str) -> str:
         if is_postgres:
@@ -88,28 +87,28 @@ def _run_patch_migrations() -> None:
         _col("patchschedule", "promote_from_previous", "INTEGER NOT NULL DEFAULT 0"),
         _col("minion", "last_patch_scan", "TIMESTAMP"),
     ]
-    with engine.connect() as conn:
+    async with async_engine.connect() as conn:
         for sql in migrations:
             try:
-                conn.execute(text(sql))
-                conn.commit()
+                await conn.execute(text(sql))
+                await conn.commit()
             except Exception:
-                conn.rollback()  # PostgreSQL: reset aborted transaction before next statement
+                await conn.rollback()
 
 
 _scheduler = AsyncIOScheduler()
 scheduler = _scheduler  # public alias used by patching routes
 
 
-def _schedule_cron_workflows() -> None:
-    from sqlmodel import Session, select
-    from app.core.db import engine
+async def _schedule_cron_workflows() -> None:
+    from sqlmodel import select
+    from app.core.db import AsyncSessionLocal
     from app.models.workflow import Workflow
 
-    with Session(engine) as db:
-        workflows = db.exec(
+    async with AsyncSessionLocal() as db:
+        workflows = (await db.exec(
             select(Workflow).where(Workflow.trigger_type.in_(["cron", "all"]))
-        ).all()
+        )).all()
 
     for wf in workflows:
         if not wf.cron_schedule:
@@ -120,11 +119,12 @@ def _schedule_cron_workflows() -> None:
         minute, hour, day, month, day_of_week = parts
 
         async def cron_job(wf_id: int = wf.id, wf_type: str = wf.workflow_type) -> None:
+            # TODO(Phase 4): switch to AsyncSessionLocal once workflow_service.create_run is async
             from sqlmodel import Session
-            from app.core.db import engine
+            from app.core.db import sync_engine
             from app.services import workflow_service as wf_svc
             from app.services import agent_executor_service as agent_svc
-            with Session(engine) as db:
+            with Session(sync_engine) as db:
                 run = wf_svc.create_run(wf_id, {}, "cron", db)
             if wf_type == "agent":
                 await agent_svc.run_agent_background(run.id, wf_id)
@@ -141,9 +141,9 @@ def _schedule_cron_workflows() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_db_and_tables()
-    _run_patch_migrations()   # ← run AFTER create_db_and_tables; IF NOT EXISTS makes this safe on fresh DBs too
-    init_db()
+    await create_db_and_tables()
+    await _run_patch_migrations()   # ← run AFTER create_db_and_tables; IF NOT EXISTS makes this safe on fresh DBs too
+    await init_db()
 
     # Add backend/bin/ to PATH so installed CLI tools are discoverable
     import os
@@ -172,7 +172,7 @@ async def lifespan(app: FastAPI):
     from app.core.token_context import drain_token_queue
     _token_drain_task = asyncio.create_task(drain_token_queue())
 
-    _schedule_cron_workflows()
+    await _schedule_cron_workflows()
     _scheduler.start()
 
     from app.services.patch_service import load_schedules as _load_patch_schedules

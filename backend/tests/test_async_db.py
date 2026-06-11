@@ -17,6 +17,17 @@ def test_to_async_url_postgres():
     assert _to_async_url("postgresql+psycopg2://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
 
 
+def test_to_async_url_pysqlite_and_short_postgres():
+    assert _to_async_url("sqlite+pysqlite:///./dev.db") == "sqlite+aiosqlite:///./dev.db"
+    assert _to_async_url("postgres://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
+
+
+def test_async_engine_kwargs_postgres():
+    from app.core.db import _async_engine_kwargs
+    kw = _async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
+    assert kw["pool_size"] == 10 and kw["max_overflow"] == 20 and kw["pool_recycle"] == 1800 and kw["pool_pre_ping"] is True
+
+
 @pytest.mark.asyncio
 async def test_async_session_roundtrip():
     # Use a fresh in-memory engine so this test is fully isolated and idempotent.
@@ -38,6 +49,7 @@ async def test_async_session_roundtrip():
     await test_engine.dispose()
 
 
+# Intentionally a live-session smoke test against the app's configured DB (type check only, no writes).
 @pytest.mark.asyncio
 async def test_get_async_db_yields_session():
     from app.api.deps import get_async_db

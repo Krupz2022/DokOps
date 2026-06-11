@@ -58,12 +58,16 @@ def _to_async_url(url: str) -> str:
     """Rewrite a sync DB URL to its async-driver equivalent."""
     if url.startswith("sqlite+aiosqlite") or "+asyncpg" in url:
         return url
+    if url.startswith("sqlite+pysqlite"):
+        return url.replace("sqlite+pysqlite://", "sqlite+aiosqlite://", 1)
     if url.startswith("sqlite"):
         return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     if url.startswith("postgresql+psycopg2"):
         return url.replace("postgresql+psycopg2", "postgresql+asyncpg", 1)
     if url.startswith("postgresql"):
         return url.replace("postgresql", "postgresql+asyncpg", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
     return url
 
 
@@ -83,7 +87,8 @@ sync_engine = create_engine(_db_url, **_engine_kwargs(_db_url))
 engine = sync_engine  # back-compat alias; removed in Phase 7
 
 # Async engine — the runtime engine for all event-loop code paths.
-async_engine = create_async_engine(_to_async_url(_db_url), **_async_engine_kwargs(_to_async_url(_db_url)))
+_async_db_url = _to_async_url(_db_url)
+async_engine = create_async_engine(_async_db_url, **_async_engine_kwargs(_async_db_url))
 AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 

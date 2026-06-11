@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict
 from fastapi import APIRouter, Depends
 from app.api import deps
@@ -18,8 +19,10 @@ async def get_dashboard_stats(
     Get cluster dashboard statistics.
     """
     try:
-        namespaces = await k8s_service.list_namespaces(context=cluster_context)
-        nodes = await k8s_service.get_nodes(context=cluster_context)
+        namespaces, nodes = await asyncio.gather(
+            k8s_service.list_namespaces(context=cluster_context),
+            k8s_service.get_nodes(context=cluster_context),
+        )
         return {
             "namespaces_count": len(namespaces),
             "nodes_count": len(nodes),

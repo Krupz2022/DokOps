@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 import asyncio
 
 from app.api import deps
@@ -140,13 +141,13 @@ async def build_topology_snapshot(context: Optional[str] = None) -> TopologySnap
     return TopologySnapshot(nodes=nodes, edges=edges, version=int(time.time()))
 
 
-def _validate_token(token: str, db: Session) -> User:
+async def _validate_token(token: str, db: AsyncSession) -> User:
     try:
         payload = jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = db.query(User).filter(User.username == username).first()
+    user = (await db.exec(select(User).where(User.username == username))).first()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Inactive or unknown user")
     return user
@@ -158,10 +159,10 @@ def _validate_token(token: str, db: Session) -> User:
 async def topology_stream(
     token: str = Query(...),
     cluster_context: Optional[str] = Query(None),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
     """SSE stream of TopologySnapshot, refreshed every 10 seconds."""
-    _validate_token(token, db)
+    await _validate_token(token, db)
 
     async def event_generator():
         while True:

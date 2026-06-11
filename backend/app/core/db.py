@@ -111,11 +111,6 @@ async def create_db_and_tables() -> None:
         await conn.run_sync(SQLModel.metadata.create_all)
 
 
-def create_db_and_tables_sync() -> None:
-    """Synchronous shim retained for tests that cannot run in an event loop (e.g. TestClient fixtures)."""
-    SQLModel.metadata.create_all(engine)
-
-
 async def seed_from_env(db: AsyncSession, s) -> None:
     """Seed DB from DOKOPS_* env vars. Insert-if-missing unless DOKOPS_FORCE_SEED=true."""
 

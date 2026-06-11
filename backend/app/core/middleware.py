@@ -1,8 +1,7 @@
 import time
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from sqlmodel import Session
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.audit import AuditLog
 from app.core import security
 from app.core.config import settings
@@ -81,9 +80,9 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 details=f"Duration: {process_time:.4f}s",
             )
             try:
-                with Session(engine) as session:
+                async with AsyncSessionLocal() as session:
                     session.add(audit_entry)
-                    session.commit()
+                    await session.commit()
             except Exception as e:
                 print(f"Failed to write audit log: {e}")
 

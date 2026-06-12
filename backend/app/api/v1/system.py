@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.models.user import User
@@ -17,21 +18,21 @@ router = APIRouter()
 
 
 @router.get("/status")
-def get_system_status(
-    db: Session = Depends(deps.get_db),
+async def get_system_status(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: Optional[User] = Depends(deps.get_optional_current_user),
 ) -> Any:
     from app.core.god_mode import is_god_mode_active
 
-    any_user = db.exec(select(User).limit(1)).first()
+    any_user = (await db.exec(select(User).limit(1))).first()
     setup_complete = any_user is not None
 
-    signup_enabled_row = db.exec(
+    signup_enabled_row = (await db.exec(
         select(SystemSetting).where(SystemSetting.key == "signup_enabled")
-    ).first()
-    signup_default_role_row = db.exec(
+    )).first()
+    signup_default_role_row = (await db.exec(
         select(SystemSetting).where(SystemSetting.key == "signup_default_role")
-    ).first()
+    )).first()
 
     return {
         "god_mode_active": is_god_mode_active(current_user.id) if current_user else False,
@@ -49,11 +50,11 @@ class SetupRequest(BaseModel):
 
 
 @router.post("/setup")
-def first_run_setup(
+async def first_run_setup(
     payload: SetupRequest,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    any_user = db.exec(select(User).limit(1)).first()
+    any_user = (await db.exec(select(User).limit(1))).first()
     if any_user is not None:
         raise HTTPException(status_code=403, detail="Setup already complete")
 
@@ -69,9 +70,9 @@ def first_run_setup(
     for key, value in [("signup_enabled", "true"), ("signup_default_role", "user")]:
         db.add(SystemSetting(key=key, value=value))
 
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
-    db.refresh(user)
+    await db.refresh(user)
 
     expires = timedelta(minutes=_settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     token = _security.create_access_token(user.username, expires_delta=expires)
@@ -90,9 +91,9 @@ class SignupSettingsRequest(BaseModel):
 
 
 @router.put("/settings")
-def update_signup_settings(
+async def update_signup_settings(
     payload: SignupSettingsRequest,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     if payload.signup_default_role not in ("user", "admin"):
@@ -103,13 +104,13 @@ def update_signup_settings(
         ("signup_default_role", payload.signup_default_role),
     ]
     for key, value in updates:
-        row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+        row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
         if row:
             row.value = value
             db.add(row)
         else:
             db.add(SystemSetting(key=key, value=value))
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
     return {"status": "updated"}
 
@@ -139,13 +140,13 @@ def set_system_mode(
 
 # ── OpenAI-Compatible API Config ───────────────────────────────────────────────
 
-def _get_compat_setting(key: str, db: Session) -> Optional[str]:
-    row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+async def _get_compat_setting(key: str, db: AsyncSession) -> Optional[str]:
+    row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
     return row.value if row else None
 
 
-def _upsert_setting(key: str, value: str, db: Session) -> None:
-    row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+async def _upsert_setting(key: str, value: str, db: AsyncSession) -> None:
+    row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
     if row:
         row.value = value
         db.add(row)
@@ -154,13 +155,13 @@ def _upsert_setting(key: str, value: str, db: Session) -> None:
 
 
 @router.get("/openai-compat")
-def get_openai_compat_config(
+async def get_openai_compat_config(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
-    enabled_val = _get_compat_setting("openai_compat_enabled", db)
-    has_key = _get_compat_setting("openai_compat_api_key_hash", db) is not None
-    created_at = _get_compat_setting("openai_compat_key_created_at", db)
+    enabled_val = await _get_compat_setting("openai_compat_enabled", db)
+    has_key = await _get_compat_setting("openai_compat_api_key_hash", db) is not None
+    created_at = await _get_compat_setting("openai_compat_key_created_at", db)
     return {
         "enabled": enabled_val == "true",
         "has_key": has_key,
@@ -173,28 +174,28 @@ class OpenAICompatPatch(BaseModel):
 
 
 @router.patch("/openai-compat")
-def update_openai_compat_config(
+async def update_openai_compat_config(
     payload: OpenAICompatPatch,
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
     if payload.enabled is not None:
-        _upsert_setting("openai_compat_enabled", "true" if payload.enabled else "false", db)
-        db.commit()
+        await _upsert_setting("openai_compat_enabled", "true" if payload.enabled else "false", db)
+        await db.commit()
         _invalidate_settings_cache()
     return {"status": "updated"}
 
 
 @router.post("/openai-compat/regenerate-key")
-def regenerate_openai_compat_key(
+async def regenerate_openai_compat_key(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
     plaintext = "sk-dokops-" + secrets.token_hex(32)
     key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
     created_at = datetime.now(timezone.utc).isoformat()
-    _upsert_setting("openai_compat_api_key_hash", key_hash, db)
-    _upsert_setting("openai_compat_key_created_at", created_at, db)
-    db.commit()
+    await _upsert_setting("openai_compat_api_key_hash", key_hash, db)
+    await _upsert_setting("openai_compat_key_created_at", created_at, db)
+    await db.commit()
     _invalidate_settings_cache()
     return {"key": plaintext}

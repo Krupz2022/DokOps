@@ -76,21 +76,31 @@ def test_connection_manager_disconnects():
 
 
 def test_handle_done_resolves_future():
+    from unittest.mock import patch, AsyncMock, MagicMock
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
     from app.services.minion_service import MinionConnectionManager
+
     manager = MinionConnectionManager()
-    loop = asyncio.new_event_loop()
+
+    # Use a mock session factory so handle_done doesn't touch a real DB
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.get = AsyncMock(return_value=None)
+    mock_factory = MagicMock(return_value=mock_session)
 
     async def run():
-        future = loop.create_future()
+        future = asyncio.get_event_loop().create_future()
         manager._pending_jobs["job-1"] = future
         manager._job_chunks["job-1"] = ["line1\n", "line2\n"]
-        manager.handle_done("job-1", exit_code=0)
+        with patch("app.services.minion_service.AsyncSessionLocal", mock_factory):
+            await manager.handle_done("job-1", exit_code=0)
         result = await future
         assert result["exit_code"] == 0
         assert result["stdout"] == "line1\nline2\n"
 
-    loop.run_until_complete(run())
-    loop.close()
+    asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------

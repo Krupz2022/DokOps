@@ -281,7 +281,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
 
         # Verify token: must match the global auto-accept key hash or the minion's own stored hash
         token_valid = False
-        key_hash = get_auto_accept_key_hash()
+        key_hash = await get_auto_accept_key_hash()
         if key_hash and verify_token(token, key_hash):
             token_valid = True
         elif m and m.token_hash and verify_token(token, m.token_hash):
@@ -356,7 +356,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 manager.handle_chunk(data["job_id"], data.get("data", ""))
 
             elif msg_type == "done":
-                manager.handle_done(data["job_id"], data.get("exit_code", -1))
+                await manager.handle_done(data["job_id"], data.get("exit_code", -1))
 
             elif msg_type == "patches":
                 from app.services.patch_service import ingest_scan

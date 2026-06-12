@@ -12,9 +12,9 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import WebSocket
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.minion import Minion, MinionJob
 
 _log = logging.getLogger(__name__)
@@ -95,18 +95,18 @@ class MinionConnectionManager:
         if job_id in self._job_chunks:
             self._job_chunks[job_id].append(data)
 
-    def handle_done(self, job_id: str, exit_code: int) -> None:
+    async def handle_done(self, job_id: str, exit_code: int) -> None:
         """Persist exit code to DB and resolve the pending future (if any)."""
         stdout = "".join(self._job_chunks.pop(job_id, []))
         # DB write happens regardless of whether the HTTP caller is still alive
-        with Session(engine) as db:
-            job = db.get(MinionJob, job_id)
+        async with AsyncSessionLocal() as db:
+            job = await db.get(MinionJob, job_id)
             if job:
                 job.status = "done" if exit_code == 0 else "failed"
                 job.exit_code = exit_code
                 job.completed_at = datetime.utcnow()
                 db.add(job)
-                db.commit()
+                await db.commit()
         # Resolve future only if caller is still waiting
         if job_id in self._pending_jobs:
             self._pending_jobs.pop(job_id).set_result({"stdout": stdout, "exit_code": exit_code})
@@ -152,7 +152,7 @@ class MinionConnectionManager:
         self._pending_jobs[job_id] = future
         self._job_chunks[job_id] = []
 
-        with Session(engine) as db:
+        async with AsyncSessionLocal() as db:
             job = MinionJob(
                 id=job_id,
                 minion_id=minion_id,
@@ -161,7 +161,7 @@ class MinionConnectionManager:
                 status="running",
             )
             db.add(job)
-            db.commit()
+            await db.commit()
 
         try:
             await ws.send_json(
@@ -171,14 +171,14 @@ class MinionConnectionManager:
         except asyncio.TimeoutError:
             self._pending_jobs.pop(job_id, None)
             self._job_chunks.pop(job_id, None)
-            with Session(engine) as db:
-                job = db.get(MinionJob, job_id)
+            async with AsyncSessionLocal() as db:
+                job = await db.get(MinionJob, job_id)
                 if job:
                     job.status = "failed"
                     job.stderr = "timeout"
                     job.completed_at = datetime.utcnow()
                     db.add(job)
-                    db.commit()
+                    await db.commit()
             raise
 
         # handle_done already persisted status/exit_code — no DB write needed here
@@ -211,15 +211,15 @@ class MinionConnectionManager:
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def get_auto_accept_key_hash() -> Optional[str]:
+async def get_auto_accept_key_hash() -> Optional[str]:
     """Return the stored SHA-256 hash of the minion auto-accept key, or None."""
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         from app.models.setting import SystemSetting  # local import avoids circular deps
-        row = db.exec(
+        row = (await db.exec(
             select(SystemSetting).where(
                 SystemSetting.key == "minion_auto_accept_key"
             )
-        ).first()
+        )).first()
         return row.value if row else None
 
 
@@ -264,18 +264,18 @@ async def mark_offline_loop() -> None:
     while True:
         await asyncio.sleep(30)
         threshold = datetime.utcnow() - timedelta(seconds=90)
-        with Session(engine) as db:
-            stale = db.exec(
+        async with AsyncSessionLocal() as db:
+            stale = (await db.exec(
                 select(Minion).where(
                     Minion.status == "active",
                     Minion.last_seen < threshold,
                 )
-            ).all()
+            )).all()
             for m in stale:
                 m.status = "offline"
                 db.add(m)
             if stale:
-                db.commit()
+                await db.commit()
 
 
 # ---------------------------------------------------------------------------

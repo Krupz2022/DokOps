@@ -246,18 +246,24 @@ def test_fernet_logs_warning_without_encryption_key(caplog):
         "Expected a WARNING mentioning ENCRYPTION_KEY"
 
 
-def test_refresh_token_is_encrypted_in_db():
+@pytest.mark.asyncio
+async def test_refresh_token_is_encrypted_in_db():
     """provider_refresh_token must be stored encrypted, not plaintext."""
-    from sqlmodel import Session, create_engine, SQLModel
-    from app.models.user import User
+    from sqlmodel import SQLModel
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession
     from app.core.encryption import decrypt
     from app.services.sso_service import upsert_sso_user
 
-    engine = create_engine("sqlite:///:memory:")
-    SQLModel.metadata.create_all(engine)
+    _async_engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}
+    )
+    async with _async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
-    with Session(engine) as db:
-        user = upsert_sso_user(
+    async with _AsyncSessionLocal() as db:
+        user = await upsert_sso_user(
             db=db,
             provider="entra",
             external_id="ext-001",
@@ -268,21 +274,30 @@ def test_refresh_token_is_encrypted_in_db():
             auto_provision=True,
         )
 
+    await _async_engine.dispose()
+
     assert user.provider_refresh_token != "plaintext-refresh-token-abc123", \
         "Refresh token must be stored encrypted"
     assert decrypt(user.provider_refresh_token) == "plaintext-refresh-token-abc123"
 
 
-def test_refresh_token_none_is_stored_as_none():
+@pytest.mark.asyncio
+async def test_refresh_token_none_is_stored_as_none():
     """upsert_sso_user with refresh_token=None must store None."""
-    from sqlmodel import Session, create_engine, SQLModel
+    from sqlmodel import SQLModel
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession
     from app.services.sso_service import upsert_sso_user
 
-    engine = create_engine("sqlite:///:memory:")
-    SQLModel.metadata.create_all(engine)
+    _async_engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}
+    )
+    async with _async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
-    with Session(engine) as db:
-        user = upsert_sso_user(
+    async with _AsyncSessionLocal() as db:
+        user = await upsert_sso_user(
             db=db,
             provider="google",
             external_id="ext-002",
@@ -292,5 +307,7 @@ def test_refresh_token_none_is_stored_as_none():
             refresh_token=None,
             auto_provision=True,
         )
+
+    await _async_engine.dispose()
 
     assert user.provider_refresh_token is None

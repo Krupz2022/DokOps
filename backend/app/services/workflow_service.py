@@ -109,7 +109,9 @@ async def run_workflow_background(
         if db is not None:
             yield db
         else:
-            with Session(engine) as s:
+            # TODO(Phase 4c): replace with AsyncSessionLocal once run_workflow_background
+            # is fully converted to async session ops throughout its body.
+            with Session(engine) as s:  # noqa: Phase-3d-escape
                 yield s
 
     with _session() as _db:

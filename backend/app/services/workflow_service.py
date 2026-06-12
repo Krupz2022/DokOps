@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.workflow import Workflow, WorkflowRun
 from app.services.ai_service import ai_service
@@ -65,11 +66,11 @@ def _update_step_result(run: WorkflowRun, step_id: str, db: Session, **kwargs: A
     db.commit()
 
 
-def create_run(
+async def create_run(
     workflow_id: int,
     trigger_input: Dict[str, Any],
     triggered_by: str,
-    db: Session,
+    db: AsyncSession,
     user_id: Optional[int] = None,
 ) -> WorkflowRun:
     """Create a WorkflowRun record and register its event queue."""
@@ -82,8 +83,8 @@ def create_run(
         step_results=[],
     )
     db.add(run)
-    db.commit()
-    db.refresh(run)
+    await db.commit()
+    await db.refresh(run)
     _run_queues[run.id] = asyncio.Queue()
     return run
 
@@ -222,14 +223,19 @@ async def trigger_alert_workflow(
     alert_data: Dict[str, Any],
     incident_id: int,
     jira_url: Optional[str],
-    db: Session,
 ) -> int:
-    """Create and kick off a WorkflowRun triggered by an alert. Returns run_id."""
+    """Create and kick off a WorkflowRun triggered by an alert. Returns run_id.
+
+    Opens its own AsyncSession for create_run so the caller (alert_handler_service,
+    which manages a sync Session) does not need to provide one.
+    """
+    from app.core.db import AsyncSessionLocal
     trigger_input = {
         "alert": alert_data,
         "incident_id": incident_id,
         "jira_url": jira_url,
     }
-    run = create_run(workflow_id, trigger_input, triggered_by="alert", db=db)
+    async with AsyncSessionLocal() as db:
+        run = await create_run(workflow_id, trigger_input, triggered_by="alert", db=db)
     asyncio.create_task(run_workflow_background(run.id, workflow_id, trigger_input))
     return run.id

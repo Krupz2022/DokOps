@@ -119,13 +119,11 @@ async def _schedule_cron_workflows() -> None:
         minute, hour, day, month, day_of_week = parts
 
         async def cron_job(wf_id: int = wf.id, wf_type: str = wf.workflow_type) -> None:
-            # TODO(Phase 4): switch to AsyncSessionLocal once workflow_service.create_run is async
-            from sqlmodel import Session
-            from app.core.db import sync_engine
+            from app.core.db import AsyncSessionLocal
             from app.services import workflow_service as wf_svc
             from app.services import agent_executor_service as agent_svc
-            with Session(sync_engine) as db:
-                run = wf_svc.create_run(wf_id, {}, "cron", db)
+            async with AsyncSessionLocal() as db:
+                run = await wf_svc.create_run(wf_id, {}, "cron", db)
             if wf_type == "agent":
                 await agent_svc.run_agent_background(run.id, wf_id)
             else:

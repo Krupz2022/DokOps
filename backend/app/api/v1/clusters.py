@@ -7,10 +7,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.core.encryption import decrypt
 from app.models.cluster import CloudCredential, ClusterConnection
 from app.models.user import User
@@ -87,9 +88,9 @@ class ImportEksRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[ClusterOut])
-def list_clusters(current_user: User = Depends(deps.get_current_user)) -> List[ClusterOut]:
-    with Session(engine) as db:
-        rows = db.exec(select(ClusterConnection)).all()
+async def list_clusters(current_user: User = Depends(deps.get_current_user)) -> List[ClusterOut]:
+    async with AsyncSessionLocal() as db:
+        rows = (await db.exec(select(ClusterConnection))).all()
     result = [ClusterOut(**row.model_dump()) for row in rows]
 
     # Surface local kubeconfig contexts: prefer clients dict, fall back to default_context
@@ -167,8 +168,8 @@ async def verify_cluster(
     cluster_id: str,
     current_user: User = Depends(deps.get_current_user),
 ) -> ClusterOut:
-    with Session(engine) as db:
-        conn = db.get(ClusterConnection, cluster_id)
+    async with AsyncSessionLocal() as db:
+        conn = await db.get(ClusterConnection, cluster_id)
         if not conn:
             raise HTTPException(status_code=404, detail="Cluster not found")
         api_server = conn.api_server
@@ -185,30 +186,29 @@ async def verify_cluster(
             client_cert_data=client_cert_data,
             client_key_data=client_key_data,
         )
-        with Session(engine) as db:
-            conn = db.get(ClusterConnection, cluster_id)
+        async with AsyncSessionLocal() as db:
+            conn = await db.get(ClusterConnection, cluster_id)
             conn.last_verified = datetime.now(timezone.utc)
             db.add(conn)
-            db.commit()
-            db.refresh(conn)
+            await db.commit()
+            await db.refresh(conn)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return ClusterOut(**conn.model_dump())
 
 
-def _delete_cluster_credentials(cluster_id: str, db: Session) -> None:
+async def _delete_cluster_credentials(cluster_id: str, db: AsyncSession) -> None:
     """Remove all vault credentials scoped to this cluster before deletion."""
-    from sqlmodel import select
     from app.models.service_diag import ServiceCredential
-    creds = db.exec(
+    creds = (await db.exec(
         select(ServiceCredential).where(
             ServiceCredential.scope_type == "cluster",
             ServiceCredential.scope_id == cluster_id,
         )
-    ).all()
+    )).all()
     for cred in creds:
-        db.delete(cred)
-    db.commit()
+        await db.delete(cred)
+    await db.commit()
 
 
 @router.delete("/{cluster_id}")
@@ -216,14 +216,14 @@ async def delete_cluster(
     cluster_id: str,
     current_user: User = Depends(deps.require_god_mode),
 ) -> Dict[str, str]:
-    with Session(engine) as db:
-        conn = db.get(ClusterConnection, cluster_id)
+    async with AsyncSessionLocal() as db:
+        conn = await db.get(ClusterConnection, cluster_id)
         if not conn:
             raise HTTPException(status_code=404, detail="Cluster not found")
         cluster_name = conn.name
-        _delete_cluster_credentials(cluster_id, db)
-        db.delete(conn)
-        db.commit()
+        await _delete_cluster_credentials(cluster_id, db)
+        await db.delete(conn)
+        await db.commit()
     await k8s_service.remove_connection(cluster_name)
     return {"message": f"Cluster '{cluster_name}' removed"}
 
@@ -264,8 +264,8 @@ async def discover_clusters(
     credential_id: str,
     current_user: User = Depends(deps.get_current_user),
 ) -> List[Dict[str, Any]]:
-    with Session(engine) as db:
-        cred = db.get(CloudCredential, credential_id)
+    async with AsyncSessionLocal() as db:
+        cred = await db.get(CloudCredential, credential_id)
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
     try:

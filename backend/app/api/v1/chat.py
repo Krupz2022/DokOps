@@ -238,7 +238,7 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
     """
     try:
         from app.services.rag_service import rag_service
-        if not rag_service.is_enabled():
+        if not await rag_service.is_enabled():
             return
         async with AsyncSessionLocal() as db:
             conv = await db.get(ChatConversation, conversation_id)
@@ -267,7 +267,7 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
 
         full_text = "\n\n".join(parts) if parts else result_text
 
-        rag_service.ingest_incident(
+        await rag_service.ingest_incident(
             conversation_id=conversation_id,
             conversation_title=title,
             text=full_text,

@@ -24,8 +24,9 @@ from fastapi import BackgroundTasks
 _ingest_jobs: dict = {}
 
 
-def _run_ingest_job(job_id: str, fn, *args, **kwargs) -> None:
+async def _run_ingest_job(job_id: str, fn, *args, **kwargs) -> None:
     """Execute fn(*args, **kwargs) and update the job store with the result."""
+    import inspect
     _ingest_jobs[job_id]["status"] = "processing"
     # Trim oldest entries when store exceeds 500 to prevent unbounded growth
     if len(_ingest_jobs) > 500:
@@ -33,7 +34,10 @@ def _run_ingest_job(job_id: str, fn, *args, **kwargs) -> None:
         if oldest != job_id:
             _ingest_jobs.pop(oldest, None)
     try:
-        doc = fn(*args, **kwargs)
+        if inspect.iscoroutinefunction(fn):
+            doc = await fn(*args, **kwargs)
+        else:
+            doc = fn(*args, **kwargs)
         _ingest_jobs[job_id].update({
             "status": "indexed",
             "doc_id": doc.id,
@@ -60,10 +64,10 @@ class ConfluenceConfigIn(BaseModel):
 
 
 @router.get("/documents")
-def list_documents(
+async def list_documents(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    docs = rag_service.list_documents()
+    docs = await rag_service.list_documents()
     return [
         {
             "id": d.id,
@@ -79,11 +83,11 @@ def list_documents(
 
 
 @router.delete("/documents/{doc_id}")
-def delete_document(
+async def delete_document(
     doc_id: str,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    ok = rag_service.delete_document(doc_id)
+    ok = await rag_service.delete_document(doc_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "deleted"}
@@ -133,7 +137,7 @@ def get_ingest_job(
 
 
 @router.post("/ingest/runbooks")
-def ingest_runbooks(
+async def ingest_runbooks(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     from app.services.runbook_service import runbook_service  # type: ignore
@@ -150,7 +154,7 @@ def ingest_runbooks(
             text_parts.append(f"Step: {step_name} (tool: {tool})")
         text = "\n".join(text_parts)
         try:
-            doc = rag_service.ingest_text(
+            doc = await rag_service.ingest_text(
                 text=text,
                 title=name,
                 source_type="runbook",
@@ -166,11 +170,11 @@ def ingest_runbooks(
 
 
 @router.post("/test-connection")
-def test_connection(
+async def test_connection(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     try:
-        rag_service.test_connection()
+        await rag_service.test_connection()
         return {"status": "connected"}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -271,7 +275,7 @@ def test_confluence_connection(
 
 
 @router.post("/ingest/confluence/space")
-def ingest_confluence_space(
+async def ingest_confluence_space(
     space_key: str = Body(..., embed=True),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
@@ -284,7 +288,7 @@ def ingest_confluence_space(
             if not text.strip():
                 continue
             try:
-                doc = rag_service.ingest_text(
+                doc = await rag_service.ingest_text(
                     text=text,
                     title=title,
                     source_type="confluence",
@@ -304,7 +308,7 @@ def ingest_confluence_space(
 
 
 @router.post("/ingest/confluence/page")
-def ingest_confluence_page(
+async def ingest_confluence_page(
     url: str = Body(..., embed=True),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
@@ -323,7 +327,7 @@ def ingest_confluence_page(
     if not text.strip():
         raise HTTPException(status_code=422, detail="Page has no text content after parsing")
     try:
-        doc = rag_service.ingest_text(
+        doc = await rag_service.ingest_text(
             text=text,
             title=title,
             source_type="confluence",

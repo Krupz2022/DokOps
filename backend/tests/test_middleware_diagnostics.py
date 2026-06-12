@@ -198,20 +198,64 @@ def test_docker_overrides_native(minion_id):
     assert redis_svcs[0].port == 6380
 
 
-def test_persist_discovery_replaces_non_overridden(engine, minion_id):
-    with Session(engine) as db:
-        db.add(DiscoveredService(minion_id=minion_id, service_type="redis", install_type="native", port=6379))
-        db.commit()
-        persist_discovery(minion_id, [], db)
-        remaining = db.exec(select(DiscoveredService).where(DiscoveredService.minion_id == minion_id)).all()
+@pytest.mark.asyncio
+async def test_persist_discovery_replaces_non_overridden(engine, minion_id):
+    import asyncio
+    import tempfile, os
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+    # Build an async engine on the same in-memory DB is not possible; use a temp file
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    from sqlmodel import SQLModel as _SM, create_engine as _ce, Session as _S
+    sync_eng = _ce(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    _SM.metadata.create_all(sync_eng)
+    with _S(sync_eng) as prep:
+        prep.add(Minion(id=minion_id, hostname="host1", status="active"))
+        prep.add(DiscoveredService(minion_id=minion_id, service_type="redis", install_type="native", port=6379))
+        prep.commit()
+    sync_eng.dispose()
+
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    _async_eng = create_async_engine(async_url)
+    _AsyncLocal = async_sessionmaker(_async_eng, class_=_AsyncSession, expire_on_commit=False)
+    async with _AsyncLocal() as db:
+        await persist_discovery(minion_id, [], db)
+        remaining = (await db.exec(select(DiscoveredService).where(DiscoveredService.minion_id == minion_id))).all()
+    await _async_eng.dispose()
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
     assert len(remaining) == 0
 
 
-def test_persist_discovery_keeps_overridden(engine, minion_id):
-    with Session(engine) as db:
-        db.add(DiscoveredService(minion_id=minion_id, service_type="redis", install_type="native", port=6379, overridden=True))
-        db.commit()
-        persist_discovery(minion_id, [], db)
-        remaining = db.exec(select(DiscoveredService).where(DiscoveredService.minion_id == minion_id)).all()
+@pytest.mark.asyncio
+async def test_persist_discovery_keeps_overridden(engine, minion_id):
+    import tempfile, os
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    from sqlmodel import SQLModel as _SM, create_engine as _ce, Session as _S
+    sync_eng = _ce(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    _SM.metadata.create_all(sync_eng)
+    with _S(sync_eng) as prep:
+        prep.add(Minion(id=minion_id, hostname="host1", status="active"))
+        prep.add(DiscoveredService(minion_id=minion_id, service_type="redis", install_type="native", port=6379, overridden=True))
+        prep.commit()
+    sync_eng.dispose()
+
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    _async_eng = create_async_engine(async_url)
+    _AsyncLocal = async_sessionmaker(_async_eng, class_=_AsyncSession, expire_on_commit=False)
+    async with _AsyncLocal() as db:
+        await persist_discovery(minion_id, [], db)
+        remaining = (await db.exec(select(DiscoveredService).where(DiscoveredService.minion_id == minion_id))).all()
+    await _async_eng.dispose()
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
     assert len(remaining) == 1
     assert remaining[0].overridden is True

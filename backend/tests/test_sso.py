@@ -1,9 +1,13 @@
 # backend/tests/test_sso.py
+import asyncio
+import os
 import pytest
+import tempfile
 from datetime import datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 from sqlmodel import SQLModel, create_engine, Session, select
-from sqlmodel.pool import StaticPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi.testclient import TestClient
 
 from app.models.oauth_state import OAuthState
@@ -12,12 +16,21 @@ from app.models.user import User
 
 @pytest.fixture(name="session")
 def session_fixture():
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
+    engine.dispose()
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
+
 
 
 def test_oauth_state_create(session: Session):
@@ -263,55 +276,87 @@ def test_get_active_providers_with_entra(monkeypatch):
     assert "entra" in names
 
 
-def test_begin_sso_flow_stores_state(session: Session):
+@pytest.mark.asyncio
+async def test_begin_sso_flow_stores_state():
     from app.services.sso_service import begin_sso_flow
     from app.services.providers.entra import EntraProvider
     from app.models.oauth_state import OAuthState
+
+    _async_engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}
+    )
+    async with _async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
     provider = EntraProvider(
         client_id="c", client_secret="s", tenant_id="t",
         roles_claim="roles", admin_role="Admin",
         redirect_uri="http://x/cb",
     )
-    url = begin_sso_flow(provider=provider, db=session)
-    assert "https://login.microsoftonline.com" in url
-    states = session.exec(select(OAuthState)).all()
-    assert len(states) == 1
-    assert states[0].provider == "entra"
+    async with _AsyncSessionLocal() as async_session:
+        url = await begin_sso_flow(provider=provider, db=async_session)
+        assert "https://login.microsoftonline.com" in url
+        states = (await async_session.exec(select(OAuthState))).all()
+        assert len(states) == 1
+        assert states[0].provider == "entra"
+    await _async_engine.dispose()
 
 
-def test_upsert_user_creates_new(session: Session):
+@pytest.mark.asyncio
+async def test_upsert_user_creates_new():
     from app.services.sso_service import upsert_sso_user
-    user = upsert_sso_user(
-        db=session,
-        provider="entra",
-        external_id="oid-abc",
-        email="alice@company.com",
-        username="alice@company.com",
-        role="user",
-        refresh_token="rt123",
-        auto_provision=True,
+
+    _async_engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}
     )
+    async with _async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with _AsyncSessionLocal() as async_session:
+        user = await upsert_sso_user(
+            db=async_session,
+            provider="entra",
+            external_id="oid-abc",
+            email="alice@company.com",
+            username="alice@company.com",
+            role="user",
+            refresh_token="rt123",
+            auto_provision=True,
+        )
     assert user.id is not None
     assert user.provider == "entra"
     assert user.role == "user"
+    await _async_engine.dispose()
 
 
-def test_upsert_user_rejected_when_provision_off(session: Session):
+@pytest.mark.asyncio
+async def test_upsert_user_rejected_when_provision_off():
     from app.services.sso_service import upsert_sso_user
     from fastapi import HTTPException
-    with pytest.raises(HTTPException) as exc_info:
-        upsert_sso_user(
-            db=session,
-            provider="entra",
-            external_id="oid-xyz",
-            email="stranger@company.com",
-            username="stranger@company.com",
-            role="user",
-            refresh_token="rt",
-            auto_provision=False,
-        )
+
+    _async_engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}
+    )
+    async with _async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with _AsyncSessionLocal() as async_session:
+        with pytest.raises(HTTPException) as exc_info:
+            await upsert_sso_user(
+                db=async_session,
+                provider="entra",
+                external_id="oid-xyz",
+                email="stranger@company.com",
+                username="stranger@company.com",
+                role="user",
+                refresh_token="rt",
+                auto_provision=False,
+            )
     assert exc_info.value.status_code == 403
+    await _async_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -322,10 +367,22 @@ def test_upsert_user_rejected_when_provision_off(session: Session):
 def client_fixture(session: Session):
     from app.main import app
     from app.api import deps
+
+    db_url = str(session.bind.url)
+    async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def get_async_session_override():
+        async with _AsyncSessionLocal() as async_session:
+            yield async_session
+
     app.dependency_overrides[deps.get_db] = lambda: session
+    app.dependency_overrides[deps.get_async_db] = get_async_session_override
     client = TestClient(app, follow_redirects=False)
     yield client
     app.dependency_overrides.clear()
+    asyncio.run(_async_engine.dispose())
 
 
 def test_providers_endpoint_empty(client: TestClient):

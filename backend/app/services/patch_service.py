@@ -7,9 +7,10 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.minion import Minion
 from app.models.patch import (
     MinionGroup, MinionGroupMember, MinionPatch, Organisation,
@@ -30,73 +31,73 @@ def ps_quote(s: str) -> str:
 # Onboarding auto-provisioning
 # ---------------------------------------------------------------------------
 
-def assign_minion_to_group(minion_id: str, org_id: str, group_id: str) -> None:
+async def assign_minion_to_group(minion_id: str, org_id: str, group_id: str) -> None:
     """Move minion to group_id, removing any prior membership within the same org (one group per org)."""
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         # Remove all existing memberships in this org
         all_group_ids = [
-            g.id for g in db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id)).all()
+            g.id for g in (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all()
         ]
-        for old in db.exec(
+        for old in (await db.exec(
             select(MinionGroupMember)
             .where(MinionGroupMember.minion_id == minion_id)
             .where(MinionGroupMember.group_id.in_(all_group_ids))  # type: ignore[attr-defined]
-        ).all():
-            db.delete(old)
+        )).all():
+            await db.delete(old)
         db.add(MinionGroupMember(group_id=group_id, minion_id=minion_id))
-        db.commit()
+        await db.commit()
     _log.info("Assigned %s → group %s (org %s)", minion_id, group_id, org_id)
 
 
-def find_existing_membership(minion_id: str, org_name: str, env_name: str) -> None:
+async def find_existing_membership(minion_id: str, org_name: str, env_name: str) -> None:
     """Assign minion to an existing org/group only — never creates new orgs or groups.
     Prevents untrusted minion-supplied grains from polluting the org/group hierarchy."""
     import re
     slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") or "default"
-    with Session(engine) as db:
-        org = db.exec(select(Organisation).where(Organisation.slug == slug)).first()
+    async with AsyncSessionLocal() as db:
+        org = (await db.exec(select(Organisation).where(Organisation.slug == slug))).first()
         if not org:
             _log.warning("Minion %s claimed org %r but it does not exist — skipping", minion_id, org_name)
             return
-        group = db.exec(
+        group = (await db.exec(
             select(MinionGroup)
             .where(MinionGroup.org_id == org.id)
             .where(MinionGroup.name == env_name)
-        ).first()
+        )).first()
         if not group:
             _log.warning("Minion %s claimed group %r but it does not exist — skipping", minion_id, env_name)
             return
         org_id, group_id = org.id, group.id
-    assign_minion_to_group(minion_id, org_id, group_id)
+    await assign_minion_to_group(minion_id, org_id, group_id)
     _log.info("Auto-assigned %s → %s / %s", minion_id, org_name, env_name)
 
 
-def find_or_create_membership(minion_id: str, org_name: str, env_name: str) -> None:
+async def find_or_create_membership(minion_id: str, org_name: str, env_name: str) -> None:
     """Idempotently provision org → group, then assign minion (one group per org)."""
     import re
     slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") or "default"
 
-    with Session(engine) as db:
-        org = db.exec(select(Organisation).where(Organisation.slug == slug)).first()
+    async with AsyncSessionLocal() as db:
+        org = (await db.exec(select(Organisation).where(Organisation.slug == slug))).first()
         if not org:
             org = Organisation(name=org_name, slug=slug)
             db.add(org)
-            db.flush()
+            await db.flush()
 
-        group = db.exec(
+        group = (await db.exec(
             select(MinionGroup)
             .where(MinionGroup.org_id == org.id)
             .where(MinionGroup.name == env_name)
-        ).first()
+        )).first()
         if not group:
             group = MinionGroup(org_id=org.id, name=env_name)
             db.add(group)
-            db.flush()
+            await db.flush()
 
-        db.commit()
+        await db.commit()
         org_id, group_id = org.id, group.id
 
-    assign_minion_to_group(minion_id, org_id, group_id)
+    await assign_minion_to_group(minion_id, org_id, group_id)
     _log.info("Provisioned %s → %s / %s", minion_id, org_name, env_name)
 
 
@@ -104,14 +105,14 @@ def find_or_create_membership(minion_id: str, org_name: str, env_name: str) -> N
 # Scan ingestion
 # ---------------------------------------------------------------------------
 
-def ingest_scan(minion_id: str, packages: list[dict], scanned_at: Optional[datetime]) -> None:
+async def ingest_scan(minion_id: str, packages: list[dict], scanned_at: Optional[datetime]) -> None:
     """Replace all MinionPatch rows for *minion_id* with fresh scan data."""
     ts = scanned_at or datetime.utcnow()
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         # Delete stale rows
-        old = db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id)).all()
+        old = (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all()
         for row in old:
-            db.delete(row)
+            await db.delete(row)
         # Insert fresh rows
         for pkg in packages:
             db.add(MinionPatch(
@@ -126,11 +127,11 @@ def ingest_scan(minion_id: str, packages: list[dict], scanned_at: Optional[datet
                 scanned_at=ts,
             ))
         # Always stamp last_patch_scan so "never scanned" clears even on clean machines
-        m = db.get(Minion, minion_id)
+        m = await db.get(Minion, minion_id)
         if m:
             m.last_patch_scan = ts
             db.add(m)
-        db.commit()
+        await db.commit()
     _log.info("Ingested %d patches for minion %s", len(packages), minion_id)
 
 
@@ -253,9 +254,9 @@ def _reboot_check_cmd(pkg_manager: str) -> str:
 # Patch apply
 # ---------------------------------------------------------------------------
 
-def _snapshot_advisories(db: Session, minion_id: str) -> list[dict]:
+async def _snapshot_advisories(db: AsyncSession, minion_id: str) -> list[dict]:
     """Return the current pending MinionPatch rows for minion_id as a serialisable list."""
-    rows = db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id)).all()
+    rows = (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all()
     return [
         {
             "advisory_id": r.advisory_id,
@@ -280,14 +281,14 @@ async def apply_patches(
     """Dispatch patch commands to all active minions in *group_id* in parallel."""
     from app.services.minion_service import manager  # avoid circular import
 
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         member_ids = [
             m.minion_id for m in
-            db.exec(select(MinionGroupMember).where(MinionGroupMember.group_id == group_id)).all()
+            (await db.exec(select(MinionGroupMember).where(MinionGroupMember.group_id == group_id))).all()
         ]
         minions = [
             m for m in
-            [db.get(Minion, mid) for mid in member_ids]
+            [await db.get(Minion, mid) for mid in member_ids]
             if m and m.status == "active"
         ]
 
@@ -295,11 +296,11 @@ async def apply_patches(
         return {"dispatched": 0, "results": []}
 
     async def _patch_one(minion: Minion) -> dict:
-        with Session(engine) as db:
+        async with AsyncSessionLocal() as db:
             import json as _json
             grains = _json.loads(minion.grains or "{}")
             # Snapshot BEFORE patching — captures what was pending
-            advisory_snapshot = _snapshot_advisories(db, minion.id)
+            advisory_snapshot = await _snapshot_advisories(db, minion.id)
 
         os_str = grains.get("os", "").lower()
         if "windows" in os_str:
@@ -338,7 +339,7 @@ async def apply_patches(
                     pass
 
             if promotion_id:
-                with Session(engine) as db:
+                async with AsyncSessionLocal() as db:
                     db.add(PatchPromotionResult(
                         promotion_id=promotion_id,
                         minion_id=minion.id,
@@ -348,7 +349,7 @@ async def apply_patches(
                         applied_advisories=json.dumps(advisory_snapshot),
                         packages_count=len(advisory_snapshot),
                     ))
-                    db.commit()
+                    await db.commit()
 
             return {
                 "minion_id": minion.id,
@@ -359,7 +360,7 @@ async def apply_patches(
             }
         except Exception as e:
             if promotion_id:
-                with Session(engine) as db:
+                async with AsyncSessionLocal() as db:
                     db.add(PatchPromotionResult(
                         promotion_id=promotion_id,
                         minion_id=minion.id,
@@ -369,7 +370,7 @@ async def apply_patches(
                         applied_advisories=json.dumps(advisory_snapshot),
                         packages_count=len(advisory_snapshot),
                     ))
-                    db.commit()
+                    await db.commit()
             return {"minion_id": minion.id, "exit_code": -1, "status": "failed", "error": str(e), "reboot_required": False, "rebooted": False}
 
     results = await asyncio.gather(*[_patch_one(m) for m in minions])
@@ -389,8 +390,8 @@ async def apply_patches(
     reboot_ids = [r["minion_id"] for r in results if r.get("reboot_required")]
 
     if promotion_id:
-        with Session(engine) as db:
-            promo = db.get(PatchPromotion, promotion_id)
+        async with AsyncSessionLocal() as db:
+            promo = await db.get(PatchPromotion, promotion_id)
             if promo:
                 promo.status = final_status
                 promo.completed_at = datetime.utcnow()
@@ -399,7 +400,7 @@ async def apply_patches(
                 if reboot_ids:
                     promo.reboot_minions = json.dumps(reboot_ids)
                 db.add(promo)
-                db.commit()
+                await db.commit()
 
     # Trigger rescan via WebSocket scan_patches message (not a dummy shell command)
     from app.services.minion_service import manager as _mgr
@@ -430,10 +431,10 @@ def create_scheduler(db_url: str):
     return scheduler
 
 
-def load_schedules(scheduler) -> None:
+async def load_schedules(scheduler) -> None:
     """Load all enabled PatchSchedule rows from DB and register as cron jobs."""
-    with Session(engine) as db:
-        schedules = db.exec(select(PatchSchedule).where(PatchSchedule.enabled == True)).all()
+    async with AsyncSessionLocal() as db:
+        schedules = (await db.exec(select(PatchSchedule).where(PatchSchedule.enabled == True))).all()
 
     for sched in schedules:
         _register_schedule(scheduler, sched)
@@ -444,8 +445,8 @@ def _register_schedule(scheduler, sched: PatchSchedule) -> None:
     from apscheduler.triggers.cron import CronTrigger
 
     async def _run(sched_id: str = sched.id):
-        with Session(engine) as db:
-            _sched = db.get(PatchSchedule, sched_id)
+        async with AsyncSessionLocal() as db:
+            _sched = await db.get(PatchSchedule, sched_id)
         if not _sched or not _sched.enabled:
             return
         await run_scheduled_stage(_sched)
@@ -462,12 +463,12 @@ def _register_schedule(scheduler, sched: PatchSchedule) -> None:
 # Alert events
 # ---------------------------------------------------------------------------
 
-def emit_alert_event(pipeline_id: str, stage_id: str, reason: str) -> None:
+async def emit_alert_event(pipeline_id: str, stage_id: str, reason: str) -> None:
     """Write a PatchAlertEvent row. Called when a promote_from_previous cron is blocked."""
     from app.models.patch import PatchAlertEvent
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         db.add(PatchAlertEvent(pipeline_id=pipeline_id, stage_id=stage_id, reason=reason))
-        db.commit()
+        await db.commit()
     _log.warning("Alert event: pipeline=%s stage=%s reason=%s", pipeline_id, stage_id, reason)
 
 
@@ -497,8 +498,8 @@ async def run_scheduled_stage(sched: PatchSchedule) -> None:
             )
             return
 
-    def _create_fresh_promo(
-        db: Session,
+    async def _create_fresh_promo(
+        db: AsyncSession,
         stage: PipelineStage,
     ) -> tuple[str, str, str, Optional[str]]:
         """Insert a fresh PatchPromotion for *stage* and return (promo_id, group_id, scope, custom)."""
@@ -511,29 +512,29 @@ async def run_scheduled_stage(sched: PatchSchedule) -> None:
             status="running",
         )
         db.add(promo)
-        db.commit()
-        db.refresh(promo)
+        await db.commit()
+        await db.refresh(promo)
         return promo.id, stage.group_id, sched.patch_scope, sched.custom_packages
 
-    with Session(engine) as db:
-        stage = db.get(PipelineStage, sched.stage_id)
+    async with AsyncSessionLocal() as db:
+        stage = await db.get(PipelineStage, sched.stage_id)
         if not stage:
             _log.error("Stage %s not found for schedule %s", sched.stage_id, sched.id)
             return
 
         if not sched.promote_from_previous:
             # Fresh resolve — apply directly to this stage's group
-            promo_id, group_id, scope, custom = _create_fresh_promo(db, stage)
+            promo_id, group_id, scope, custom = await _create_fresh_promo(db, stage)
 
         else:
             # promote_from_previous — find prior stage and read its frozen package list
-            prior_stage = db.exec(
+            prior_stage = (await db.exec(
                 select(PipelineStage)
                 .where(
                     PipelineStage.pipeline_id == sched.pipeline_id,
                     PipelineStage.order == stage.order - 1,
                 )
-            ).first()
+            )).first()
 
             if not prior_stage:
                 # This is stage 0 — no prior stage. Treat as fresh resolve.
@@ -541,27 +542,27 @@ async def run_scheduled_stage(sched: PatchSchedule) -> None:
                     "promote_from_previous=True on first stage %s — treating as fresh resolve",
                     sched.stage_id,
                 )
-                promo_id, group_id, scope, custom = _create_fresh_promo(db, stage)
+                promo_id, group_id, scope, custom = await _create_fresh_promo(db, stage)
 
             else:
                 # Find the latest PatchPromotion for the prior stage
-                prior_promo = db.exec(
+                prior_promo = (await db.exec(
                     select(PatchPromotion)
                     .where(PatchPromotion.to_stage_id == prior_stage.id)
                     .order_by(PatchPromotion.triggered_at.desc())
-                ).first()
+                )).first()
 
                 if not prior_promo:
-                    emit_alert_event(sched.pipeline_id, sched.stage_id, "no_prior_run")
+                    await emit_alert_event(sched.pipeline_id, sched.stage_id, "no_prior_run")
                     return
                 if prior_promo.status in ("running", "pending"):
-                    emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_not_complete")
+                    await emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_not_complete")
                     return
                 if prior_promo.status == "failed":
-                    emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_failed")
+                    await emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_failed")
                     return
                 if prior_promo.status == "partial":
-                    emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_partial")
+                    await emit_alert_event(sched.pipeline_id, sched.stage_id, "prior_stage_partial")
                     return
 
                 # prior stage is done — promote its frozen package list
@@ -575,8 +576,8 @@ async def run_scheduled_stage(sched: PatchSchedule) -> None:
                     status="running",
                 )
                 db.add(promo)
-                db.commit()
-                db.refresh(promo)
+                await db.commit()
+                await db.refresh(promo)
                 promo_id = promo.id
                 group_id = stage.group_id
                 scope = "custom"
@@ -597,18 +598,18 @@ async def run_scheduled_stage(sched: PatchSchedule) -> None:
             from app.services.notification_service import (
                 build_patch_summary, send_notifications, ai_beautify_message,
             )
-            with Session(engine) as db:
-                promo    = db.get(PatchPromotion, promo_id)
-                results  = db.exec(
+            async with AsyncSessionLocal() as db:
+                promo    = await db.get(PatchPromotion, promo_id)
+                results  = (await db.exec(
                     select(PatchPromotionResult)
                     .where(PatchPromotionResult.promotion_id == promo_id)
-                ).all()
-                pipeline = db.get(PatchPipeline, sched.pipeline_id)
-                stage_obj = db.get(PipelineStage, sched.stage_id)
+                )).all()
+                pipeline = await db.get(PatchPipeline, sched.pipeline_id)
+                stage_obj = await db.get(PipelineStage, sched.stage_id)
                 minion_ids = [r.minion_id for r in results]
                 minion_hostnames = {
                     m.id: m.hostname
-                    for m in [db.get(Minion, mid) for mid in minion_ids]
+                    for m in [await db.get(Minion, mid) for mid in minion_ids]
                     if m
                 }
             summary = build_patch_summary(

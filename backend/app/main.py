@@ -174,7 +174,7 @@ async def lifespan(app: FastAPI):
     _scheduler.start()
 
     from app.services.patch_service import load_schedules as _load_patch_schedules
-    _load_patch_schedules(_scheduler)
+    await _load_patch_schedules(_scheduler)
 
     from app.services.connectors.confluence_connector import _load_confluence_schedule
     _load_confluence_schedule(_scheduler)

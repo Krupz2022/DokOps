@@ -228,27 +228,49 @@ async def _maybe_compact(conversation_id: str) -> None:
         await db.commit()
 
 
-def _maybe_index_incident(conversation_id: str, result_text: str, db: AsyncSession) -> None:
+async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
     """Background-safe: index the full conversation thread into the RAG incidents collection.
 
     Indexes the complete user+AI dialogue (not just the final answer) so that
     specific facts found mid-conversation (e.g. correct port numbers, patch
     values, root-cause details) are preserved in the vector store and
     retrievable by future queries.
-
-    NOTE: this runs synchronously on the already-completed session data loaded
-    before this call.
     """
     try:
         from app.services.rag_service import rag_service
         if not rag_service.is_enabled():
             return
-        # We intentionally do NOT query the DB here to keep the helper sync-safe.
-        # The conversation title is not strictly needed for indexing.
+        async with AsyncSessionLocal() as db:
+            conv = await db.get(ChatConversation, conversation_id)
+            title = conv.title if conv else conversation_id
+
+            # Build a full dialogue transcript for richer retrieval.
+            # Include "step" messages (tool outputs) so that raw resource data
+            # such as configmap contents, port numbers, and patch values are indexed
+            # alongside the user/AI text — not just the final summary.
+            msgs = (await db.exec(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conversation_id)
+                .where(ChatMessage.message_type.in_(["text", "step"]))
+                .order_by(ChatMessage.created_at.asc())
+            )).all()
+
+        parts: List[str] = []
+        for m in msgs:
+            if not m.content or not m.content.strip():
+                continue
+            if m.message_type == "step":
+                parts.append("[Tool output]\n" + m.content.strip())
+            else:
+                prefix = "User: " if m.role == "user" else "AI: "
+                parts.append(prefix + m.content.strip())
+
+        full_text = "\n\n".join(parts) if parts else result_text
+
         rag_service.ingest_incident(
             conversation_id=conversation_id,
-            conversation_title=conversation_id,
-            text=result_text,
+            conversation_title=title,
+            text=full_text,
         )
     except Exception:
         pass  # Never fail the chat stream due to RAG indexing errors
@@ -344,7 +366,7 @@ async def _stream_and_save(
 
             await _maybe_compact(conversation_id)
             if result_message:
-                _maybe_index_incident(conversation_id, result_message, None)
+                await _maybe_index_incident(conversation_id, result_message)
 
 
 # ── Message Endpoint ───────────────────────────────────────────────────────────

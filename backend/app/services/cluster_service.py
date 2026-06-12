@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.core.encryption import decrypt, encrypt
 from app.core.ssrf import validate_cluster_url
 from app.models.cluster import CloudCredential, ClusterConnection
@@ -103,12 +103,12 @@ async def _test_k8s_connectivity(
                 os.unlink(p)
 
 
-def _db_upsert_cluster(conn: ClusterConnection) -> tuple[ClusterConnection, bool]:
+async def _db_upsert_cluster(conn: ClusterConnection) -> tuple[ClusterConnection, bool]:
     """Insert or update a ClusterConnection by name. Returns (saved_conn, is_new)."""
-    with Session(engine) as db:
-        existing = db.exec(
+    async with AsyncSessionLocal() as db:
+        existing = (await db.exec(
             select(ClusterConnection).where(ClusterConnection.name == conn.name)
-        ).first()
+        )).first()
         if existing:
             existing.provider = conn.provider
             existing.api_server = conn.api_server
@@ -120,12 +120,12 @@ def _db_upsert_cluster(conn: ClusterConnection) -> tuple[ClusterConnection, bool
             existing.added_by = conn.added_by
             existing.last_verified = conn.last_verified
             db.add(existing)
-            db.commit()
-            db.refresh(existing)
+            await db.commit()
+            await db.refresh(existing)
             return existing, False
         db.add(conn)
-        db.commit()
-        db.refresh(conn)
+        await db.commit()
+        await db.refresh(conn)
         return conn, True
 
 
@@ -149,25 +149,25 @@ async def verify_token_connection(
         last_verified=datetime.now(timezone.utc),
     )
 
-    conn, is_new = _db_upsert_cluster(conn)
+    conn, is_new = await _db_upsert_cluster(conn)
 
     try:
         await k8s_service.add_connection(conn)
     except Exception:
         if is_new:
-            with Session(engine) as db:
-                row = db.get(ClusterConnection, conn.id)
+            async with AsyncSessionLocal() as db:
+                row = await db.get(ClusterConnection, conn.id)
                 if row:
-                    db.delete(row)
-                    db.commit()
+                    await db.delete(row)
+                    await db.commit()
         raise
     return conn
 
 
 async def discover_aks_clusters(credential_id: str) -> List[Dict[str, Any]]:
     """Return list of AKS clusters for the given CloudCredential."""
-    with Session(engine) as db:
-        cred = db.exec(select(CloudCredential).where(CloudCredential.id == credential_id)).first()
+    async with AsyncSessionLocal() as db:
+        cred = (await db.exec(select(CloudCredential).where(CloudCredential.id == credential_id))).first()
     if not cred:
         raise ValueError("Credential not found")
 
@@ -200,8 +200,8 @@ async def discover_aks_clusters(credential_id: str) -> List[Dict[str, Any]]:
 
 async def discover_eks_clusters(credential_id: str) -> List[Dict[str, Any]]:
     """Return list of EKS clusters for the given CloudCredential."""
-    with Session(engine) as db:
-        cred = db.exec(select(CloudCredential).where(CloudCredential.id == credential_id)).first()
+    async with AsyncSessionLocal() as db:
+        cred = (await db.exec(select(CloudCredential).where(CloudCredential.id == credential_id))).first()
     if not cred:
         raise ValueError("Credential not found")
 
@@ -238,8 +238,8 @@ async def import_aks_cluster(
     added_by: Optional[str] = None,
 ) -> ClusterConnection:
     """Fetch AKS user credentials and store as a ClusterConnection."""
-    with Session(engine) as db:
-        cred = db.exec(select(CloudCredential).where(CloudCredential.id == credential_id)).first()
+    async with AsyncSessionLocal() as db:
+        cred = (await db.exec(select(CloudCredential).where(CloudCredential.id == credential_id))).first()
     if not cred:
         raise ValueError("Credential not found")
 
@@ -314,17 +314,17 @@ async def import_aks_cluster(
         last_verified=datetime.now(timezone.utc),
     )
 
-    conn, is_new = _db_upsert_cluster(conn)
+    conn, is_new = await _db_upsert_cluster(conn)
 
     try:
         await k8s_service.add_connection(conn)
     except Exception:
         if is_new:
-            with Session(engine) as db:
-                row = db.get(ClusterConnection, conn.id)
+            async with AsyncSessionLocal() as db:
+                row = await db.get(ClusterConnection, conn.id)
                 if row:
-                    db.delete(row)
-                    db.commit()
+                    await db.delete(row)
+                    await db.commit()
         raise
     return conn
 
@@ -335,8 +335,8 @@ async def import_eks_cluster(
     added_by: Optional[str] = None,
 ) -> ClusterConnection:
     """Generate an EKS bearer token and store as a ClusterConnection."""
-    with Session(engine) as db:
-        cred = db.exec(select(CloudCredential).where(CloudCredential.id == credential_id)).first()
+    async with AsyncSessionLocal() as db:
+        cred = (await db.exec(select(CloudCredential).where(CloudCredential.id == credential_id))).first()
     if not cred:
         raise ValueError("Credential not found")
 
@@ -431,7 +431,7 @@ async def connect_from_kubeconfig(
     return await verify_token_connection(req, allow_private=True, added_by=added_by)
 
 
-def save_cloud_credential(
+async def save_cloud_credential(
     provider: str, blob: Dict[str, Any], added_by: Optional[str] = None
 ) -> CloudCredential:
     cred = CloudCredential(
@@ -439,8 +439,8 @@ def save_cloud_credential(
         credential_blob=encrypt(json.dumps(blob)),
         added_by=added_by,
     )
-    with Session(engine) as db:
+    async with AsyncSessionLocal() as db:
         db.add(cred)
-        db.commit()
-        db.refresh(cred)
+        await db.commit()
+        await db.refresh(cred)
     return cred

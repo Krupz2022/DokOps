@@ -146,11 +146,14 @@ async def test_integration(integration_id: int, _user=Depends(deps.get_current_u
         row = await session.get(IntegrationSettings, integration_id)
         if not row:
             raise HTTPException(status_code=404, detail="Integration not found")
+        # Copy scalars out while the session is open — don't rely on detached reads.
+        backend, auth_type = row.backend, row.auth_type
+        encrypted_credentials, base_url = row.encrypted_credentials, row.base_url
 
-    svc_cls = _get_service_cls(row.backend)
-    headers = build_auth_headers(row.auth_type, row.encrypted_credentials)
+    svc_cls = _get_service_cls(backend)
+    headers = build_auth_headers(auth_type, encrypted_credentials)
     svc = svc_cls()
-    ok, msg = await svc.test_connection(row.base_url, headers)
+    ok, msg = await svc.test_connection(base_url, headers)
 
     async with _db.AsyncSessionLocal() as session:
         row = await session.get(IntegrationSettings, integration_id)

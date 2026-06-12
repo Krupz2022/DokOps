@@ -103,7 +103,7 @@ def test_push_token_usage_enqueues_record():
             break
 
     set_token_context(user_id=42, source="chat")
-    asyncio.get_event_loop().run_until_complete(push_token_usage("gpt-4o", 200, 80))
+    asyncio.run(push_token_usage("gpt-4o", 200, 80))
     record = _token_queue.get_nowait()
     assert record["user_id"] == 42
     assert record["source"] == "chat"

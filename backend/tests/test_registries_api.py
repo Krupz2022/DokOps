@@ -53,7 +53,8 @@ def client_fixture(session: Session, monkeypatch):
 
     fastapi_app.dependency_overrides[deps.get_db] = get_session_override
     fastapi_app.dependency_overrides[deps.get_async_db] = get_async_session_override
-    monkeypatch.setattr("app.api.v1.registries.engine", session.bind)
+    # Patch the async sessionmaker used directly in registries router
+    monkeypatch.setattr("app.api.v1.registries._db.AsyncSessionLocal", _AsyncSessionLocal)
     client = TestClient(fastapi_app)
     yield client
     fastapi_app.dependency_overrides.clear()

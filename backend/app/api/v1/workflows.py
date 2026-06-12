@@ -6,12 +6,14 @@ import time
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from pydantic import BaseModel, SecretStr
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from app.api import deps
+from app.core.db import AsyncSessionLocal
 from app.core.god_mode import is_god_mode_active
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowRun
@@ -336,11 +338,11 @@ async def search_jira_users(
 
 
 @router.get("")
-def list_workflows(
-    db: Session = Depends(deps.get_db),
+async def list_workflows(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    return db.exec(select(Workflow)).all()
+    return (await db.exec(select(Workflow))).all()
 
 
 def _check_pre_approved_destructive(tools: List[Dict[str, Any]], user_id: int) -> None:
@@ -355,16 +357,16 @@ def _check_pre_approved_destructive(tools: List[Dict[str, Any]], user_id: int) -
 
 
 @router.post("")
-def create_workflow(
+async def create_workflow(
     body: WorkflowCreate,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     _check_pre_approved_destructive(body.agent_approved_tools, current_user.id)
     wf = Workflow(**body.model_dump(), created_by=current_user.username)
     db.add(wf)
-    db.commit()
-    db.refresh(wf)
+    await db.commit()
+    await db.refresh(wf)
     return wf
 
 
@@ -375,24 +377,24 @@ def _require_workflow_owner(wf: Workflow, current_user: User) -> None:
 
 
 @router.get("/runs/{run_id}")
-def get_run(
+async def get_run(
     run_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    run = db.get(WorkflowRun, run_id)
+    run = await db.get(WorkflowRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    wf = db.get(Workflow, run.workflow_id)
+    wf = await db.get(Workflow, run.workflow_id)
     if wf:
         _require_workflow_owner(wf, current_user)
     return run
 
 
 @router.post("/runs/{run_id}/stream-ticket")
-def issue_stream_ticket(
+async def issue_stream_ticket(
     run_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """Exchange a full JWT (via Bearer/cookie) for a short-lived opaque SSE ticket."""
@@ -408,34 +410,41 @@ def issue_stream_ticket(
 @router.get("/runs/{run_id}/stream")
 async def stream_run(
     run_id: int,
-    db: Session = Depends(deps.get_db),
     ticket: Optional[str] = None,
     bearer_user: Optional[User] = Depends(deps.get_optional_current_user),
 ) -> Any:
+    # Rule 6: SSE endpoint — open/close DB around each touch; never hold session across stream.
     # Accept either a short-lived ticket (EventSource) or standard Bearer auth (fetch)
     current_user = None
     if ticket:
         entry = _sse_tickets.pop(ticket, None)
         if entry and entry[1] == run_id and entry[2] >= time.time():
-            current_user = db.query(User).filter(User.username == entry[0]).first()
+            # Resolve user by username from ticket
+            async with AsyncSessionLocal() as db:
+                current_user = (await db.exec(
+                    select(User).where(User.username == entry[0])
+                )).first()
     if not current_user:
         current_user = bearer_user
     if not current_user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    run = db.get(WorkflowRun, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    wf = db.get(Workflow, run.workflow_id)
-    if wf:
-        _require_workflow_owner(wf, current_user)
+    # Verify run and ownership before streaming
+    async with AsyncSessionLocal() as db:
+        run = await db.get(WorkflowRun, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        wf = await db.get(Workflow, run.workflow_id)
+        if wf:
+            _require_workflow_owner(wf, current_user)
 
     async def event_stream():
         queue = wf_svc._run_queues.get(run_id)
         if not queue:
             # Queue is gone — run already finished or server was restarted.
             # Synthesise a completed event from DB so the frontend doesn't hang.
-            final_run = db.get(WorkflowRun, run_id)
+            async with AsyncSessionLocal() as db:
+                final_run = await db.get(WorkflowRun, run_id)
             final_status = final_run.status if final_run else "failed"
             if final_status in ("completed", "failed", "timed_out"):
                 yield f"data: {json.dumps({'type': 'completed', 'run_id': run_id, 'status': final_status})}\n\n"
@@ -461,12 +470,12 @@ async def stream_run(
 
 
 @router.get("/{workflow_id}")
-def get_workflow(
+async def get_workflow(
     workflow_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     _require_workflow_owner(wf, current_user)
@@ -474,13 +483,13 @@ def get_workflow(
 
 
 @router.put("/{workflow_id}")
-def update_workflow(
+async def update_workflow(
     workflow_id: int,
     body: WorkflowUpdate,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     _require_workflow_owner(wf, current_user)
@@ -491,38 +500,38 @@ def update_workflow(
         setattr(wf, key, value)
     wf.updated_at = datetime.now(timezone.utc)
     db.add(wf)
-    db.commit()
-    db.refresh(wf)
+    await db.commit()
+    await db.refresh(wf)
     return wf
 
 
 @router.delete("/{workflow_id}")
-def delete_workflow(
+async def delete_workflow(
     workflow_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     _: User = Depends(deps.require_god_mode),
 ) -> Any:
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    db.delete(wf)
-    db.commit()
+    await db.delete(wf)
+    await db.commit()
     return {"message": "Deleted"}
 
 
 @router.get("/{workflow_id}/runs")
-def list_runs(
+async def list_runs(
     workflow_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     _require_workflow_owner(wf, current_user)
-    return db.exec(
+    return (await db.exec(
         select(WorkflowRun).where(WorkflowRun.workflow_id == workflow_id)
-    ).all()
+    )).all()
 
 
 class RunWorkflowRequest(BaseModel):
@@ -533,14 +542,14 @@ class RunWorkflowRequest(BaseModel):
 async def run_workflow(
     workflow_id: int,
     body: RunWorkflowRequest,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     _require_workflow_owner(wf, current_user)
-    run = wf_svc.create_run(workflow_id, body.input, "manual", db, user_id=current_user.id)
+    run = await wf_svc.create_run(workflow_id, body.input, "manual", db, user_id=current_user.id)
     if wf.workflow_type == "agent":
         asyncio.create_task(agent_svc.run_agent_background(run.id, workflow_id))
     else:
@@ -552,12 +561,12 @@ async def run_workflow(
 async def webhook_trigger(
     token: str,
     payload: Dict[str, Any],
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    wf = db.exec(select(Workflow).where(Workflow.webhook_token == token)).first()
+    wf = (await db.exec(select(Workflow).where(Workflow.webhook_token == token))).first()
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    run = wf_svc.create_run(wf.id, payload, "webhook", db)
+    run = await wf_svc.create_run(wf.id, payload, "webhook", db)
     if wf.workflow_type == "agent":
         asyncio.create_task(agent_svc.run_agent_background(run.id, wf.id))
     else:
@@ -569,13 +578,13 @@ async def webhook_trigger(
 async def approve_run_action(
     workflow_id: int,
     run_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    run = db.get(WorkflowRun, run_id)
+    run = await db.get(WorkflowRun, run_id)
     if not run or run.workflow_id != workflow_id:
         raise HTTPException(status_code=404, detail="Run not found")
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if wf:
         _require_workflow_owner(wf, current_user)
     if run.status != "awaiting_approval":
@@ -588,13 +597,13 @@ async def approve_run_action(
 async def skip_run_action(
     workflow_id: int,
     run_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    run = db.get(WorkflowRun, run_id)
+    run = await db.get(WorkflowRun, run_id)
     if not run or run.workflow_id != workflow_id:
         raise HTTPException(status_code=404, detail="Run not found")
-    wf = db.get(Workflow, workflow_id)
+    wf = await db.get(Workflow, workflow_id)
     if wf:
         _require_workflow_owner(wf, current_user)
     if run.status != "awaiting_approval":

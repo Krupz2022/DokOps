@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 def _run_async(coro):
@@ -22,7 +23,7 @@ def _run_async(coro):
     with _cf.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.mcp import MCPServer, MCPTool
 # encrypt_secret / decrypt_secret used in Tasks 3–5 transport implementations
 # to decrypt server.auth_value before building auth headers
@@ -73,17 +74,17 @@ class MCPClientService:
     def __init__(self) -> None:
         self._stdio_procs: Dict[str, Any] = {}
 
-    def build_openai_tools_schema(self) -> list:
+    async def build_openai_tools_schema(self) -> list:
         """Return connected MCP tools as OpenAI function-calling tool entries."""
-        with Session(engine) as session:
-            servers = session.exec(
+        async with AsyncSessionLocal() as session:
+            servers = (await session.exec(
                 select(MCPServer).where(MCPServer.is_connected == True)  # noqa: E712
-            ).all()
+            )).all()
             tools = []
             for server in servers:
-                mcp_tools = session.exec(
+                mcp_tools = (await session.exec(
                     select(MCPTool).where(MCPTool.server_id == server.id)
-                ).all()
+                )).all()
                 for t in mcp_tools:
                     ns_name = _make_namespaced(server.name, t.name)
                     try:
@@ -109,17 +110,17 @@ class MCPClientService:
                     })
             return tools
 
-    def build_gemini_tools_schema(self) -> list:
+    async def build_gemini_tools_schema(self) -> list:
         """Return connected MCP tools as Gemini function_declarations entries."""
-        with Session(engine) as session:
-            servers = session.exec(
+        async with AsyncSessionLocal() as session:
+            servers = (await session.exec(
                 select(MCPServer).where(MCPServer.is_connected == True)  # noqa: E712
-            ).all()
+            )).all()
             declarations = []
             for server in servers:
-                mcp_tools = session.exec(
+                mcp_tools = (await session.exec(
                     select(MCPTool).where(MCPTool.server_id == server.id)
-                ).all()
+                )).all()
                 for t in mcp_tools:
                     ns_name = _make_namespaced(server.name, t.name)
                     try:
@@ -140,19 +141,19 @@ class MCPClientService:
                     })
             return declarations
 
-    def get_all_tools_for_prompt(self) -> str:
-        with Session(engine) as session:
-            servers = session.exec(
+    async def get_all_tools_for_prompt(self) -> str:
+        async with AsyncSessionLocal() as session:
+            servers = (await session.exec(
                 select(MCPServer).where(MCPServer.is_connected == True)  # noqa: E712
-            ).all()
+            )).all()
             if not servers:
                 return ""
 
             lines = ["MCP TOOLS (from connected external MCP servers):"]
             for server in servers:
-                tools = session.exec(
+                tools = (await session.exec(
                     select(MCPTool).where(MCPTool.server_id == server.id)
-                ).all()
+                )).all()
                 for tool in tools:
                     ns_name = _make_namespaced(server.name, tool.name)
                     params = _schema_to_params(tool.input_schema)
@@ -162,25 +163,25 @@ class MCPClientService:
                     )
             return "\n".join(lines)
 
-    def execute_tool(self, tool_name: str, inputs: dict, confirmed: bool = False) -> dict:
+    async def execute_tool(self, tool_name: str, inputs: dict, confirmed: bool = False) -> dict:
         server_slug, raw_tool_name = _parse_namespaced(tool_name)
         if not server_slug or not raw_tool_name:
             return {"success": False, "data": None, "error": f"Invalid MCP tool name: {tool_name}", "source": "mcp"}
 
-        with Session(engine) as session:
-            servers = session.exec(
+        async with AsyncSessionLocal() as session:
+            servers = (await session.exec(
                 select(MCPServer).where(MCPServer.is_connected == True)  # noqa: E712
-            ).all()
+            )).all()
             server = next((s for s in servers if _slugify(s.name) == server_slug), None)
             if not server:
                 return {"success": False, "data": None, "error": f"No connected MCP server with slug '{server_slug}'", "source": "mcp"}
 
-            tool = session.exec(
+            tool = (await session.exec(
                 select(MCPTool).where(
                     MCPTool.server_id == server.id,
                     MCPTool.name == raw_tool_name,
                 )
-            ).first()
+            )).first()
             if not tool:
                 return {"success": False, "data": None, "error": f"Tool '{raw_tool_name}' not found on server '{server.name}'", "source": "mcp"}
 
@@ -201,11 +202,11 @@ class MCPClientService:
 
             server_id = server.id
 
-        return self.call_tool(server_id, raw_tool_name, inputs)
+        return await self.call_tool(server_id, raw_tool_name, inputs)
 
-    def call_tool(self, server_id: str, tool_name: str, inputs: dict) -> dict:
-        with Session(engine) as session:
-            server = session.get(MCPServer, server_id)
+    async def call_tool(self, server_id: str, tool_name: str, inputs: dict) -> dict:
+        async with AsyncSessionLocal() as session:
+            server = await session.get(MCPServer, server_id)
             if not server:
                 return {"success": False, "data": None, "error": "Server not found", "source": "mcp"}
 
@@ -218,9 +219,9 @@ class MCPClientService:
             else:
                 return {"success": False, "data": None, "error": f"Unknown transport: {server.transport}", "source": "mcp"}
 
-    def connect(self, server_id: str) -> dict:
-        with Session(engine) as session:
-            server = session.get(MCPServer, server_id)
+    async def connect(self, server_id: str) -> dict:
+        async with AsyncSessionLocal() as session:
+            server = await session.get(MCPServer, server_id)
             if not server:
                 return {"connected": False, "error": "Server not found", "tool_count": 0}
 
@@ -235,9 +236,9 @@ class MCPClientService:
                     return {"connected": False, "error": f"Unknown transport: {server.transport}", "tool_count": 0}
 
                 # Delete old tools for this server
-                old_tools = session.exec(select(MCPTool).where(MCPTool.server_id == server_id)).all()
+                old_tools = (await session.exec(select(MCPTool).where(MCPTool.server_id == server_id))).all()
                 for t in old_tools:
-                    session.delete(t)
+                    await session.delete(t)
 
                 # Insert new tools
                 for t in tools:
@@ -253,22 +254,22 @@ class MCPClientService:
                 server.is_connected = True
                 server.last_connected_at = datetime.now(timezone.utc)
                 session.add(server)
-                session.commit()
+                await session.commit()
 
                 return {"connected": True, "tool_count": len(tools)}
 
             except Exception as e:
-                session.rollback()
+                await session.rollback()
                 # server is expired/detached after rollback — reload from DB
-                fresh_server = session.get(MCPServer, server_id)
+                fresh_server = await session.get(MCPServer, server_id)
                 if fresh_server:
                     fresh_server.is_connected = False
                     session.add(fresh_server)
-                    session.commit()
+                    await session.commit()
                 return {"connected": False, "error": str(e), "tool_count": 0}
 
-    def refresh(self, server_id: str) -> dict:
-        return self.connect(server_id)
+    async def refresh(self, server_id: str) -> dict:
+        return await self.connect(server_id)
 
     # --- Transport implementations ---
 

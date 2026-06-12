@@ -102,7 +102,7 @@ async def create_server(
         await session.refresh(server)
 
     # Auto-connect after creation
-    connect_result = mcp_client_service.connect(server.id)
+    connect_result = await mcp_client_service.connect(server.id)
     async with AsyncSessionLocal() as session:
         updated = await session.get(MCPServer, server.id)
         if not updated:
@@ -170,7 +170,7 @@ async def connect_server(
     async with AsyncSessionLocal() as session:
         if not await session.get(MCPServer, server_id):
             raise HTTPException(status_code=404, detail="MCP server not found")
-    result = mcp_client_service.connect(server_id)
+    result = await mcp_client_service.connect(server_id)
     async with AsyncSessionLocal() as session:
         server = await session.get(MCPServer, server_id)
         response = _server_to_response(server) if server else {}
@@ -186,7 +186,7 @@ async def refresh_server(
     async with AsyncSessionLocal() as session:
         if not await session.get(MCPServer, server_id):
             raise HTTPException(status_code=404, detail="MCP server not found")
-    result = mcp_client_service.refresh(server_id)
+    result = await mcp_client_service.refresh(server_id)
     async with AsyncSessionLocal() as session:
         server = await session.get(MCPServer, server_id)
         response = _server_to_response(server) if server else {}

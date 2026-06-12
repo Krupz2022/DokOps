@@ -215,8 +215,8 @@ async def _search_container_image_tool(image_name: str) -> Dict[str, Any]:
     # Allow if: registry lookup is enabled OR private registries are configured.
     # The is_enabled() setting gates public registry lookups in the UI, but the AI
     # should always be able to query private registries the user has explicitly connected.
-    has_private = bool(_registry_svc._get_user_registries())
-    if not _registry_svc.is_enabled() and not has_private:
+    has_private = bool(await _registry_svc._get_user_registries())
+    if not await _registry_svc.is_enabled() and not has_private:
         return {
             "success": False,
             "data": None,
@@ -248,7 +248,7 @@ async def _search_container_image_tool(image_name: str) -> Dict[str, Any]:
 
 
 async def _fetch_url_tool(url: str) -> Dict[str, Any]:
-    if not _registry_svc.is_enabled():
+    if not await _registry_svc.is_enabled():
         return {
             "success": False,
             "data": None,
@@ -271,9 +271,9 @@ async def _fetch_url_tool(url: str) -> Dict[str, Any]:
 
 async def _check_registry_image_tool(registry_name: str, image: str) -> Dict[str, Any]:
     """Check if a specific image:tag exists in a named connected registry."""
-    reg = _registry_svc.find_registry_by_name_or_url(registry_name)
+    reg = await _registry_svc.find_registry_by_name_or_url(registry_name)
     if not reg:
-        all_regs = _registry_svc._get_user_registries()
+        all_regs = await _registry_svc._get_user_registries()
         names = [r.name for r in all_regs]
         return {
             "success": False,
@@ -294,9 +294,9 @@ async def _check_registry_image_tool(registry_name: str, image: str) -> Dict[str
 
 async def _list_registry_catalog_tool(registry_name: str) -> Dict[str, Any]:
     """List all repositories (image names) available in a named connected registry."""
-    reg = _registry_svc.find_registry_by_name_or_url(registry_name)
+    reg = await _registry_svc.find_registry_by_name_or_url(registry_name)
     if not reg:
-        all_regs = _registry_svc._get_user_registries()
+        all_regs = await _registry_svc._get_user_registries()
         names = [r.name for r in all_regs]
         return {
             "success": False,

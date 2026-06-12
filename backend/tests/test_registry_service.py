@@ -74,33 +74,36 @@ def test_fetch_allowlist_contains_github():
 
 # --- RegistryService unit tests (mocked I/O) ---
 
-def test_is_enabled_false_when_no_setting():
+@pytest.mark.asyncio
+async def test_is_enabled_false_when_no_setting():
     from app.models.setting import SystemSetting
     svc = RegistryService()
-    with patch("app.services.registry_service.Session") as mock_session_cls:
-        mock_db = MagicMock()
+    with patch("app.services.registry_service.AsyncSessionLocal") as mock_session_cls:
+        mock_db = AsyncMock()
         mock_db.get.return_value = None
-        mock_session_cls.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
-        assert svc.is_enabled() is False
+        mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        assert await svc.is_enabled() is False
 
 
-def test_is_enabled_true():
+@pytest.mark.asyncio
+async def test_is_enabled_true():
     from app.models.setting import SystemSetting
     svc = RegistryService()
-    with patch("app.services.registry_service.Session") as mock_session_cls:
-        mock_db = MagicMock()
+    with patch("app.services.registry_service.AsyncSessionLocal") as mock_session_cls:
+        mock_db = AsyncMock()
         mock_db.get.return_value = SystemSetting(key="registry_lookup_enabled", value="true")
-        mock_session_cls.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
-        assert svc.is_enabled() is True
+        mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        assert await svc.is_enabled() is True
 
 
 @pytest.mark.asyncio
 async def test_search_image_docker_hub():
     svc = RegistryService()
     mock_tags = ["latest", "1.25", "1.24", "alpine"]
-    with patch("app.services.registry_service._search_docker_hub", new=AsyncMock(return_value=mock_tags)):
+    with patch("app.services.registry_service._search_docker_hub", new=AsyncMock(return_value=mock_tags)), \
+         patch.object(svc, "_get_user_registries", new=AsyncMock(return_value=[])):
         results = await svc.search_image("nginx")
     assert len(results) == 1
     assert results[0]["registry"] == "hub.docker.com"
@@ -111,7 +114,8 @@ async def test_search_image_docker_hub():
 @pytest.mark.asyncio
 async def test_search_image_returns_empty_on_no_results():
     svc = RegistryService()
-    with patch("app.services.registry_service._search_docker_hub", new=AsyncMock(return_value=[])):
+    with patch("app.services.registry_service._search_docker_hub", new=AsyncMock(return_value=[])), \
+         patch.object(svc, "_get_user_registries", new=AsyncMock(return_value=[])):
         results = await svc.search_image("definitely-does-not-exist-xyz")
     assert results == []
 
@@ -129,7 +133,7 @@ async def test_search_image_ghcr():
 @pytest.mark.asyncio
 async def test_fetch_url_blocked_domain():
     svc = RegistryService()
-    with patch.object(svc, "_get_fetch_allowlist", return_value={"hub.docker.com"}):
+    with patch.object(svc, "_get_fetch_allowlist", new=AsyncMock(return_value={"hub.docker.com"})):
         with pytest.raises(ValueError, match="not in the registry fetch allowlist"):
             await svc.fetch_url("https://evil.example.com/script")
 

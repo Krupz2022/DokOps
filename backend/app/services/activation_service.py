@@ -2,18 +2,19 @@ import uuid
 from datetime import datetime
 
 import httpx
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.license_constants import ACTIVATION_ENABLED, LICENSE_SERVER_URL
 from app.core.db import engine
 from app.models.activation import Activation
 
 
-async def activate_key(license_key: str, db: Session) -> dict:
+async def activate_key(license_key: str, db: AsyncSession) -> dict:
     if not ACTIVATION_ENABLED:
         return {"success": True, "message": "Activation not required"}
 
-    existing = db.exec(select(Activation)).first()
+    existing = (await db.exec(select(Activation))).first()
     instance_id = existing.instance_id if existing else str(uuid.uuid4())
 
     try:
@@ -44,15 +45,15 @@ async def activate_key(license_key: str, db: Session) -> dict:
             last_heartbeat_at=now,
             is_active=True,
         ))
-    db.commit()
+    await db.commit()
     return {"success": True, "message": "Activated successfully"}
 
 
-def get_status(db: Session) -> dict:
+async def get_status(db: AsyncSession) -> dict:
     if not ACTIVATION_ENABLED:
         return {"activation_required": False, "activated": True}
 
-    row = db.exec(select(Activation)).first()
+    row = (await db.exec(select(Activation))).first()
     if not row:
         return {"activation_required": True, "activated": False, "last_heartbeat": None}
     return {

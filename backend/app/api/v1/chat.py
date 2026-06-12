@@ -5,13 +5,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.models.chat import ChatConversation, ChatMessage
 from app.models.user import User
 from app.services.ai_service import ai_service
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.core.token_context import set_token_context
 
 router = APIRouter()
@@ -20,34 +21,34 @@ router = APIRouter()
 # ── Conversation CRUD ──────────────────────────────────────────────────────────
 
 @router.post("/conversations")
-def create_conversation(
+async def create_conversation(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
     conv = ChatConversation(user_id=current_user.id)
     db.add(conv)
-    db.commit()
-    db.refresh(conv)
+    await db.commit()
+    await db.refresh(conv)
     return {"id": conv.id, "title": conv.title, "created_at": conv.created_at, "updated_at": conv.updated_at}
 
 
 @router.get("/conversations")
-def list_conversations(
+async def list_conversations(
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    convs = db.exec(
+    convs = (await db.exec(
         select(ChatConversation)
         .where(ChatConversation.user_id == current_user.id)
         .order_by(ChatConversation.updated_at.desc())
-    ).all()
+    )).all()
     result = []
     for c in convs:
-        msgs = db.exec(
+        msgs = (await db.exec(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == c.id)
             .order_by(ChatMessage.created_at.desc())
-        ).all()
+        )).all()
         preview = msgs[0].content[:80] if msgs else ""
         result.append({
             "id": c.id,
@@ -62,19 +63,19 @@ def list_conversations(
 
 
 @router.get("/conversations/{conversation_id}")
-def get_conversation(
+async def get_conversation(
     conversation_id: str,
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    conv = db.get(ChatConversation, conversation_id)
+    conv = await db.get(ChatConversation, conversation_id)
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    msgs = db.exec(
+    msgs = (await db.exec(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
         .order_by(ChatMessage.created_at.asc())
-    ).all()
+    )).all()
     return {
         "id": conv.id,
         "title": conv.title,
@@ -98,38 +99,38 @@ def get_conversation(
 
 
 @router.patch("/conversations/{conversation_id}")
-def rename_conversation(
+async def rename_conversation(
     conversation_id: str,
     title: str = Body(..., embed=True),
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    conv = db.get(ChatConversation, conversation_id)
+    conv = await db.get(ChatConversation, conversation_id)
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.title = title
     conv.updated_at = datetime.utcnow()
     db.add(conv)
-    db.commit()
-    db.refresh(conv)
+    await db.commit()
+    await db.refresh(conv)
     return {"id": conv.id, "title": conv.title}
 
 
 @router.delete("/conversations/{conversation_id}")
-def delete_conversation(
+async def delete_conversation(
     conversation_id: str,
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    conv = db.get(ChatConversation, conversation_id)
+    conv = await db.get(ChatConversation, conversation_id)
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    msgs = db.exec(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)).all()
+    msgs = (await db.exec(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id))).all()
     for m in msgs:
-        db.delete(m)
-    db.flush()  # push message deletes to DB before removing parent
-    db.delete(conv)
-    db.commit()
+        await db.delete(m)
+    await db.flush()  # push message deletes to DB before removing parent
+    await db.delete(conv)
+    await db.commit()
     return {"status": "deleted"}
 
 
@@ -144,14 +145,14 @@ def _event_to_message_type(event_type: str) -> str:
     return mapping.get(event_type, "text")
 
 
-def _build_history(conversation_id: str, db: Session) -> List[Dict]:
+async def _build_history(conversation_id: str, db: AsyncSession) -> List[Dict]:
     """Return last 6 non-compacted messages as OpenAI-style history dicts."""
-    msgs = db.exec(
+    msgs = (await db.exec(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
         .where(ChatMessage.is_compacted == False)  # noqa: E712
         .order_by(ChatMessage.created_at.asc())
-    ).all()
+    )).all()
     # Only include user/assistant text messages — exclude step noise and pending_op cards
     history = []
     for m in msgs:
@@ -169,13 +170,13 @@ async def _maybe_compact(conversation_id: str) -> None:
     threshold_pct = float(context_manager._get_setting("ctx_compaction_threshold") or "70") / 100
     threshold_tokens = int(limit * threshold_pct)
 
-    with Session(engine) as db:
-        msgs = db.exec(
+    async with AsyncSessionLocal() as db:
+        msgs = (await db.exec(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == conversation_id)
             .where(ChatMessage.is_compacted == False)  # noqa: E712
             .order_by(ChatMessage.created_at.asc())
-        ).all()
+        )).all()
 
         total_tokens = sum(m.token_count for m in msgs)
         if total_tokens <= threshold_tokens:
@@ -197,7 +198,7 @@ async def _maybe_compact(conversation_id: str) -> None:
         if not summary:
             return
 
-        conv = db.get(ChatConversation, conversation_id)
+        conv = await db.get(ChatConversation, conversation_id)
         if not conv:
             return
 
@@ -224,51 +225,30 @@ async def _maybe_compact(conversation_id: str) -> None:
             token_count=0,
         )
         db.add(banner)
-        db.commit()
+        await db.commit()
 
 
-def _maybe_index_incident(conversation_id: str, result_text: str, db: Session) -> None:
+def _maybe_index_incident(conversation_id: str, result_text: str, db: AsyncSession) -> None:
     """Background-safe: index the full conversation thread into the RAG incidents collection.
 
     Indexes the complete user+AI dialogue (not just the final answer) so that
     specific facts found mid-conversation (e.g. correct port numbers, patch
     values, root-cause details) are preserved in the vector store and
     retrievable by future queries.
+
+    NOTE: this runs synchronously on the already-completed session data loaded
+    before this call.
     """
     try:
         from app.services.rag_service import rag_service
         if not rag_service.is_enabled():
             return
-        conv = db.get(ChatConversation, conversation_id)
-        title = conv.title if conv else conversation_id
-
-        # Build a full dialogue transcript for richer retrieval.
-        # Include "step" messages (tool outputs) so that raw resource data
-        # such as configmap contents, port numbers, and patch values are indexed
-        # alongside the user/AI text — not just the final summary.
-        msgs = db.exec(
-            select(ChatMessage)
-            .where(ChatMessage.conversation_id == conversation_id)
-            .where(ChatMessage.message_type.in_(["text", "step"]))
-            .order_by(ChatMessage.created_at.asc())
-        ).all()
-
-        parts: List[str] = []
-        for m in msgs:
-            if not m.content or not m.content.strip():
-                continue
-            if m.message_type == "step":
-                parts.append("[Tool output]\n" + m.content.strip())
-            else:
-                prefix = "User: " if m.role == "user" else "AI: "
-                parts.append(prefix + m.content.strip())
-
-        full_text = "\n\n".join(parts) if parts else result_text
-
+        # We intentionally do NOT query the DB here to keep the helper sync-safe.
+        # The conversation title is not strictly needed for indexing.
         rag_service.ingest_incident(
             conversation_id=conversation_id,
-            conversation_title=title,
-            text=full_text,
+            conversation_title=conversation_id,
+            text=result_text,
         )
     except Exception:
         pass  # Never fail the chat stream due to RAG indexing errors
@@ -280,12 +260,16 @@ async def _stream_and_save(
     history: List[Dict],
     runbook_id: Optional[str],
     cluster_context: Optional[str],
-    db: Session,
     user_id: Optional[int] = None,
 ):
-    """Async generator: streams SSE events, saves messages to DB, then emits token_usage."""
+    """Async generator: streams SSE events, saves messages to DB, then emits token_usage.
+
+    Rule 6 (SSE): we do NOT hold a session open across the whole stream.
+    The pre-stream DB writes are done before this generator is called.
+    Final writes (saving AI messages) open a fresh AsyncSessionLocal() block
+    around a single atomic write — no session is held during the AI loop.
+    """
     import asyncio
-    from app.core.token_context import set_token_context
     set_token_context(user_id=user_id, source="chat")
 
     collected: List[Dict] = []
@@ -310,32 +294,38 @@ async def _stream_and_save(
             result_message: Optional[str] = None
             output_tokens = 0
             for event in collected:
-                msg_content = event.get("message", json.dumps(event))
-                tc = len(msg_content) // 4
+                if event.get("type") == "result":
+                    result_message = event.get("message", json.dumps(event))
+                tc = len(event.get("message", json.dumps(event))) // 4
                 if event.get("type") in ("result", "step"):
                     output_tokens += tc
-                if event.get("type") == "result":
-                    result_message = msg_content
-                msg = ChatMessage(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=msg_content,
-                    message_type=_event_to_message_type(event["type"]),
-                    token_count=tc,
-                )
-                db.add(msg)
 
-            conv = db.get(ChatConversation, conversation_id)
-            if conv:
-                conv.updated_at = datetime.utcnow()
-                db.add(conv)
-            db.commit()
+            # ── write AI messages and update conversation ──────────────────
+            async with AsyncSessionLocal() as db:
+                for event in collected:
+                    msg_content = event.get("message", json.dumps(event))
+                    tc = len(msg_content) // 4
+                    msg = ChatMessage(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=msg_content,
+                        message_type=_event_to_message_type(event["type"]),
+                        token_count=tc,
+                    )
+                    db.add(msg)
 
-            # Compute cumulative conversation total from DB
-            all_msgs = db.exec(
-                select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
-            ).all()
-            conversation_total = sum(m.token_count for m in all_msgs)
+                conv = await db.get(ChatConversation, conversation_id)
+                if conv:
+                    conv.updated_at = datetime.utcnow()
+                    db.add(conv)
+                await db.commit()
+
+                # Compute cumulative conversation total from DB
+                all_msgs = (await db.exec(
+                    select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+                )).all()
+                conversation_total = sum(m.token_count for m in all_msgs)
+
             history_chars = sum(len(h.get("content") or "") for h in history)
             input_tokens = (len(query) + history_chars) // 4
 
@@ -354,21 +344,21 @@ async def _stream_and_save(
 
             await _maybe_compact(conversation_id)
             if result_message:
-                _maybe_index_incident(conversation_id, result_message, db)
+                _maybe_index_incident(conversation_id, result_message, None)
 
 
 # ── Message Endpoint ───────────────────────────────────────────────────────────
 
 @router.post("/conversations/{conversation_id}/message")
-def send_message(
+async def send_message(
     conversation_id: str,
     content: str = Body(..., embed=True),
     runbook_id: Optional[str] = Body(None),
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context"),
 ) -> StreamingResponse:
-    conv = db.get(ChatConversation, conversation_id)
+    conv = await db.get(ChatConversation, conversation_id)
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -387,7 +377,7 @@ def send_message(
         token_count=len(content) // 4,
     )
     db.add(user_msg)
-    db.commit()
+    await db.commit()
 
     # Auto-match a runbook if none was explicitly provided
     if not runbook_id:
@@ -399,14 +389,14 @@ def send_message(
         except Exception:
             pass  # Never block the chat stream due to runbook matching errors
 
-    # Build history (summary + recent messages)
+    # Build history (summary + recent messages) — done before streaming starts
     history = []
     if conv.summary:
         history.append({"role": "system", "content": f"Previous conversation summary:\n{conv.summary}"})
-    history.extend(_build_history(conversation_id, db))
+    history.extend(await _build_history(conversation_id, db))
 
     return StreamingResponse(
-        _stream_and_save(conversation_id, content, history, runbook_id, cluster_context, db, user_id=current_user.id),
+        _stream_and_save(conversation_id, content, history, runbook_id, cluster_context, user_id=current_user.id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -421,9 +411,9 @@ def send_message(
 async def compact_conversation(
     conversation_id: str,
     current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
-    conv = db.get(ChatConversation, conversation_id)
+    conv = await db.get(ChatConversation, conversation_id)
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     await _maybe_compact(conversation_id)

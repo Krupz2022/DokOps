@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.workflow import Workflow, WorkflowRun
 from app.core.god_mode import is_god_mode_active
@@ -168,7 +168,7 @@ def _build_notification_message(
 async def _post_final_report(
     summary: str,
     approved_tools: List[Dict[str, Any]],
-    db: Session,
+    db: AsyncSession,
     notifications: Optional[Dict[str, Any]] = None,
     agent_name: str = "Agent",
     run: Optional["WorkflowRun"] = None,
@@ -187,7 +187,7 @@ async def _post_final_report(
     if wf and wf.agent_cluster_ids:
         from app.models.cluster import ClusterConnection
         for uid in wf.agent_cluster_ids:
-            conn = db.get(ClusterConnection, uid)
+            conn = await db.get(ClusterConnection, uid)
             if conn:
                 cluster_names.append(conn.name)
 
@@ -244,20 +244,20 @@ def _build_agent_system_prompt(wf: Workflow) -> str:
     )
 
 
-def _append_step(run: WorkflowRun, entry: Dict[str, Any], db: Session) -> None:
-    db.refresh(run)
+async def _append_step(run: WorkflowRun, entry: Dict[str, Any], db: AsyncSession) -> None:
+    await db.refresh(run)
     results = list(run.step_results)
     results.append({**entry, "timestamp": datetime.now(timezone.utc).isoformat()})
     run.step_results = results
     db.add(run)
-    db.commit()
+    await db.commit()
 
 
 async def _pause_for_approval(
     run: WorkflowRun,
     tool_name: str,
     wf: Workflow,
-    db: Session,
+    db: AsyncSession,
 ) -> str:
     """Pause the run until approve/skip is called or timeout. Returns 'approve' or 'skip'."""
     event = asyncio.Event()
@@ -266,7 +266,7 @@ async def _pause_for_approval(
 
     run.status = "awaiting_approval"
     db.add(run)
-    db.commit()
+    await db.commit()
 
     try:
         await asyncio.wait_for(event.wait(), timeout=wf.agent_approval_timeout_seconds)
@@ -278,7 +278,7 @@ async def _pause_for_approval(
 
     run.status = "running"
     db.add(run)
-    db.commit()
+    await db.commit()
 
     return decision
 
@@ -287,7 +287,7 @@ async def _run_loop_for_cluster(
     run: WorkflowRun,
     wf: Workflow,
     cluster_name: Optional[str],
-    db: Session,
+    db: AsyncSession,
 ) -> str:
     """Run the full ReAct loop for one cluster. Returns AI summary string."""
     from app.services.ai_service import ai_service
@@ -319,7 +319,7 @@ async def _run_loop_for_cluster(
 
             # Block tools not in the approved list
             if tool_name and tool_name not in approved_names:
-                _append_step(run, {
+                await _append_step(run, {
                     "type": "tool_blocked",
                     "tool": tool_name,
                     "message": f"Tool '{tool_name}' is not in the approved list — skipped.",
@@ -344,7 +344,7 @@ async def _run_loop_for_cluster(
                         "message": f"⏸ Awaiting approval to run '{tool_name}'",
                     })
                     if decision == "skip":
-                        _append_step(run, {
+                        await _append_step(run, {
                             "type": "approval_skipped",
                             "tool": tool_name,
                             "message": f"User skipped '{tool_name}'.",
@@ -352,7 +352,7 @@ async def _run_loop_for_cluster(
                         await emit({"type": "step", "message": f"⏭ '{tool_name}' skipped by user"})
                         continue
 
-            _append_step(run, event, db)
+            await _append_step(run, event, db)
             await emit(event)
 
             if event.get("type") == "result":
@@ -367,28 +367,28 @@ async def _run_loop_for_cluster(
 async def run_agent_background(
     run_id: int,
     workflow_id: int,
-    db: Optional[Session] = None,
+    db: Optional[AsyncSession] = None,
 ) -> None:
     """Main entry point: execute the agent goal across all selected clusters.
 
     When ``db`` is provided it is used directly (unit-test path); otherwise a
-    new session is opened via the module-level engine.
+    new session is opened via AsyncSessionLocal.
     """
-    from contextlib import contextmanager
+    from contextlib import asynccontextmanager
     from app.services import workflow_service as wf_svc
-    from app.core.db import engine
+    from app.core.db import AsyncSessionLocal
 
-    @contextmanager
-    def _session():
+    @asynccontextmanager
+    async def _session():
         if db is not None:
             yield db
         else:
-            with Session(engine) as s:
+            async with AsyncSessionLocal() as s:
                 yield s
 
-    with _session() as db:
-        run = db.get(WorkflowRun, run_id)
-        wf = db.get(Workflow, workflow_id)
+    async with _session() as db:
+        run = await db.get(WorkflowRun, run_id)
+        wf = await db.get(Workflow, workflow_id)
         if not run or not wf:
             return
 
@@ -400,7 +400,7 @@ async def run_agent_background(
 
         run.status = "running"
         db.add(run)
-        db.commit()
+        await db.commit()
 
         summaries: List[str] = []
         cluster_uuid_list: List[Optional[str]] = wf.agent_cluster_ids if wf.agent_cluster_ids else [None]
@@ -410,7 +410,7 @@ async def run_agent_background(
             for cluster_uuid in cluster_uuid_list:
                 cluster_name: Optional[str] = None
                 if cluster_uuid is not None:
-                    conn = db.get(ClusterConnection, cluster_uuid)
+                    conn = await db.get(ClusterConnection, cluster_uuid)
                     cluster_name = conn.name if conn else None
                     await emit({"type": "step", "message": f"🔄 Starting loop for cluster {cluster_name or cluster_uuid}"})
                 summary = await _run_loop_for_cluster(run, wf, cluster_name, db)
@@ -447,7 +447,7 @@ async def run_agent_background(
 
         try:
             db.add(run)
-            db.commit()
+            await db.commit()
         except Exception as db_err:
             import logging as _log
             _log.getLogger(__name__).error("run_agent_background: DB commit failed: %s", db_err)

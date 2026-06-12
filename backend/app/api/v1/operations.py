@@ -198,7 +198,7 @@ async def approve_pending_operation(
     try:
         if tool_name.startswith("mcp__"):
             from app.services.mcp_client_service import mcp_client_service
-            result = mcp_client_service.execute_tool(tool_name, tool_inputs, confirmed=True)
+            result = await mcp_client_service.execute_tool(tool_name, tool_inputs, confirmed=True)
         else:
             result = await execute_tool_async(tool_name, tool_inputs, confirmed=True)
 

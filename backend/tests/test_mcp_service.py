@@ -1,18 +1,37 @@
+import asyncio
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel import SQLModel, create_engine, Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 @pytest.fixture(autouse=True)
 def isolated_db(monkeypatch):
+    # Sync engine for test-side seed helpers
     test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    # Async engine for the service under test
+    test_async_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    test_async_session_factory = async_sessionmaker(
+        test_async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     import app.models.mcp  # noqa
     SQLModel.metadata.create_all(test_engine)
-    monkeypatch.setattr("app.services.mcp_client_service.engine", test_engine)
+
+    # Seed the async DB from the sync one — run DDL synchronously
+    async def _setup_async():
+        async with test_async_engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+
+    asyncio.run(_setup_async())
+
+    monkeypatch.setattr("app.services.mcp_client_service.AsyncSessionLocal", test_async_session_factory)
     monkeypatch.setattr("app.core.db.engine", test_engine)
-    yield test_engine
+    yield test_engine, test_async_session_factory
 
 
 def test_mcp_server_model_creates_and_reads(isolated_db):
+    sync_engine, async_factory = isolated_db
     from app.models.mcp import MCPServer
     server = MCPServer(
         id="test-id",
@@ -23,7 +42,7 @@ def test_mcp_server_model_creates_and_reads(isolated_db):
         auth_type="none",
         is_connected=False,
     )
-    with Session(isolated_db) as session:
+    with Session(sync_engine) as session:
         session.add(server)
         session.commit()
         result = session.get(MCPServer, "test-id")
@@ -32,12 +51,13 @@ def test_mcp_server_model_creates_and_reads(isolated_db):
 
 
 def test_mcp_tool_model_creates_and_reads(isolated_db):
+    sync_engine, async_factory = isolated_db
     from app.models.mcp import MCPServer, MCPTool
     server = MCPServer(
         id="s1", name="S", description="d", transport="http",
         url="http://localhost:3000", auth_type="none", is_connected=True,
     )
-    with Session(isolated_db) as session:
+    with Session(sync_engine) as session:
         session.add(server)
         session.commit()
 
@@ -47,7 +67,7 @@ def test_mcp_tool_model_creates_and_reads(isolated_db):
         input_schema='{"type":"object","properties":{"title":{"type":"string"}}}',
         confirmation_override=None,
     )
-    with Session(isolated_db) as session:
+    with Session(sync_engine) as session:
         session.add(tool)
         session.commit()
         result = session.get(MCPTool, "t1")
@@ -90,6 +110,7 @@ def test_requires_confirmation_override_false_overrides_heuristic():
 
 
 def test_get_all_tools_for_prompt_format(isolated_db):
+    sync_engine, async_factory = isolated_db
     from app.models.mcp import MCPServer, MCPTool
     from app.services.mcp_client_service import MCPClientService
 
@@ -104,19 +125,24 @@ def test_get_all_tools_for_prompt_format(isolated_db):
         input_schema='{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}}}',
         confirmation_override=None,
     )
-    with Session(isolated_db) as session:
-        session.add(server)
-        session.add(tool)
-        session.commit()
+
+    async def _seed():
+        async with async_factory() as session:
+            session.add(server)
+            session.add(tool)
+            await session.commit()
+
+    asyncio.run(_seed())
 
     svc = MCPClientService()
-    prompt = svc.get_all_tools_for_prompt()
+    prompt = asyncio.run(svc.get_all_tools_for_prompt())
     assert "mcp__github_mcp__create_issue" in prompt
     assert "REQUIRES CONFIRMATION" in prompt
     assert "MCP TOOLS" in prompt
 
 
 def test_execute_tool_returns_pending_when_confirmation_required(isolated_db):
+    sync_engine, async_factory = isolated_db
     from app.models.mcp import MCPServer, MCPTool
     from app.services.mcp_client_service import MCPClientService
 
@@ -130,19 +156,24 @@ def test_execute_tool_returns_pending_when_confirmation_required(isolated_db):
         description="Delete a branch",
         input_schema='{"type":"object","properties":{"branch":{"type":"string"}}}',
     )
-    with Session(isolated_db) as session:
-        session.add(server)
-        session.add(tool)
-        session.commit()
+
+    async def _seed():
+        async with async_factory() as session:
+            session.add(server)
+            session.add(tool)
+            await session.commit()
+
+    asyncio.run(_seed())
 
     svc = MCPClientService()
-    result = svc.execute_tool("mcp__github_mcp__delete_branch", {"branch": "main"}, confirmed=False)
+    result = asyncio.run(svc.execute_tool("mcp__github_mcp__delete_branch", {"branch": "main"}, confirmed=False))
     assert result.get("requires_confirmation") is True
     assert "pending_operation" in result
 
 
 def test_connect_syncs_tools(isolated_db):
     from unittest.mock import patch
+    sync_engine, async_factory = isolated_db
     from app.models.mcp import MCPServer, MCPTool
     from app.services.mcp_client_service import MCPClientService
 
@@ -156,10 +187,14 @@ def test_connect_syncs_tools(isolated_db):
         id="stale", server_id="srv1", name="old_tool",
         description="old", input_schema="{}",
     )
-    with Session(isolated_db) as session:
-        session.add(server)
-        session.add(stale_tool)
-        session.commit()
+
+    async def _seed():
+        async with async_factory() as session:
+            session.add(server)
+            session.add(stale_tool)
+            await session.commit()
+
+    asyncio.run(_seed())
 
     fake_tools = [
         {"name": "new_tool_a", "description": "Tool A", "inputSchema": {"type": "object", "properties": {}}},
@@ -168,20 +203,23 @@ def test_connect_syncs_tools(isolated_db):
 
     svc = MCPClientService()
     with patch.object(svc, "_list_tools_http", return_value=fake_tools):
-        result = svc.connect("srv1")
+        result = asyncio.run(svc.connect("srv1"))
 
     assert result["connected"] is True
     assert result["tool_count"] == 2
 
-    with Session(isolated_db) as session:
-        tools = session.exec(
-            __import__("sqlmodel").select(MCPTool).where(MCPTool.server_id == "srv1")
-        ).all()
-        tool_names = {t.name for t in tools}
-        assert "old_tool" not in tool_names
-        assert "new_tool_a" in tool_names
-        assert "new_tool_b" in tool_names
+    async def _verify():
+        async with async_factory() as session:
+            tools = (await session.exec(
+                __import__("sqlmodel").select(MCPTool).where(MCPTool.server_id == "srv1")
+            )).all()
+            tool_names = {t.name for t in tools}
+            assert "old_tool" not in tool_names
+            assert "new_tool_a" in tool_names
+            assert "new_tool_b" in tool_names
 
-        updated_server = session.get(MCPServer, "srv1")
-        assert updated_server.is_connected is True
-        assert updated_server.last_connected_at is not None
+            updated_server = await session.get(MCPServer, "srv1")
+            assert updated_server.is_connected is True
+            assert updated_server.last_connected_at is not None
+
+    asyncio.run(_verify())

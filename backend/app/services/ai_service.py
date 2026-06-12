@@ -1550,7 +1550,7 @@ When done, give a per-pod root cause analysis.
 
             if provider == "GEMINI":
                 tools_schema = _registry.build_gemini_tools_schema(extra_tools=(custom_tools or []) + _obs_extra)
-                mcp_declarations = _mcp_svc.build_gemini_tools_schema()
+                mcp_declarations = await _mcp_svc.build_gemini_tools_schema()
                 if mcp_declarations:
                     tools_schema[0]["function_declarations"].extend(mcp_declarations)
             else:
@@ -1572,7 +1572,7 @@ When done, give a per-pod root cause analysis.
                 ]
                 _full_k8s_schema = _registry.build_openai_tools_schema()
                 _custom_schema = _registry.build_openai_tools_schema(extra_tools=custom_tools or [])[len(_full_k8s_schema):]
-                _mcp_schema = _mcp_svc.build_openai_tools_schema()
+                _mcp_schema = await _mcp_svc.build_openai_tools_schema()
 
                 tools_schema = self._select_dynamic_tools(
                     query, _obs_tools_schema, _full_k8s_schema, _mcp_schema, _custom_schema,
@@ -1583,7 +1583,7 @@ When done, give a per-pod root cause analysis.
 
             _agent_log.info("[AGENT] tools_schema built: %d tools", len(tools_schema))
 
-            mcp_tools_prompt = _mcp_svc.get_all_tools_for_prompt()
+            mcp_tools_prompt = await _mcp_svc.get_all_tools_for_prompt()
             mcp_section = f"{mcp_tools_prompt}\n\nMCP TOOL RULE: When the user asks about systems managed by an external MCP server (e.g. Uyuni, Jira, GitHub), prefer mcp__ prefixed tools over Kubernetes tools.\n\n" if mcp_tools_prompt else ""
 
             runbook_instruction = ""

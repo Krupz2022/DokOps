@@ -3,7 +3,6 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from sqlmodel import Session
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.workflow import Workflow, WorkflowRun
@@ -55,7 +54,7 @@ def _build_step_tool_schema(step: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _update_step_result(run: WorkflowRun, step_id: str, db: Session, **kwargs: Any) -> None:
+async def _update_step_result(run: WorkflowRun, step_id: str, db: AsyncSession, **kwargs: Any) -> None:
     results = list(run.step_results)
     for i, sr in enumerate(results):
         if sr.get("step_id") == step_id:
@@ -63,7 +62,7 @@ def _update_step_result(run: WorkflowRun, step_id: str, db: Session, **kwargs: A
             break
     run.step_results = results
     db.add(run)
-    db.commit()
+    await db.commit()
 
 
 async def create_run(
@@ -93,30 +92,28 @@ async def run_workflow_background(
     run_id: int,
     workflow_id: int,
     trigger_input: Dict[str, Any],
-    db: Optional[Session] = None,
+    db: Optional[AsyncSession] = None,
 ) -> None:
     """Execute a workflow run. Pushes SSE events to the run's queue.
 
     ``db`` may be injected by tests; production callers omit it and a fresh
     session is opened so the background task is never bound to a request session.
     """
-    from contextlib import contextmanager
+    from contextlib import asynccontextmanager
     from app.services.connectors import get_connector
-    from app.core.db import engine
+    from app.core.db import AsyncSessionLocal
 
-    @contextmanager
-    def _session():
+    @asynccontextmanager
+    async def _session():
         if db is not None:
             yield db
         else:
-            # TODO(Phase 4c): replace with AsyncSessionLocal once run_workflow_background
-            # is fully converted to async session ops throughout its body.
-            with Session(engine) as s:  # noqa: Phase-3d-escape
+            async with AsyncSessionLocal() as s:
                 yield s
 
-    with _session() as _db:
-        run = _db.get(WorkflowRun, run_id)
-        workflow = _db.get(Workflow, workflow_id)
+    async with _session() as _db:
+        run = await _db.get(WorkflowRun, run_id)
+        workflow = await _db.get(Workflow, workflow_id)
         if not run or not workflow:
             return
 
@@ -140,7 +137,7 @@ async def run_workflow_background(
             for s in workflow.steps
         ]
         _db.add(run)
-        _db.commit()
+        await _db.commit()
 
         context: Dict[str, Any] = {"input": trigger_input, "steps": {}}
         workflow_tool_executors: Dict[str, Any] = {}
@@ -157,14 +154,14 @@ async def run_workflow_background(
 
             async def make_executor(s: Dict[str, Any] = step, ov: str = output_var, sid: str = step_id):
                 async def executor(tool_inputs: Dict[str, Any]) -> str:
-                    _update_step_result(run, sid, _db, status="running", started_at=datetime.now(timezone.utc).isoformat())
+                    await _update_step_result(run, sid, _db, status="running", started_at=datetime.now(timezone.utc).isoformat())
                     await emit({"type": "step_update", "step_id": sid, "status": "running"})
                     try:
                         resolved_config = interpolate_config(s.get("config", {}), context)
                         connector = get_connector(s["connector_type"])
                         result = await connector.execute(resolved_config, tool_inputs)
                         context["steps"][ov] = result.get("data") or result
-                        _update_step_result(
+                        await _update_step_result(
                             run, sid, _db,
                             status="passed",
                             output=result,
@@ -174,7 +171,7 @@ async def run_workflow_background(
                         return json.dumps(result)
                     except Exception as e:
                         error_msg = str(e)
-                        _update_step_result(run, sid, _db, status="failed", error=error_msg, completed_at=datetime.now(timezone.utc).isoformat())
+                        await _update_step_result(run, sid, _db, status="failed", error=error_msg, completed_at=datetime.now(timezone.utc).isoformat())
                         await emit({"type": "step_update", "step_id": sid, "status": "failed", "error": error_msg})
                         if s.get("on_failure", "stop") == "stop":
                             raise
@@ -212,7 +209,7 @@ async def run_workflow_background(
 
         try:
             _db.add(run)
-            _db.commit()
+            await _db.commit()
         except Exception as db_err:
             import logging as _log
             _log.getLogger(__name__).error("run_workflow_background: DB commit failed: %s", db_err)

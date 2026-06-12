@@ -3,13 +3,14 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import get_current_user, get_db, require_god_mode
+from app.api.deps import get_current_user, get_async_db, require_god_mode
 from app.core.encryption import decrypt, encrypt
 from app.models.service_diag import ServiceCredential
 from app.models.user import User
-from app.services.service_credential_service import create_credential
+from app.services.service_credential_service import create_credential_async
 
 router = APIRouter()
 
@@ -61,10 +62,10 @@ def _to_read(cred: ServiceCredential) -> CredentialRead:
 
 
 @router.get("/", response_model=list[CredentialRead])
-def list_credentials(
+async def list_credentials(
     scope_type: Optional[str] = None,
     scope_id: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     query = select(ServiceCredential)
@@ -72,20 +73,20 @@ def list_credentials(
         query = query.where(ServiceCredential.scope_type == scope_type)
     if scope_id:
         query = query.where(ServiceCredential.scope_id == scope_id)
-    return [_to_read(c) for c in db.exec(query).all()]
+    return [_to_read(c) for c in (await db.exec(query)).all()]
 
 
 @router.post("/", response_model=CredentialRead, status_code=201)
-def add_credential(
+async def add_credential(
     body: CredentialCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
     if body.scope_type not in VALID_SCOPES:
         raise HTTPException(status_code=422, detail=f"scope_type must be one of {VALID_SCOPES}")
     if body.scope_type != "global" and not body.scope_id:
         raise HTTPException(status_code=422, detail="scope_id is required for non-global scopes")
-    cred = create_credential(
+    cred = await create_credential_async(
         db,
         scope_type=body.scope_type,
         service_type=body.service_type,
@@ -104,56 +105,56 @@ def add_credential(
 # to prevent FastAPI from treating "resolve" as a cred_id path parameter.
 
 @router.get("/resolve/{minion_id}/{service_type}")
-def resolve_preview(
+async def resolve_preview(
     minion_id: str,
     service_type: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """Returns which scope level would be used. Never returns the password."""
     from app.models.patch import MinionGroupMember
 
-    if db.exec(
+    if (await db.exec(
         select(ServiceCredential).where(
             ServiceCredential.scope_type == "minion",
             ServiceCredential.scope_id == minion_id,
             ServiceCredential.service_type == service_type,
         )
-    ).first():
+    )).first():
         return {"resolved": True, "scope_type": "minion"}
 
-    memberships = db.exec(
+    memberships = (await db.exec(
         select(MinionGroupMember).where(MinionGroupMember.minion_id == minion_id)
-    ).all()
+    )).all()
     for m in memberships:
-        if db.exec(
+        if (await db.exec(
             select(ServiceCredential).where(
                 ServiceCredential.scope_type == "group",
                 ServiceCredential.scope_id == m.group_id,
                 ServiceCredential.service_type == service_type,
             )
-        ).first():
+        )).first():
             return {"resolved": True, "scope_type": "group"}
 
-    if db.exec(
+    if (await db.exec(
         select(ServiceCredential).where(
             ServiceCredential.scope_type == "global",
             ServiceCredential.service_type == service_type,
         )
-    ).first():
+    )).first():
         return {"resolved": True, "scope_type": "global"}
 
     return {"resolved": False, "scope_type": None}
 
 
 @router.put("/{cred_id}", response_model=CredentialRead)
-def update_credential(
+async def update_credential(
     cred_id: str,
     body: CredentialCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    cred = db.get(ServiceCredential, cred_id)
+    cred = await db.get(ServiceCredential, cred_id)
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
     if body.scope_type not in VALID_SCOPES:
@@ -171,20 +172,20 @@ def update_credential(
     cred.extra = body.extra or "{}"
     cred.updated_at = datetime.utcnow()
     db.add(cred)
-    db.commit()
-    db.refresh(cred)
+    await db.commit()
+    await db.refresh(cred)
     return _to_read(cred)
 
 
 @router.delete("/{cred_id}")
-def delete_credential(
+async def delete_credential(
     cred_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    cred = db.get(ServiceCredential, cred_id)
+    cred = await db.get(ServiceCredential, cred_id)
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
-    db.delete(cred)
-    db.commit()
+    await db.delete(cred)
+    await db.commit()
     return {"deleted": True}

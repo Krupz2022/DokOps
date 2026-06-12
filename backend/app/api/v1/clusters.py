@@ -232,7 +232,7 @@ async def delete_cluster(
 # ── Cloud credentials ────────────────────────────────────────────────────────
 
 @router.post("/cloud/credentials/azure", response_model=CredentialOut)
-def save_azure_credential(
+async def save_azure_credential(
     body: AzureCredentialRequest,
     current_user: User = Depends(deps.get_current_user),
 ) -> CredentialOut:
@@ -242,12 +242,12 @@ def save_azure_credential(
         "client_id": body.client_id,
         "client_secret": body.client_secret,
     }
-    cred = save_cloud_credential("aks", blob, added_by=current_user.username)
+    cred = await save_cloud_credential("aks", blob, added_by=current_user.username)
     return CredentialOut(**cred.model_dump())
 
 
 @router.post("/cloud/credentials/aws", response_model=CredentialOut)
-def save_aws_credential(
+async def save_aws_credential(
     body: AwsCredentialRequest,
     current_user: User = Depends(deps.get_current_user),
 ) -> CredentialOut:
@@ -256,7 +256,7 @@ def save_aws_credential(
         "secret_access_key": body.secret_access_key,
         "region": body.region,
     }
-    cred = save_cloud_credential("eks", blob, added_by=current_user.username)
+    cred = await save_cloud_credential("eks", blob, added_by=current_user.username)
     return CredentialOut(**cred.model_dump())
 
 

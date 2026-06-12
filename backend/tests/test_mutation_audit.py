@@ -24,7 +24,7 @@ def isolated_db(monkeypatch):
 
     # Async engine on the *same* temp file so _write_mutation_audit writes there.
     async_url = f"sqlite+aiosqlite:///{db_path}"
-    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _async_engine = create_async_engine(async_url)
     _AsyncSessionLocal = async_sessionmaker(
         _async_engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -105,6 +105,7 @@ def test_approve_writes_success_audit(isolated_db):
     from unittest.mock import patch
     from app.api.v1.operations import approve_pending_operation, pending_operations_store
     from app.models.user import User
+    from app.core.god_mode import enable_god_mode, disable_god_mode
 
     op_id = "test-approve-001"
     pending_operations_store[op_id] = {
@@ -121,9 +122,13 @@ def test_approve_writes_success_audit(isolated_db):
     }
     mock_user = User(id=1, username="bob", hashed_password="x", is_superuser=True, role="admin", is_active=True)
 
-    from unittest.mock import AsyncMock
-    with patch("app.api.v1.operations.execute_tool_async", new=AsyncMock(return_value={"success": True, "data": {}})):
-        result = asyncio.run(approve_pending_operation(op_id, current_user=mock_user))
+    enable_god_mode(mock_user.id)
+    try:
+        from unittest.mock import AsyncMock
+        with patch("app.api.v1.operations.execute_tool_async", new=AsyncMock(return_value={"success": True, "data": {}})):
+            result = asyncio.run(approve_pending_operation(op_id, current_user=mock_user))
+    finally:
+        disable_god_mode(mock_user.id)
 
     assert result["status"] == "approved"
     with Session(isolated_db) as db:
@@ -141,6 +146,7 @@ def test_approve_writes_failure_audit(isolated_db):
     from unittest.mock import patch
     from app.api.v1.operations import approve_pending_operation, pending_operations_store
     from app.models.user import User
+    from app.core.god_mode import enable_god_mode, disable_god_mode
 
     op_id = "test-approve-002"
     pending_operations_store[op_id] = {
@@ -157,9 +163,13 @@ def test_approve_writes_failure_audit(isolated_db):
     }
     mock_user = User(id=1, username="carol", hashed_password="x", is_superuser=True, role="admin", is_active=True)
 
-    from unittest.mock import AsyncMock
-    with patch("app.api.v1.operations.execute_tool_async", new=AsyncMock(side_effect=RuntimeError("K8s error"))):
-        result = asyncio.run(approve_pending_operation(op_id, current_user=mock_user))
+    enable_god_mode(mock_user.id)
+    try:
+        from unittest.mock import AsyncMock
+        with patch("app.api.v1.operations.execute_tool_async", new=AsyncMock(side_effect=RuntimeError("K8s error"))):
+            result = asyncio.run(approve_pending_operation(op_id, current_user=mock_user))
+    finally:
+        disable_god_mode(mock_user.id)
 
     assert result["status"] == "failed"
     with Session(isolated_db) as db:

@@ -188,6 +188,10 @@ async def approve_pending_operation(
             detail="God Mode is not active for your session. Enable it from the header toggle, then retry.",
         )
 
+    # Claim the operation before the first await — concurrent approvals of the same
+    # op_id must hit the status guard, not double-execute the tool.
+    op["status"] = "in_progress"
+
     tool_name = op["tool_name"]
     tool_inputs = op["tool_inputs"]
 

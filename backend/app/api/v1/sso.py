@@ -1,7 +1,8 @@
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
@@ -21,12 +22,15 @@ def list_providers() -> list[dict]:
 
 
 @router.get("/{provider}/login")
-def sso_login(provider: str, db: Session = Depends(deps.get_db)) -> Any:
+async def sso_login(
+    provider: str,
+    db: AsyncSession = Depends(deps.get_async_db),
+) -> Any:
     """Redirect browser to provider authorization URL."""
     p = sso_service.get_provider_by_name(provider)
     if not p:
         raise HTTPException(status_code=404, detail=f"SSO provider '{provider}' not configured")
-    auth_url = sso_service.begin_sso_flow(provider=p, db=db)
+    auth_url = await sso_service.begin_sso_flow(provider=p, db=db)
     return RedirectResponse(url=auth_url, status_code=302)
 
 
@@ -35,17 +39,17 @@ async def sso_callback(
     provider: str,
     code: str,
     state: str,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ) -> Any:
     """Handle OIDC callback: validate, resolve role, mint DokOps JWT, redirect frontend."""
     # 1. Validate CSRF state
-    state_record = db.exec(select(OAuthState).where(OAuthState.state == state)).first()
+    state_record = (await db.exec(select(OAuthState).where(OAuthState.state == state))).first()
     if not state_record or state_record.provider != provider:
         raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
     # Capture nonce before deleting the record
     expected_nonce = state_record.nonce
-    db.delete(state_record)
-    db.commit()
+    await db.delete(state_record)
+    await db.commit()
 
     # 2. Get provider
     p = sso_service.get_provider_by_name(provider)
@@ -95,7 +99,7 @@ async def sso_callback(
     external_id, username, email = p.extract_identity(claims)
 
     # 9. Upsert user
-    user = sso_service.upsert_sso_user(
+    user = await sso_service.upsert_sso_user(
         db=db,
         provider=provider,
         external_id=external_id,

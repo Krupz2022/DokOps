@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import HTTPException, status
 from jose import jwt, JWTError
 from sqlmodel import Session, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 import httpx
 
 from app.core.config import Settings, settings
@@ -79,22 +80,22 @@ def get_provider_by_name(name: str) -> Optional[OIDCProvider]:
     return None
 
 
-def begin_sso_flow(provider: OIDCProvider, db: Session) -> str:
+async def begin_sso_flow(provider: OIDCProvider, db: AsyncSession) -> str:
     """Store CSRF state, return provider authorization URL."""
-    _purge_old_states(db)
+    await _purge_old_states(db)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, nonce=nonce, provider=provider.get_name()))
-    db.commit()
+    await db.commit()
     return provider.get_authorization_url(state=state, nonce=nonce)
 
 
-def _purge_old_states(db: Session) -> None:
+async def _purge_old_states(db: AsyncSession) -> None:
     cutoff = datetime.utcnow() - timedelta(minutes=10)
-    old = db.exec(select(OAuthState).where(OAuthState.created_at < cutoff)).all()
+    old = (await db.exec(select(OAuthState).where(OAuthState.created_at < cutoff))).all()
     for s in old:
-        db.delete(s)
-    db.commit()
+        await db.delete(s)
+    await db.commit()
 
 
 async def fetch_jwks(jwks_uri: str) -> dict:
@@ -141,8 +142,8 @@ async def validate_id_token(id_token: str, provider: OIDCProvider) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {e}")
 
 
-def upsert_sso_user(
-    db: Session,
+async def upsert_sso_user(
+    db: AsyncSession,
     provider: str,
     external_id: str,
     email: Optional[str],
@@ -152,13 +153,13 @@ def upsert_sso_user(
     auto_provision: bool,
 ) -> User:
     # 1. Match by provider + external_id
-    user = db.exec(
+    user = (await db.exec(
         select(User).where(User.provider == provider, User.external_id == external_id)
-    ).first()
+    )).first()
 
     # 2. Fallback: match by email
     if not user and email:
-        user = db.exec(select(User).where(User.email == email)).first()
+        user = (await db.exec(select(User).where(User.email == email))).first()
 
     if user:
         # Preserve role/is_superuser set locally by an admin — only update on first provision.
@@ -167,8 +168,8 @@ def upsert_sso_user(
         user.provider = provider
         user.provider_refresh_token = encrypt(refresh_token) if refresh_token else None
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         return user
 
     if not auto_provision:
@@ -189,8 +190,8 @@ def upsert_sso_user(
         provider_refresh_token=encrypt(refresh_token) if refresh_token else None,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 

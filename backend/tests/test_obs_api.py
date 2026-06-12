@@ -51,8 +51,8 @@ def client_fixture(session: Session, monkeypatch):
 
     app.dependency_overrides[deps.get_db] = get_session_override
     app.dependency_overrides[deps.get_async_db] = get_async_session_override
-    # Also patch the module-level engine used in integrations_obs for Session(engine) calls
-    monkeypatch.setattr("app.api.v1.integrations_obs.engine", session.bind)
+    # Patch the async sessionmaker used directly in integrations_obs
+    monkeypatch.setattr("app.api.v1.integrations_obs._db.AsyncSessionLocal", _AsyncSessionLocal)
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()

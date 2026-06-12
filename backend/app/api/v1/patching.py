@@ -5,9 +5,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field as PydanticField
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import get_current_user, get_db, require_god_mode
+from app.api.deps import get_async_db, get_current_user, require_god_mode
 from app.models.patch import (
     MinionGroup, MinionGroupMember, MinionPatch, PatchAlertEvent, PatchPipeline,
     PatchPromotion, PatchPromotionResult, PatchSchedule, PipelineStage,
@@ -21,32 +22,32 @@ router = APIRouter()
 # ── Compliance ───────────────────────────────────────────────────────────────
 
 @router.get("/compliance")
-def compliance_by_device(
+async def compliance_by_device(
     org_id: Optional[str] = None,
     group_id: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """Per-device patch summary. Filterable by org or group."""
     minion_ids: Optional[list[str]] = None
     if group_id:
-        minion_ids = [m.minion_id for m in db.exec(
+        minion_ids = [m.minion_id for m in (await db.exec(
             select(MinionGroupMember).where(MinionGroupMember.group_id == group_id)
-        ).all()]
+        )).all()]
     elif org_id:
-        groups = db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id)).all()
-        minion_ids = [m.minion_id for g in groups for m in db.exec(
+        groups = (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all()
+        minion_ids = [m.minion_id for g in groups for m in (await db.exec(
             select(MinionGroupMember).where(MinionGroupMember.group_id == g.id)
-        ).all()]
+        )).all()]
 
     q = select(Minion)
     if minion_ids is not None:
         q = q.where(Minion.id.in_(minion_ids))
-    minions = db.exec(q).all()
+    minions = (await db.exec(q)).all()
 
     result = []
     for m in minions:
-        patches = db.exec(select(MinionPatch).where(MinionPatch.minion_id == m.id)).all()
+        patches = (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == m.id))).all()
         critical = sum(1 for p in patches if p.severity == "critical")
         high = sum(1 for p in patches if p.severity == "high")
         last_scan = max((p.scanned_at for p in patches), default=None) or m.last_patch_scan
@@ -70,13 +71,13 @@ def compliance_by_device(
 
 
 @router.get("/by-device/{minion_id}")
-def patches_for_device(
+async def patches_for_device(
     minion_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """All patches for a single device."""
-    patches = db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id)).all()
+    patches = (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all()
     return [
         {
             "package_name": p.package_name,
@@ -95,14 +96,14 @@ def patches_for_device(
 
 
 @router.get("/by-cve")
-def compliance_by_cve(
-    db: Session = Depends(get_db),
+async def compliance_by_cve(
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """Aggregate view: one row per advisory/CVE with affected device count.
     Only includes patches for minions that still exist (no orphaned rows)."""
-    existing_minion_ids = {m.id for m in db.exec(select(Minion)).all()}
-    all_patches = db.exec(select(MinionPatch)).all()
+    existing_minion_ids = {m.id for m in (await db.exec(select(Minion))).all()}
+    all_patches = (await db.exec(select(MinionPatch))).all()
     advisory_map: dict[str, dict] = {}
     for p in all_patches:
         if p.minion_id not in existing_minion_ids:
@@ -123,12 +124,12 @@ def compliance_by_cve(
 
 
 @router.get("/minions/{minion_id}/patches")
-def get_minion_patches(
+async def get_minion_patches(
     minion_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    return db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id)).all()
+    return (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all()
 
 
 # ── Patch Apply ──────────────────────────────────────────────────────────────
@@ -176,75 +177,75 @@ class StageUpdate(BaseModel):
 
 
 @router.get("/organisations/{org_id}/pipelines")
-def list_pipelines(org_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    pipelines = db.exec(select(PatchPipeline).where(PatchPipeline.org_id == org_id)).all()
+async def list_pipelines(org_id: str, db: AsyncSession = Depends(get_async_db), _: User = Depends(get_current_user)):
+    pipelines = (await db.exec(select(PatchPipeline).where(PatchPipeline.org_id == org_id))).all()
     result = []
     for p in pipelines:
-        stages = db.exec(
+        stages = (await db.exec(
             select(PipelineStage).where(PipelineStage.pipeline_id == p.id)
             .order_by(PipelineStage.order)
-        ).all()
+        )).all()
         result.append({**p.model_dump(), "stages": [s.model_dump() for s in stages]})
     return result
 
 
 @router.delete("/pipelines/{pipeline_id}")
-def delete_pipeline(
+async def delete_pipeline(
     pipeline_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    pipeline = db.get(PatchPipeline, pipeline_id)
+    pipeline = await db.get(PatchPipeline, pipeline_id)
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
     # cascade delete stages, promotions, schedules
-    for stage in db.exec(select(PipelineStage).where(PipelineStage.pipeline_id == pipeline_id)).all():
-        db.delete(stage)
-    for promo in db.exec(select(PatchPromotion).where(PatchPromotion.pipeline_id == pipeline_id)).all():
-        db.delete(promo)
-    for sched in db.exec(select(PatchSchedule).where(PatchSchedule.pipeline_id == pipeline_id)).all():
-        db.delete(sched)
-    db.delete(pipeline)
-    db.commit()
+    for stage in (await db.exec(select(PipelineStage).where(PipelineStage.pipeline_id == pipeline_id))).all():
+        await db.delete(stage)
+    for promo in (await db.exec(select(PatchPromotion).where(PatchPromotion.pipeline_id == pipeline_id))).all():
+        await db.delete(promo)
+    for sched in (await db.exec(select(PatchSchedule).where(PatchSchedule.pipeline_id == pipeline_id))).all():
+        await db.delete(sched)
+    await db.delete(pipeline)
+    await db.commit()
     return {"deleted": True}
 
 
 @router.post("/organisations/{org_id}/pipelines")
-def create_pipeline(
+async def create_pipeline(
     org_id: str, body: PipelineCreate,
-    db: Session = Depends(get_db), _: User = Depends(require_god_mode),
+    db: AsyncSession = Depends(get_async_db), _: User = Depends(require_god_mode),
 ):
     p = PatchPipeline(org_id=org_id, name=body.name, auto_promote=body.auto_promote)
     db.add(p)
-    db.commit()
-    db.refresh(p)
+    await db.commit()
+    await db.refresh(p)
     return p
 
 
 @router.post("/pipelines/{pipeline_id}/stages")
-def add_pipeline_stage(
+async def add_pipeline_stage(
     pipeline_id: str, body: StageCreate,
-    db: Session = Depends(get_db), _: User = Depends(require_god_mode),
+    db: AsyncSession = Depends(get_async_db), _: User = Depends(require_god_mode),
 ):
     stage = PipelineStage(
         pipeline_id=pipeline_id, name=body.name,
         group_id=body.group_id, order=body.order,
     )
     db.add(stage)
-    db.commit()
-    db.refresh(stage)
+    await db.commit()
+    await db.refresh(stage)
     return stage
 
 
 @router.patch("/pipelines/{pipeline_id}/stages/{stage_id}")
-def update_pipeline_stage(
+async def update_pipeline_stage(
     pipeline_id: str,
     stage_id: str,
     body: StageUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    stage = db.get(PipelineStage, stage_id)
+    stage = await db.get(PipelineStage, stage_id)
     if not stage or stage.pipeline_id != pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found")
     if body.name is not None:
@@ -252,23 +253,23 @@ def update_pipeline_stage(
     if body.group_id is not None:
         stage.group_id = body.group_id
     db.add(stage)
-    db.commit()
-    db.refresh(stage)
+    await db.commit()
+    await db.refresh(stage)
     return stage
 
 
 @router.delete("/pipelines/{pipeline_id}/stages/{stage_id}")
-def delete_pipeline_stage(
+async def delete_pipeline_stage(
     pipeline_id: str,
     stage_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    stage = db.get(PipelineStage, stage_id)
+    stage = await db.get(PipelineStage, stage_id)
     if not stage or stage.pipeline_id != pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found")
-    db.delete(stage)
-    db.commit()
+    await db.delete(stage)
+    await db.commit()
     return {"deleted": True}
 
 
@@ -278,12 +279,12 @@ async def apply_to_stage(
     stage_id: str,
     body: ApplyRequest,
     current_user: User = Depends(require_god_mode),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Initial patch application to a pipeline stage (creates first PatchPromotion for that stage)."""
     from app.services.patch_service import apply_patches
 
-    stage = db.get(PipelineStage, stage_id)
+    stage = await db.get(PipelineStage, stage_id)
     if not stage or stage.pipeline_id != pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found")
 
@@ -299,8 +300,8 @@ async def apply_to_stage(
         status="running",
     )
     db.add(promo)
-    db.commit()
-    db.refresh(promo)
+    await db.commit()
+    await db.refresh(promo)
 
     result = await apply_patches(
         group_id=stage.group_id,
@@ -318,30 +319,30 @@ async def promote_stage(
     pipeline_id: str,
     stage_id: str,
     current_user: User = Depends(require_god_mode),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Promote the frozen package list from stage_id to the next stage in the pipeline.
     Reads packages from the source stage's latest successful PatchPromotion."""
     from app.services.patch_service import apply_patches
 
-    current_stage = db.get(PipelineStage, stage_id)
+    current_stage = await db.get(PipelineStage, stage_id)
     if not current_stage or current_stage.pipeline_id != pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found")
 
-    next_stage = db.exec(
+    next_stage = (await db.exec(
         select(PipelineStage)
         .where(PipelineStage.pipeline_id == pipeline_id, PipelineStage.order > current_stage.order)
         .order_by(PipelineStage.order)
-    ).first()
+    )).first()
     if not next_stage:
         raise HTTPException(status_code=400, detail="No next stage to promote to")
 
     # Read frozen package list from source stage's latest done promotion
-    source_promo = db.exec(
+    source_promo = (await db.exec(
         select(PatchPromotion)
         .where(PatchPromotion.to_stage_id == stage_id, PatchPromotion.status == "done")
         .order_by(PatchPromotion.triggered_at.desc())
-    ).first()
+    )).first()
     if not source_promo:
         raise HTTPException(
             status_code=400,
@@ -358,8 +359,8 @@ async def promote_stage(
         status="running",
     )
     db.add(promo)
-    db.commit()
-    db.refresh(promo)
+    await db.commit()
+    await db.refresh(promo)
 
     result = await apply_patches(
         group_id=next_stage.group_id,
@@ -372,33 +373,33 @@ async def promote_stage(
 
 
 @router.get("/pipelines/{pipeline_id}/promotions")
-def list_promotions(
+async def list_promotions(
     pipeline_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    return db.exec(
+    return (await db.exec(
         select(PatchPromotion).where(PatchPromotion.pipeline_id == pipeline_id)
         .order_by(PatchPromotion.triggered_at.desc())
-    ).all()
+    )).all()
 
 
 @router.get("/promotions/{promotion_id}/results")
-def get_promotion_results(
+async def get_promotion_results(
     promotion_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """Per-minion results for a single promotion including advisory snapshot."""
-    results = db.exec(
+    results = (await db.exec(
         select(PatchPromotionResult)
         .where(PatchPromotionResult.promotion_id == promotion_id)
         .order_by(PatchPromotionResult.created_at)
-    ).all()
+    )).all()
 
     minion_ids = list({r.minion_id for r in results})
     from app.models.minion import Minion
-    minions = db.exec(select(Minion).where(Minion.id.in_(minion_ids))).all()  # type: ignore[attr-defined]
+    minions = (await db.exec(select(Minion).where(Minion.id.in_(minion_ids)))).all()  # type: ignore[attr-defined]
     hostname_map = {m.id: m.hostname for m in minions}
 
     return [
@@ -441,14 +442,14 @@ class ScheduleUpdate(BaseModel):
 
 
 @router.get("/schedules/")
-def list_schedules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return db.exec(select(PatchSchedule)).all()
+async def list_schedules(db: AsyncSession = Depends(get_async_db), _: User = Depends(get_current_user)):
+    return (await db.exec(select(PatchSchedule))).all()
 
 
 @router.post("/schedules/")
-def create_schedule(
+async def create_schedule(
     body: ScheduleCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(require_god_mode),
 ):
     from app.main import scheduler
@@ -456,7 +457,7 @@ def create_schedule(
     from apscheduler.triggers.cron import CronTrigger as _CronTrigger
 
     # Fix 1: Validate pipeline/stage exist before creating the schedule
-    stage = db.get(PipelineStage, body.stage_id)
+    stage = await db.get(PipelineStage, body.stage_id)
     if not stage or stage.pipeline_id != body.pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found in pipeline")
 
@@ -481,31 +482,31 @@ def create_schedule(
         created_by=current_user.username,
     )
     db.add(sched)
-    db.commit()
-    db.refresh(sched)
+    await db.commit()
+    await db.refresh(sched)
 
     # Fix 3: Wrap scheduler registration — rollback on failure
     try:
         _register_schedule(scheduler, sched)
     except Exception as exc:
-        db.delete(sched)
-        db.commit()
+        await db.delete(sched)
+        await db.commit()
         raise HTTPException(status_code=400, detail=f"Failed to register schedule: {exc}")
 
     return sched
 
 
 @router.patch("/schedules/{schedule_id}")
-def update_schedule(
+async def update_schedule(
     schedule_id: str,
     body: ScheduleUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
     from app.main import scheduler
     from app.services.patch_service import _register_schedule
 
-    sched = db.get(PatchSchedule, schedule_id)
+    sched = await db.get(PatchSchedule, schedule_id)
     if not sched:
         raise HTTPException(status_code=404)
 
@@ -536,7 +537,7 @@ def update_schedule(
         sched.enabled = body.enabled
 
     db.add(sched)
-    db.commit()
+    await db.commit()
 
     job_id = f"patch_sched_{schedule_id}"
     if sched.enabled:
@@ -551,18 +552,18 @@ def update_schedule(
 
 
 @router.delete("/schedules/{schedule_id}")
-def delete_schedule(
+async def delete_schedule(
     schedule_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
     from app.main import scheduler
 
-    sched = db.get(PatchSchedule, schedule_id)
+    sched = await db.get(PatchSchedule, schedule_id)
     if not sched:
         raise HTTPException(status_code=404)
-    db.delete(sched)
-    db.commit()
+    await db.delete(sched)
+    await db.commit()
     try:
         scheduler.remove_job(f"patch_sched_{schedule_id}")
     except Exception:
@@ -580,14 +581,14 @@ class ExcludeRequest(BaseModel):
 async def retry_failed_minions(
     promo_id: str,
     current_user: User = Depends(require_god_mode),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Re-dispatch patch jobs only to minions that failed in a partial promotion."""
     from app.services.minion_service import manager
     from app.models.minion import Minion as _Minion
     from app.services.patch_service import _build_patch_cmd
 
-    promo = db.get(PatchPromotion, promo_id)
+    promo = await db.get(PatchPromotion, promo_id)
     if not promo:
         raise HTTPException(status_code=404, detail="Promotion not found")
     if promo.status != "partial":
@@ -599,7 +600,7 @@ async def retry_failed_minions(
 
     results = []
     for minion_id in failed_ids:
-        m = db.get(_Minion, minion_id)
+        m = await db.get(_Minion, minion_id)
         if not m or m.status != "active":
             results.append({"minion_id": minion_id, "exit_code": -1, "status": "failed", "error": "not connected"})
             continue
@@ -628,24 +629,24 @@ async def retry_failed_minions(
         promo.failed_minions = json.dumps(still_failed)
     promo.completed_at = datetime.utcnow()
     db.add(promo)
-    db.commit()
+    await db.commit()
 
     return {"results": results, "promo_status": promo.status}
 
 
 @router.post("/promotions/{promo_id}/exclude/{minion_id}")
-def exclude_minion(
+async def exclude_minion(
     promo_id: str,
     minion_id: str,
     body: ExcludeRequest,
     current_user: User = Depends(require_god_mode),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Exclude a failing minion from a partial promotion. If it was the last failing minion, status → done."""
     if not body.reason.strip():
         raise HTTPException(status_code=400, detail="Reason is required")
 
-    promo = db.get(PatchPromotion, promo_id)
+    promo = await db.get(PatchPromotion, promo_id)
     if not promo:
         raise HTTPException(status_code=404, detail="Promotion not found")
     if promo.status != "partial":
@@ -671,36 +672,36 @@ def exclude_minion(
         promo.completed_at = datetime.utcnow()
 
     db.add(promo)
-    db.commit()
+    await db.commit()
     return promo
 
 
 # ── Alert events ─────────────────────────────────────────────────────────────
 
 @router.get("/alerts/")
-def list_alerts(
-    db: Session = Depends(get_db),
+async def list_alerts(
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """List all unacknowledged PatchAlertEvents."""
-    return db.exec(
+    return (await db.exec(
         select(PatchAlertEvent).where(PatchAlertEvent.acknowledged == False)
         .order_by(PatchAlertEvent.fired_at.desc())
-    ).all()
+    )).all()
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-def acknowledge_alert(
+async def acknowledge_alert(
     alert_id: str,
     current_user: User = Depends(require_god_mode),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
-    alert = db.get(PatchAlertEvent, alert_id)
+    alert = await db.get(PatchAlertEvent, alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     alert.acknowledged = True
     alert.acknowledged_by = current_user.username
     alert.acknowledged_at = datetime.utcnow()
     db.add(alert)
-    db.commit()
+    await db.commit()
     return alert

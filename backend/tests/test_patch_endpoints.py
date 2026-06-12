@@ -1,10 +1,14 @@
 """Integration tests for retry/exclude/alert patching endpoints."""
 import asyncio
 import json
+import os
+import tempfile
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine, Session, SQLModel, select
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 from unittest.mock import AsyncMock, patch
 
 from app.models.patch import (
@@ -17,28 +21,43 @@ from app.models.user import User
 
 @pytest.fixture(name="engine")
 def engine_fixture():
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     eng = create_engine(
-        "sqlite:///:memory:",
+        f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(eng)
     yield eng
-    SQLModel.metadata.drop_all(eng)
+    eng.dispose()
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
 
 
 @pytest.fixture(name="client")
 def client_fixture(engine):
     from app.main import app
-    from app.api.deps import get_db, get_current_user, require_god_mode
+    from app.api.deps import get_db, get_async_db, get_current_user, require_god_mode
+
+    db_url = str(engine.url)
+    async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
     def override_db():
         with Session(engine) as session:
             yield session
 
+    async def override_async_db():
+        async with _AsyncSessionLocal() as session:
+            yield session
+
     god_user = User(username="admin", email="admin@test.com", hashed_password="x", role="god")
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_async_db] = override_async_db
     app.dependency_overrides[get_current_user] = lambda: god_user
     app.dependency_overrides[require_god_mode] = lambda: god_user
 
@@ -49,6 +68,7 @@ def client_fixture(engine):
             yield c
 
     app.dependency_overrides.clear()
+    asyncio.run(_async_engine.dispose())
 
 
 def _seed_partial_promo(engine):

@@ -12,15 +12,15 @@ from . import mysql_tools
 from . import mongodb_tools
 
 
-def _search_knowledge_base(query: str) -> Dict[str, Any]:
+async def _search_knowledge_base(query: str) -> Dict[str, Any]:
     from app.services.rag_service import rag_service
-    result = rag_service.retrieve(query, collection_name="knowledge_base")
+    result = await rag_service.retrieve(query, collection_name="knowledge_base")
     return {"success": True, "data": result, "error": None, "source": "rag"}
 
 
-def _search_past_incidents(query: str) -> Dict[str, Any]:
+async def _search_past_incidents(query: str) -> Dict[str, Any]:
     from app.services.rag_service import rag_service
-    result = rag_service.retrieve(query, collection_name="incidents")
+    result = await rag_service.retrieve(query, collection_name="incidents")
     return {"success": True, "data": result, "error": None, "source": "rag"}
 
 
@@ -1695,14 +1695,14 @@ def get_rag_tool_descriptions_for_prompt() -> str:
     return "\n".join(lines)
 
 
-def execute_rag_tool(tool_name: str, inputs: dict) -> Dict[str, Any]:
+async def execute_rag_tool(tool_name: str, inputs: dict) -> Dict[str, Any]:
     """Execute a RAG tool by name."""
     if tool_name not in RAG_TOOL_REGISTRY:
         return {"success": False, "data": None, "error": f"RAG tool '{tool_name}' not found", "source": "system"}
     tool_info = RAG_TOOL_REGISTRY[tool_name]
     func = tool_info["function"]
     query = inputs.get("query", "")
-    return func(query=query)
+    return await func(query=query)
 
 
 def get_tool_descriptions_for_prompt() -> str:

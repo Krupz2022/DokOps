@@ -11,9 +11,10 @@ from typing import List, Optional
 _MAX_URL_CHARS = 40_000   # ~10k tokens after HTML strip
 _MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB upload cap
 
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.rag import RagDocument
 from app.models.setting import SystemSetting
 
@@ -143,42 +144,42 @@ class _AzureEmbeddingProvider:
 # ── RAG Service ───────────────────────────────────────────────────────────────
 
 class RAGService:
-    def _get_setting(self, key: str) -> Optional[str]:
-        with Session(engine) as session:
-            s = session.get(SystemSetting, key)
+    async def _get_setting(self, key: str) -> Optional[str]:
+        async with AsyncSessionLocal() as session:
+            s = await session.get(SystemSetting, key)
             return s.value if s else None
 
-    def _get_embedding_provider(self):
-        provider = (self._get_setting("rag_embedding_provider") or "local").lower()
+    async def _get_embedding_provider(self):
+        provider = (await self._get_setting("rag_embedding_provider") or "local").lower()
         if provider == "openai":
-            api_key = self._get_setting("rag_embedding_api_key") or ""
-            model = self._get_setting("rag_embedding_model") or "text-embedding-3-small"
+            api_key = await self._get_setting("rag_embedding_api_key") or ""
+            model = await self._get_setting("rag_embedding_model") or "text-embedding-3-small"
             return _OpenAIEmbeddingProvider(api_key=api_key, model=model)
         elif provider == "azure":
-            api_key = self._get_setting("rag_embedding_api_key") or ""
-            base_url = self._get_setting("rag_embedding_base_url") or ""
-            model = self._get_setting("rag_embedding_model") or "text-embedding-ada-002"
+            api_key = await self._get_setting("rag_embedding_api_key") or ""
+            base_url = await self._get_setting("rag_embedding_base_url") or ""
+            model = await self._get_setting("rag_embedding_model") or "text-embedding-ada-002"
             return _AzureEmbeddingProvider(api_key=api_key, base_url=base_url, model=model)
         else:
             return _LocalEmbeddingProvider()
 
-    def _get_chroma_client(self):
+    async def _get_chroma_client(self):
         import chromadb  # type: ignore
-        host = self._get_setting("rag_chroma_host") or "localhost"
-        port = int(self._get_setting("rag_chroma_port") or "8001")
+        host = await self._get_setting("rag_chroma_host") or "localhost"
+        port = int(await self._get_setting("rag_chroma_port") or "8001")
         return chromadb.HttpClient(host=host, port=port)
 
-    def is_enabled(self) -> bool:
-        return (self._get_setting("rag_enabled") or "false").lower() == "true"
+    async def is_enabled(self) -> bool:
+        return (await self._get_setting("rag_enabled") or "false").lower() == "true"
 
-    def test_connection(self) -> bool:
-        client = self._get_chroma_client()
+    async def test_connection(self) -> bool:
+        client = await self._get_chroma_client()
         client.heartbeat()
         return True
 
     # ── Ingestion ─────────────────────────────────────────────────────────────
 
-    def ingest_text(
+    async def ingest_text(
         self,
         text: str,
         title: str,
@@ -191,8 +192,8 @@ class RAGService:
         if max_chars:
             text = text[:max_chars]
         doc_id = doc_id or str(uuid.uuid4())
-        embedder = self._get_embedding_provider()
-        client = self._get_chroma_client()
+        embedder = await self._get_embedding_provider()
+        client = await self._get_chroma_client()
         collection = client.get_or_create_collection(collection_name)
 
         chunks = _chunk_text(text)
@@ -230,8 +231,8 @@ class RAGService:
         )
 
         # Save/update SQLite record
-        with Session(engine) as session:
-            existing = session.get(RagDocument, doc_id)
+        async with AsyncSessionLocal() as session:
+            existing = await session.get(RagDocument, doc_id)
             if existing:
                 # Delete old chunks from Chroma before re-indexing
                 old_ids = json.loads(existing.chroma_ids or "[]")
@@ -245,8 +246,8 @@ class RAGService:
                 existing.indexed_at = datetime.utcnow()
                 existing.status = "indexed"
                 session.add(existing)
-                session.commit()
-                session.refresh(existing)
+                await session.commit()
+                await session.refresh(existing)
                 return existing
             else:
                 doc = RagDocument(
@@ -260,11 +261,11 @@ class RAGService:
                     status="indexed",
                 )
                 session.add(doc)
-                session.commit()
-                session.refresh(doc)
+                await session.commit()
+                await session.refresh(doc)
                 return doc
 
-    def ingest_url(self, url: str) -> RagDocument:
+    async def ingest_url(self, url: str) -> RagDocument:
         from app.core.ssrf import validate_url
         validate_url(url)
         import requests  # type: ignore
@@ -278,7 +279,7 @@ class RAGService:
             text = raw.decode("utf-8", errors="replace")
         text = text[:_MAX_URL_CHARS]
         title = url.split("/")[-1] or url
-        return self.ingest_text(
+        return await self.ingest_text(
             text=text,
             title=title,
             source_type="external_url",
@@ -287,9 +288,9 @@ class RAGService:
             max_chars=_MAX_URL_CHARS,
         )
 
-    def ingest_file(self, filename: str, content: bytes) -> RagDocument:
+    async def ingest_file(self, filename: str, content: bytes) -> RagDocument:
         text = _extract_file_text(filename, content)
-        return self.ingest_text(
+        return await self.ingest_text(
             text=text,
             title=filename,
             source_type="upload",
@@ -297,9 +298,9 @@ class RAGService:
             collection_name="knowledge_base",
         )
 
-    def ingest_incident(self, conversation_id: str, conversation_title: str, text: str) -> RagDocument:
+    async def ingest_incident(self, conversation_id: str, conversation_title: str, text: str) -> RagDocument:
         doc_id = f"incident_{conversation_id}"
-        return self.ingest_text(
+        return await self.ingest_text(
             text=text,
             title=conversation_title,
             source_type="incident",
@@ -310,10 +311,10 @@ class RAGService:
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
 
-    def retrieve(self, query: str, collection_name: str, n_results: int = 3) -> str:
+    async def retrieve(self, query: str, collection_name: str, n_results: int = 3) -> str:
         try:
-            embedder = self._get_embedding_provider()
-            client = self._get_chroma_client()
+            embedder = await self._get_embedding_provider()
+            client = await self._get_chroma_client()
             collection = client.get_or_create_collection(collection_name)
             query_embedding = embedder.embed(query)
             results = collection.query(
@@ -336,29 +337,29 @@ class RAGService:
 
     # ── Deletion ─────────────────────────────────────────────────────────────
 
-    def delete_document(self, doc_id: str) -> bool:
-        with Session(engine) as session:
-            doc = session.get(RagDocument, doc_id)
+    async def delete_document(self, doc_id: str) -> bool:
+        async with AsyncSessionLocal() as session:
+            doc = await session.get(RagDocument, doc_id)
             if not doc:
                 return False
             chroma_ids = json.loads(doc.chroma_ids or "[]")
             if chroma_ids:
                 try:
-                    client = self._get_chroma_client()
+                    client = await self._get_chroma_client()
                     coll_name = "incidents" if doc.source_type == "incident" else "knowledge_base"
                     collection = client.get_or_create_collection(coll_name)
                     collection.delete(ids=chroma_ids)
                 except Exception:
                     pass
-            session.delete(doc)
-            session.commit()
+            await session.delete(doc)
+            await session.commit()
             return True
 
-    def list_documents(self) -> List[RagDocument]:
-        with Session(engine) as session:
-            return session.exec(
+    async def list_documents(self) -> List[RagDocument]:
+        async with AsyncSessionLocal() as session:
+            return (await session.exec(
                 select(RagDocument).order_by(RagDocument.indexed_at.desc())
-            ).all()
+            )).all()
 
 
 

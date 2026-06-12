@@ -204,6 +204,7 @@ def _run_confluence_sync_blocking() -> None:
     Synchronous sync of all configured spaces. Runs in a thread executor
     (called from an async APScheduler job) to avoid blocking the event loop.
     """
+    import asyncio
     from app.services.rag_service import rag_service  # local import avoids circular import at module load
 
     config = confluence_connector._get_config()
@@ -213,14 +214,17 @@ def _run_confluence_sync_blocking() -> None:
             for pid, title, text, page_url in confluence_connector.get_space_pages(space_key):
                 if not text.strip():
                     continue
-                rag_service.ingest_text(
+                # TODO(Phase 4c): rag_service.ingest_text is now async; called from a thread
+                # executor (sync context). Use asyncio.run() to bridge until the scheduler
+                # job itself is converted to a fully async task.
+                asyncio.run(rag_service.ingest_text(  # noqa: Phase-4c-sync-bridge
                     text=text,
                     title=title,
                     source_type="confluence",
                     source_ref=page_url,
                     collection_name="knowledge_base",
                     doc_id=f"confluence_{pid}",
-                )
+                ))
                 synced += 1
             logger.info("Confluence scheduled sync: space=%s synced=%d", space_key, synced)
         except Exception as exc:

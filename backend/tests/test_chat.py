@@ -36,7 +36,7 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session):
+def client_fixture(session: Session, monkeypatch):
     db_url = str(session.bind.url)
     async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
@@ -51,6 +51,9 @@ def client_fixture(session: Session):
 
     app.dependency_overrides[deps.get_db] = get_session_override
     app.dependency_overrides[deps.get_async_db] = get_async_session_override
+    # _stream_and_save and _maybe_compact open sessions directly via AsyncSessionLocal —
+    # patch the module-level name so those writes also hit the test DB.
+    monkeypatch.setattr("app.api.v1.chat.AsyncSessionLocal", _AsyncSessionLocal)
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()

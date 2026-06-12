@@ -247,35 +247,69 @@ def test_toolset_service_lists_builtin_toolsets():
 
 # ─── Task 12: Cluster Deletion Cleanup ─────────────────────────────────────────
 
-def test_cluster_deletion_removes_credentials(engine):
+def test_cluster_deletion_removes_credentials():
+    """_delete_cluster_credentials (now async) removes all cluster-scoped creds."""
+    import asyncio
+    import os
+    import tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel import create_engine as _create_engine
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
     from app.models.cluster import ClusterConnection
     from app.models.service_diag import ServiceCredential
+    from app.api.v1.clusters import _delete_cluster_credentials
 
-    with Session(engine) as db:
-        cluster = ClusterConnection(
-            name="delete-me",
-            provider="generic",
-            api_server="https://k8s.test",
-            token="",
-            namespace="default",
-            added_by="test",
+    # Use a temp-file so both sync and async engines share the same DB.
+    _fd, _db_path = tempfile.mkstemp(suffix=".db")
+    os.close(_fd)
+    try:
+        _sync_engine = _create_engine(
+            f"sqlite:///{_db_path}", connect_args={"check_same_thread": False}
         )
-        db.add(cluster)
-        db.commit()
-        db.refresh(cluster)
+        SQLModel.metadata.create_all(_sync_engine)
 
-        create_credential(db, scope_type="cluster", scope_id=cluster.id,
-                          service_type="redis", username="", password="p", host="h")
-
-        from app.api.v1.clusters import _delete_cluster_credentials
-        _delete_cluster_credentials(cluster.id, db)
-        db.delete(cluster)
-        db.commit()
-
-        remaining = db.exec(
-            select(ServiceCredential).where(
-                ServiceCredential.scope_type == "cluster",
-                ServiceCredential.scope_id == cluster.id,
+        # Seed via sync session
+        with Session(_sync_engine) as db:
+            cluster = ClusterConnection(
+                name="delete-me",
+                provider="generic",
+                api_server="https://k8s.test",
+                token="",
+                namespace="default",
+                added_by="test",
             )
-        ).all()
+            db.add(cluster)
+            db.commit()
+            db.refresh(cluster)
+            cluster_id = cluster.id
+
+            create_credential(db, scope_type="cluster", scope_id=cluster_id,
+                              service_type="redis", username="", password="p", host="h")
+
+        # Call the async helper
+        _async_url = f"sqlite+aiosqlite:///{_db_path}"
+        _aengine = create_async_engine(_async_url)
+        _ASessionLocal = async_sessionmaker(_aengine, class_=_AsyncSession, expire_on_commit=False)
+
+        async def _run():
+            async with _ASessionLocal() as adb:
+                await _delete_cluster_credentials(cluster_id, adb)
+
+        asyncio.run(_run())
+        asyncio.run(_aengine.dispose())
+
+        # Verify via sync session
+        with Session(_sync_engine) as db:
+            remaining = db.exec(
+                select(ServiceCredential).where(
+                    ServiceCredential.scope_type == "cluster",
+                    ServiceCredential.scope_id == cluster_id,
+                )
+            ).all()
+        _sync_engine.dispose()
         assert len(remaining) == 0
+    finally:
+        try:
+            os.unlink(_db_path)
+        except OSError:
+            pass

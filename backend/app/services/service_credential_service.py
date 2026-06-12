@@ -1,9 +1,39 @@
 from __future__ import annotations
 from typing import Optional
 from sqlmodel import Session, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.encryption import encrypt, decrypt
 from app.models.service_diag import ServiceCredential
 from app.models.patch import MinionGroupMember
+
+
+async def create_credential_async(
+    db: AsyncSession,
+    scope_type: str,
+    service_type: str,
+    username: str,
+    password: str,
+    scope_id: Optional[str] = None,
+    port: Optional[int] = None,
+    extra: str = "{}",
+    host: Optional[str] = None,
+    instance_name: str = "",
+) -> ServiceCredential:
+    cred = ServiceCredential(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        service_type=service_type,
+        username=encrypt(username or ""),
+        password=encrypt(password),
+        port=port,
+        extra=extra,
+        host=host,
+        instance_name=instance_name,
+    )
+    db.add(cred)
+    await db.commit()
+    await db.refresh(cred)
+    return cred
 
 
 def create_credential(

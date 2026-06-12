@@ -7,10 +7,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi import Body
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.models.setting import SystemSetting
 from app.models.user import User
@@ -190,13 +191,13 @@ _CONFLUENCE_KEYS = [
 
 
 @router.get("/confluence/config")
-def get_confluence_config(
+async def get_confluence_config(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     result: dict = {}
-    with Session(engine) as session:
+    async with AsyncSessionLocal() as session:
         for full_key in _CONFLUENCE_KEYS:
-            row = session.get(SystemSetting, full_key)
+            row = await session.get(SystemSetting, full_key)
             val = row.value if row else ""
             short_key = full_key.replace("confluence_", "")
             if full_key == "confluence_api_token" and val:
@@ -206,29 +207,29 @@ def get_confluence_config(
 
 
 @router.post("/confluence/config")
-def save_confluence_config(
+async def save_confluence_config(
     config: ConfluenceConfigIn,
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
-    def _save(key: str, value: str) -> None:
-        with Session(engine) as session:
-            row = session.get(SystemSetting, key)
+    async def _save(key: str, value: str) -> None:
+        async with AsyncSessionLocal() as session:
+            row = await session.get(SystemSetting, key)
             if row:
                 row.value = value
                 session.add(row)
             else:
                 session.add(SystemSetting(key=key, value=value))
-            session.commit()
+            await session.commit()
 
-    _save("confluence_enabled", "true")
-    _save("confluence_instance_type", config.instance_type)
-    _save("confluence_base_url", config.base_url.rstrip("/"))
-    _save("confluence_email", config.email)
-    _save("confluence_username", config.username)
+    await _save("confluence_enabled", "true")
+    await _save("confluence_instance_type", config.instance_type)
+    await _save("confluence_base_url", config.base_url.rstrip("/"))
+    await _save("confluence_email", config.email)
+    await _save("confluence_username", config.username)
     if config.api_token:
-        _save("confluence_api_token", config.api_token)
-    _save("confluence_sync_spaces", json.dumps(config.sync_spaces))
-    _save("confluence_sync_interval_hours", str(config.sync_interval_hours))
+        await _save("confluence_api_token", config.api_token)
+    await _save("confluence_sync_spaces", json.dumps(config.sync_spaces))
+    await _save("confluence_sync_interval_hours", str(config.sync_interval_hours))
     _invalidate_settings_cache()
 
     # Re-register (or remove) the scheduler job with the new interval

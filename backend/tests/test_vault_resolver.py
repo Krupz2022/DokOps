@@ -294,6 +294,7 @@ def test_cluster_deletion_removes_credentials():
         async def _run():
             async with _ASessionLocal() as adb:
                 await _delete_cluster_credentials(cluster_id, adb)
+                await adb.commit()  # helper stages deletes; the caller owns the commit
 
         asyncio.run(_run())
         asyncio.run(_aengine.dispose())

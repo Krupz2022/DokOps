@@ -44,7 +44,7 @@ def client_fixture(session: Session):
 
     db_url = str(session.bind.url)
     async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _async_engine = create_async_engine(async_url)
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
     def get_session_override():

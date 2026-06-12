@@ -5,10 +5,11 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
-from app.core.db import engine
+from app.core import db as _db
 from app.models.integration import IntegrationSettings
 from app.services.integration_manager import invalidate_registry_cache
 from app.services.integrations.base import build_auth_headers, encrypt_credentials
@@ -65,8 +66,8 @@ class IntegrationResponse(BaseModel):
 
 @router.get("/", response_model=List[IntegrationResponse])
 async def list_integrations(_user=Depends(deps.get_current_user)):
-    with Session(engine) as session:
-        rows = session.exec(select(IntegrationSettings)).all()
+    async with _db.AsyncSessionLocal() as session:
+        rows = (await session.exec(select(IntegrationSettings))).all()
     return [IntegrationResponse(
         id=r.id, backend=r.backend, display_name=r.display_name, base_url=r.base_url,
         auth_type=r.auth_type, is_active=r.is_active,
@@ -94,10 +95,10 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
     svc = svc_cls()
     ok, msg = await svc.test_connection(req.base_url, headers)
 
-    with Session(engine) as session:
-        existing = session.exec(
+    async with _db.AsyncSessionLocal() as session:
+        existing = (await session.exec(
             select(IntegrationSettings).where(IntegrationSettings.backend == req.backend)
-        ).first()
+        )).first()
         if existing:
             existing.display_name = req.display_name
             existing.base_url = req.base_url
@@ -108,9 +109,9 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
             existing.connected_at = datetime.now(timezone.utc) if ok else existing.connected_at
             existing.last_checked_at = datetime.now(timezone.utc)
             session.add(existing)
-            session.commit()
+            await session.commit()
             invalidate_registry_cache()
-            session.refresh(existing)
+            await session.refresh(existing)
             row = existing
         else:
             row = IntegrationSettings(
@@ -125,9 +126,9 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
                 last_checked_at=datetime.now(timezone.utc),
             )
             session.add(row)
-            session.commit()
+            await session.commit()
             invalidate_registry_cache()
-            session.refresh(row)
+            await session.refresh(row)
 
     if not ok:
         raise HTTPException(status_code=400, detail=f"Connection failed: {msg}")
@@ -141,8 +142,8 @@ async def connect_integration(req: ConnectRequest, _user=Depends(deps.get_curren
 
 @router.post("/{integration_id}/test")
 async def test_integration(integration_id: int, _user=Depends(deps.get_current_user)):
-    with Session(engine) as session:
-        row = session.get(IntegrationSettings, integration_id)
+    async with _db.AsyncSessionLocal() as session:
+        row = await session.get(IntegrationSettings, integration_id)
         if not row:
             raise HTTPException(status_code=404, detail="Integration not found")
 
@@ -151,13 +152,13 @@ async def test_integration(integration_id: int, _user=Depends(deps.get_current_u
     svc = svc_cls()
     ok, msg = await svc.test_connection(row.base_url, headers)
 
-    with Session(engine) as session:
-        row = session.get(IntegrationSettings, integration_id)
+    async with _db.AsyncSessionLocal() as session:
+        row = await session.get(IntegrationSettings, integration_id)
         row.is_active = ok
         row.health_status = "ok" if ok else msg
         row.last_checked_at = datetime.now(timezone.utc)
         session.add(row)
-        session.commit()
+        await session.commit()
         invalidate_registry_cache()
 
     return {"ok": ok, "message": msg}
@@ -165,12 +166,12 @@ async def test_integration(integration_id: int, _user=Depends(deps.get_current_u
 
 @router.delete("/{integration_id}")
 async def disconnect_integration(integration_id: int, _user=Depends(deps.get_current_user)):
-    with Session(engine) as session:
-        row = session.get(IntegrationSettings, integration_id)
+    async with _db.AsyncSessionLocal() as session:
+        row = await session.get(IntegrationSettings, integration_id)
         if not row:
             raise HTTPException(status_code=404, detail="Integration not found")
-        session.delete(row)
-        session.commit()
+        await session.delete(row)
+        await session.commit()
         invalidate_registry_cache()
     return {"deleted": True}
 
@@ -179,11 +180,10 @@ async def disconnect_integration(integration_id: int, _user=Depends(deps.get_cur
 async def debug_registry(_user=Depends(deps.get_current_user)):
     """Return what tools the integration manager actually loaded — for diagnosing missing tools."""
     from app.services.integration_manager import integration_manager
-    from sqlmodel import Session, select
     from app.models.integration import IntegrationSettings
 
-    with Session(engine) as session:
-        rows = session.exec(select(IntegrationSettings)).all()
+    async with _db.AsyncSessionLocal() as session:
+        rows = (await session.exec(select(IntegrationSettings))).all()
         db_rows = [
             {"id": r.id, "backend": r.backend, "is_active": r.is_active,
              "has_credentials": bool(r.encrypted_credentials), "health_status": r.health_status}

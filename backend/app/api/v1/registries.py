@@ -5,10 +5,11 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
-from app.core.db import engine
+from app.core import db as _db
 from app.core.encryption import decrypt, encrypt
 from app.core.settings_cache import invalidate as _invalidate_settings_cache
 from app.models.registry import RegistryConnection
@@ -51,8 +52,8 @@ def _to_out(r: RegistryConnection) -> RegistryOut:
 
 @router.get("/", response_model=List[RegistryOut])
 async def list_registries(_user=Depends(deps.get_current_user)):
-    with Session(engine) as db:
-        rows = db.exec(select(RegistryConnection)).all()
+    async with _db.AsyncSessionLocal() as db:
+        rows = (await db.exec(select(RegistryConnection))).all()
     return [_to_out(r) for r in rows]
 
 
@@ -66,10 +67,10 @@ async def add_registry(req: RegistryIn, user=Depends(deps.get_current_user)):
         password=encrypted_pw,
         added_by=user.username,
     )
-    with Session(engine) as db:
+    async with _db.AsyncSessionLocal() as db:
         db.add(row)
-        db.commit()
-        db.refresh(row)
+        await db.commit()
+        await db.refresh(row)
     return _to_out(row)
 
 
@@ -77,8 +78,8 @@ async def add_registry(req: RegistryIn, user=Depends(deps.get_current_user)):
 # matching the literal string "settings" as a registry_id path parameter.
 @router.get("/settings", response_model=RegistrySettings)
 async def get_settings(_user=Depends(deps.get_current_user)):
-    with Session(engine) as db:
-        row = db.get(SystemSetting, "registry_lookup_enabled")
+    async with _db.AsyncSessionLocal() as db:
+        row = await db.get(SystemSetting, "registry_lookup_enabled")
     enabled = row is not None and row.value.lower() == "true"
     return RegistrySettings(enabled=enabled)
 
@@ -86,14 +87,14 @@ async def get_settings(_user=Depends(deps.get_current_user)):
 @router.post("/settings", response_model=RegistrySettings)
 async def update_settings(body: RegistrySettings, _user=Depends(deps.get_current_user)):
     value = "true" if body.enabled else "false"
-    with Session(engine) as db:
-        row = db.get(SystemSetting, "registry_lookup_enabled")
+    async with _db.AsyncSessionLocal() as db:
+        row = await db.get(SystemSetting, "registry_lookup_enabled")
         if row:
             row.value = value
             db.add(row)
         else:
             db.add(SystemSetting(key="registry_lookup_enabled", value=value))
-        db.commit()
+        await db.commit()
         _invalidate_settings_cache()
     return RegistrySettings(enabled=body.enabled)
 
@@ -120,19 +121,19 @@ async def check_image(
 
 @router.delete("/{registry_id}")
 async def delete_registry(registry_id: str, _user=Depends(deps.get_current_user)):
-    with Session(engine) as db:
-        row = db.get(RegistryConnection, registry_id)
+    async with _db.AsyncSessionLocal() as db:
+        row = await db.get(RegistryConnection, registry_id)
         if not row:
             raise HTTPException(status_code=404, detail="Registry not found")
-        db.delete(row)
-        db.commit()
+        await db.delete(row)
+        await db.commit()
     return {"deleted": True}
 
 
 @router.post("/{registry_id}/test")
 async def test_registry(registry_id: str, _user=Depends(deps.get_current_user)):
-    with Session(engine) as db:
-        row = db.get(RegistryConnection, registry_id)
+    async with _db.AsyncSessionLocal() as db:
+        row = await db.get(RegistryConnection, registry_id)
         if not row:
             raise HTTPException(status_code=404, detail="Registry not found")
         url = row.url

@@ -4,10 +4,9 @@ import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session
 from app.api import deps
 from app.models.user import User
-import app.core.db as _db_module
+from app.core import db as _db_module
 from app.models.audit import AuditLog
 
 from app.tools import registry
@@ -40,7 +39,7 @@ def _derive_resource(tool_name: str, inputs: dict) -> str:
     return f"{tool_name}: {json.dumps(inputs)}"
 
 
-def _write_mutation_audit(
+async def _write_mutation_audit(
     actor: str,
     tool_name: str,
     inputs: dict,
@@ -56,9 +55,9 @@ def _write_mutation_audit(
         source="K8S",
         details=json.dumps(details),
     )
-    with Session(_db_module.engine) as audit_db:
+    async with _db_module.AsyncSessionLocal() as audit_db:
         audit_db.add(log)
-        audit_db.commit()
+        await audit_db.commit()
 
 
 router = APIRouter()
@@ -121,7 +120,7 @@ async def list_pending_operations(
             op["status"] = "expired"
             if not op.get("audit_written"):
                 op["audit_written"] = True
-                _write_mutation_audit(
+                await _write_mutation_audit(
                     actor="system",
                     tool_name=op["tool_name"],
                     inputs=op["tool_inputs"],
@@ -150,7 +149,7 @@ async def get_pending_operation(
         op["status"] = "expired"
         if not op.get("audit_written"):
             op["audit_written"] = True
-            _write_mutation_audit(
+            await _write_mutation_audit(
                 actor="system",
                 tool_name=op["tool_name"],
                 inputs=op["tool_inputs"],
@@ -203,7 +202,7 @@ async def approve_pending_operation(
         op["status"] = "approved"
         op["executed_at"] = time.time()
         op["result"] = result
-        _write_mutation_audit(
+        await _write_mutation_audit(
             actor=current_user.username,
             tool_name=tool_name,
             inputs=tool_inputs,
@@ -216,7 +215,7 @@ async def approve_pending_operation(
         op["status"] = "failed"
         op["executed_at"] = time.time()
         op["result"] = {"success": False, "error": str(e), "source": "system"}
-        _write_mutation_audit(
+        await _write_mutation_audit(
             actor=current_user.username,
             tool_name=tool_name,
             inputs=tool_inputs,
@@ -242,7 +241,7 @@ async def reject_pending_operation(
 
     op["status"] = "rejected"
     op["executed_at"] = time.time()
-    _write_mutation_audit(
+    await _write_mutation_audit(
         actor=current_user.username,
         tool_name=op["tool_name"],
         inputs=op["tool_inputs"],

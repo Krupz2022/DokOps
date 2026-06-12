@@ -1,17 +1,46 @@
+import asyncio
+import os
+import tempfile
 import time
 import pytest
 import json as _json
 from sqlmodel import SQLModel, create_engine, Session
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 @pytest.fixture(autouse=True)
 def isolated_db(monkeypatch):
-    test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+
+    # Sync engine on the temp file — used by the fixture itself for assertions.
+    test_engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
     import app.models.audit  # noqa
     import app.models.user   # noqa
     SQLModel.metadata.create_all(test_engine)
+
+    # Async engine on the *same* temp file so _write_mutation_audit writes there.
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _AsyncSessionLocal = async_sessionmaker(
+        _async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     monkeypatch.setattr("app.core.db.engine", test_engine)
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", _AsyncSessionLocal)
+
     yield test_engine
+
+    # Dispose the async engine before unlinking — aiosqlite holds the file open.
+    asyncio.run(_async_engine.dispose())
+    test_engine.dispose()
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -49,13 +78,13 @@ def test_derive_resource_unknown_tool():
 
 def test_write_mutation_audit_persists_record(isolated_db):
     from app.api.v1.operations import _write_mutation_audit
-    _write_mutation_audit(
+    asyncio.run(_write_mutation_audit(
         actor="alice",
         tool_name="scale_deployment",
         inputs={"deployment_name": "api", "namespace": "prod", "replicas": 3},
         result="SUCCESS",
         details={"inputs": {"deployment_name": "api"}, "outcome": {"success": True}},
-    )
+    ))
     with Session(isolated_db) as db:
         from sqlmodel import select
         from app.models.audit import AuditLog

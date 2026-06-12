@@ -68,7 +68,7 @@ async def connect_azure(
     current_user: User = Depends(deps.get_current_user),
 ) -> Dict[str, Any]:
     try:
-        azure_service.connect(
+        await azure_service.connect(
             tenant_id=body.tenant_id,
             subscription_id=body.subscription_id,
             client_id=body.client_id,
@@ -99,7 +99,7 @@ async def connect_azure(
 async def test_azure_connection(
     current_user: User = Depends(deps.get_current_user),
 ) -> Dict[str, Any]:
-    ok = azure_service.test_connection()
+    ok = await azure_service.test_connection()
     await _audit(
         actor=current_user.username,
         action="AZURE_TEST_CONNECTION",
@@ -115,7 +115,7 @@ async def test_azure_connection(
 async def disconnect_azure(
     current_user: User = Depends(deps.get_current_user),
 ) -> Dict[str, Any]:
-    azure_service.disconnect()
+    await azure_service.disconnect()
     await _audit(
         actor=current_user.username,
         action="AZURE_DISCONNECT",
@@ -126,10 +126,10 @@ async def disconnect_azure(
 
 
 @router.get("/status")
-def get_azure_status(
+async def get_azure_status(
     current_user: User = Depends(deps.get_current_user),
 ) -> Dict[str, Any]:
-    return azure_service.get_status()
+    return await azure_service.get_status()
 
 
 # --- Feature toggle ---
@@ -141,7 +141,7 @@ async def toggle_feature(
     current_user: User = Depends(deps.get_current_user),
 ) -> Dict[str, Any]:
     try:
-        feature = azure_service.toggle_feature(feature_key, body.enabled)
+        feature = await azure_service.toggle_feature(feature_key, body.enabled)
         action = "AZURE_FEATURE_ENABLE" if body.enabled else "AZURE_FEATURE_DISABLE"
         await _audit(
             actor=current_user.username,
@@ -162,7 +162,7 @@ async def toggle_feature(
 
 async def _guard(feature_key: str) -> None:
     """Shared guard — raises HTTPException if not connected or feature not enabled."""
-    conn = azure_service.get_connection()
+    conn = await azure_service.get_connection()
     if not conn or not conn.is_connected:
         raise HTTPException(status_code=400, detail="Azure not connected")
     from app.models.integration import AzureFeatureConfig
@@ -176,7 +176,7 @@ async def _guard(feature_key: str) -> None:
 async def get_cost(current_user: User = Depends(deps.get_current_user)) -> Dict[str, Any]:
     await _guard("cost_optimization")
     try:
-        data = azure_service.get_cost_data()
+        data = await azure_service.get_cost_data()
         await _audit(current_user.username, "AZURE_COST_FETCH", "azure/cost", "SUCCESS")
         return data
     except ValueError as e:
@@ -188,7 +188,7 @@ async def get_cost(current_user: User = Depends(deps.get_current_user)) -> Dict[
 async def get_resources(current_user: User = Depends(deps.get_current_user)) -> Dict[str, Any]:
     await _guard("resource_discovery")
     try:
-        data = azure_service.get_rg_resources()
+        data = await azure_service.get_rg_resources()
         await _audit(
             current_user.username, "AZURE_RESOURCE_DISCOVERY", "azure/resources", "SUCCESS",
             f"direct={data['total_direct']} linked={data['total_linked']}",
@@ -203,7 +203,7 @@ async def get_resources(current_user: User = Depends(deps.get_current_user)) -> 
 async def get_monitor(current_user: User = Depends(deps.get_current_user)) -> Dict[str, Any]:
     await _guard("azure_monitor")
     try:
-        data = azure_service.get_monitor_metrics()
+        data = await azure_service.get_monitor_metrics()
         await _audit(current_user.username, "AZURE_MONITOR_FETCH", "azure/monitor", "SUCCESS")
         return data
     except ValueError as e:
@@ -215,7 +215,7 @@ async def get_monitor(current_user: User = Depends(deps.get_current_user)) -> Di
 async def get_anomalies(current_user: User = Depends(deps.get_current_user)) -> Dict[str, Any]:
     await _guard("cost_anomaly_alerting")
     try:
-        data = azure_service.get_cost_anomalies()
+        data = await azure_service.get_cost_anomalies()
         await _audit(
             current_user.username, "AZURE_ANOMALY_CHECK", "azure/anomalies", "SUCCESS",
             f"count={data['count']}",
@@ -233,7 +233,7 @@ async def get_recommendations(
 ) -> Dict[str, Any]:
     await _guard("ai_cost_recommendations")
     try:
-        data = azure_service.get_advisor_recommendations()
+        data = await azure_service.get_advisor_recommendations()
         await _audit(
             current_user.username, "AZURE_RECOMMENDATIONS_FETCH", "azure/recommendations",
             "SUCCESS", f"count={data['count']} triggered_by={triggered_by}",
@@ -251,7 +251,7 @@ async def analyze_resources(
     await _guard("resource_discovery")
     try:
         # Fetch the resource list
-        resource_data = azure_service.get_rg_resources()
+        resource_data = await azure_service.get_rg_resources()
 
         # Strip to name/type/location only — no IDs, no subscription/tenant data
         all_resources = [

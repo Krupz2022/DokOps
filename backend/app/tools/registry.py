@@ -25,20 +25,19 @@ def _search_past_incidents(query: str) -> Dict[str, Any]:
 
 
 
-def _get_azure_cost_recommendations() -> Dict[str, Any]:
+async def _get_azure_cost_recommendations() -> Dict[str, Any]:
     """AI-callable tool to fetch Azure Advisor cost recommendations."""
     try:
         from app.services.azure_service import get_advisor_recommendations, get_connection
         from app.models.integration import AzureFeatureConfig
-        from sqlmodel import Session
-        from app.core.db import engine
+        from app.core.db import AsyncSessionLocal
 
-        conn = get_connection()
+        conn = await get_connection()
         if not conn or not conn.is_connected:
             return {"success": False, "data": None, "error": "Azure not connected", "source": "azure"}
 
-        with Session(engine) as session:
-            feature = session.get(AzureFeatureConfig, "ai_cost_recommendations")
+        async with AsyncSessionLocal() as session:
+            feature = await session.get(AzureFeatureConfig, "ai_cost_recommendations")
             if not feature or not feature.enabled:
                 return {"success": False, "data": None, "error": "AI Cost Recommendations feature is not enabled", "source": "azure"}
 
@@ -53,11 +52,11 @@ def _get_azure_cost_recommendations() -> Dict[str, Any]:
             source="AZURE",
             details="triggered_by=ai_tool",
         )
-        with Session(engine) as session:
+        async with AsyncSessionLocal() as session:
             session.add(audit)
-            session.commit()
+            await session.commit()
 
-        data = get_advisor_recommendations()
+        data = await get_advisor_recommendations()
         return {"success": True, "data": data, "error": None, "source": "azure"}
     except Exception as e:
         return {"success": False, "data": None, "error": str(e), "source": "azure"}

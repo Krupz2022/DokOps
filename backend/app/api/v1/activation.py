@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.services import activation_service
@@ -13,7 +13,7 @@ class ActivateRequest(BaseModel):
 
 
 @router.post("/activate")
-async def activate(payload: ActivateRequest, db: Session = Depends(deps.get_db)):
+async def activate(payload: ActivateRequest, db: AsyncSession = Depends(deps.get_async_db)):
     result = await activation_service.activate_key(payload.license_key, db)
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["message"])
@@ -21,5 +21,5 @@ async def activate(payload: ActivateRequest, db: Session = Depends(deps.get_db))
 
 
 @router.get("/status")
-def get_status(db: Session = Depends(deps.get_db)):
-    return activation_service.get_status(db)
+async def get_status(db: AsyncSession = Depends(deps.get_async_db)):
+    return await activation_service.get_status(db)

@@ -3,7 +3,8 @@ import json
 import re
 from datetime import datetime
 from typing import List
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.service_diag import DiscoveredService
 from app.services.probe_registry import (
     PORT_SERVICE_MAP, UNIT_SERVICE_MAP, IMAGE_SERVICE_MAP, DEFAULT_PORTS,
@@ -152,20 +153,20 @@ def parse_discovery_output_windows(
     return list(found.values())
 
 
-def persist_discovery(minion_id: str, services: List[DiscoveredService], db: Session) -> None:
+async def persist_discovery(minion_id: str, services: List[DiscoveredService], db: AsyncSession) -> None:
     """Replace auto-detected rows for this minion. Rows with overridden=True are untouched."""
-    existing = db.exec(
+    existing = (await db.exec(
         select(DiscoveredService).where(
             DiscoveredService.minion_id == minion_id,
             DiscoveredService.overridden == False,  # noqa: E712
         )
-    ).all()
+    )).all()
     for row in existing:
-        db.delete(row)
+        await db.delete(row)
 
     now = datetime.utcnow()
     for svc in services:
         svc.detected_at = now
         db.add(svc)
 
-    db.commit()
+    await db.commit()

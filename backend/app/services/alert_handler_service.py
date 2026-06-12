@@ -232,7 +232,6 @@ class AlertHandlerService:
                     alert_data=alert.model_dump(mode="json"),
                     incident_id=incident.id,
                     jira_url=incident.jira_ticket_url,
-                    db=db,
                 )
                 if incident.workflow_run_id is None:
                     incident.workflow_run_id = run_id
@@ -389,8 +388,18 @@ class AlertHandlerService:
         )
         return None
 
-    async def handle(self, alert: NormalizedAlert, db: Session) -> None:
-        """Full 7-step pipeline. Called as a FastAPI BackgroundTask."""
+    async def handle(self, alert: NormalizedAlert) -> None:
+        """Full 7-step pipeline. Called as a FastAPI BackgroundTask.
+
+        Opens its own sync Session so the router's request session is never
+        shared across the async background boundary (rule 8 / Phase 4).
+        """
+        from app.core.db import sync_engine
+        with Session(sync_engine) as db:
+            await self._handle_with_session(alert, db)
+
+    async def _handle_with_session(self, alert: NormalizedAlert, db: Session) -> None:
+        """Inner entry point once a session is available."""
         logger.info(f"Alert received: {alert.source}/{alert.alert_name} fp={alert.fingerprint}")
 
         # Step 1: Deduplicate

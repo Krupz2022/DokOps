@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.api.deps import get_current_active_superuser
@@ -45,7 +46,6 @@ async def receive_webhook(
     source: str,
     request: Request,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(deps.get_db),
 ) -> Dict[str, Any]:
     """Receive an alert from an external monitoring system."""
     raw_body = await validate_webhook_source(source, request)
@@ -56,19 +56,21 @@ async def receive_webhook(
 
     parser = _PARSERS[source]
     alerts = parser(payload)
+    # Rule 8: alert_handler_service.handle opens its own sync Session internally.
+    # Never share the router's request session with a background coroutine.
     for alert in alerts:
-        background_tasks.add_task(alert_handler_service.handle, alert, db)
+        background_tasks.add_task(alert_handler_service.handle, alert)
 
     return {"status": "accepted", "alerts_queued": len(alerts)}
 
 
 @router.get("/incidents", response_model=List[Dict[str, Any]])
-def list_incidents(
+async def list_incidents(
     status: Optional[str] = None,
     severity: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     query = select(AlertIncident).order_by(AlertIncident.created_at.desc()).offset(offset).limit(limit)
@@ -76,44 +78,44 @@ def list_incidents(
         query = query.where(AlertIncident.status == status)
     if severity:
         query = query.where(AlertIncident.severity == severity)
-    incidents = db.exec(query).all()
+    incidents = (await db.exec(query)).all()
     return [i.model_dump() for i in incidents]
 
 
 @router.get("/incidents/{incident_id}", response_model=Dict[str, Any])
-def get_incident(
+async def get_incident(
     incident_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    incident = db.get(AlertIncident, incident_id)
+    incident = await db.get(AlertIncident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident.model_dump()
 
 
 @router.post("/incidents/{incident_id}/resolve")
-def resolve_incident(
+async def resolve_incident(
     incident_id: int,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Dict[str, Any]:
-    incident = db.get(AlertIncident, incident_id)
+    incident = await db.get(AlertIncident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     incident.status = "closed"
     incident.resolved_at = datetime.now(timezone.utc)
     db.add(incident)
-    db.commit()
+    await db.commit()
     return {"status": "closed", "incident_id": incident_id}
 
 
 @router.get("/policy")
-def get_policy(
-    db: Session = Depends(deps.get_db),
+async def get_policy(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
-    row = db.get(SystemSetting, "alert_remediation_policy")
+    row = await db.get(SystemSetting, "alert_remediation_policy")
     if not row:
         return {}
     try:
@@ -123,29 +125,29 @@ def get_policy(
 
 
 @router.put("/policy")
-def update_policy(
+async def update_policy(
     policy: Dict[str, Any],
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
-    row = db.get(SystemSetting, "alert_remediation_policy")
+    row = await db.get(SystemSetting, "alert_remediation_policy")
     if not row:
         row = SystemSetting(key="alert_remediation_policy", value=json.dumps(policy))
         db.add(row)
     else:
         row.value = json.dumps(policy)
         db.add(row)
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
     return {"status": "saved"}
 
 
 @router.get("/webhook-config")
-def get_webhook_config(
-    db: Session = Depends(deps.get_db),
+async def get_webhook_config(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
-    row = db.get(SystemSetting, "alert_webhook_secrets")
+    row = await db.get(SystemSetting, "alert_webhook_secrets")
     if not row:
         return {}
     try:
@@ -156,21 +158,21 @@ def get_webhook_config(
 
 
 @router.put("/webhook-config")
-def update_webhook_config(
+async def update_webhook_config(
     config: Dict[str, str],
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
     valid_sources = {"alertmanager", "grafana", "datadog", "pagerduty", "opsgenie", "elasticsearch", "generic"}
     filtered = {k: v for k, v in config.items() if k in valid_sources}
-    row = db.get(SystemSetting, "alert_webhook_secrets")
+    row = await db.get(SystemSetting, "alert_webhook_secrets")
     if not row:
         row = SystemSetting(key="alert_webhook_secrets", value=json.dumps(filtered))
         db.add(row)
     else:
         row.value = json.dumps(filtered)
         db.add(row)
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
     return {"status": "saved"}
 
@@ -187,11 +189,11 @@ class JiraAlertConfig(BaseModel):
 
 
 @router.get("/jira-config")
-def get_jira_alert_config(
-    db: Session = Depends(deps.get_db),
+async def get_jira_alert_config(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    row = db.get(SystemSetting, "alert_jira_config")
+    row = await db.get(SystemSetting, "alert_jira_config")
     if not row or not row.value:
         return {}
     try:
@@ -204,13 +206,13 @@ def get_jira_alert_config(
 
 
 @router.put("/jira-config")
-def save_jira_alert_config(
+async def save_jira_alert_config(
     config: JiraAlertConfig,
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
     existing: dict = {}
-    row = db.get(SystemSetting, "alert_jira_config")
+    row = await db.get(SystemSetting, "alert_jira_config")
     if row and row.value:
         try:
             existing = json.loads(row.value)
@@ -231,19 +233,19 @@ def save_jira_alert_config(
         db.add(row)
     else:
         db.add(SystemSetting(key="alert_jira_config", value=json.dumps(data)))
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
     return {"status": "saved"}
 
 
 @router.post("/jira-test")
 async def test_jira_alert_connection(
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(get_current_active_superuser),
 ) -> Any:
     import aiohttp as _aiohttp
 
-    row = db.get(SystemSetting, "alert_jira_config")
+    row = await db.get(SystemSetting, "alert_jira_config")
     if not row or not row.value:
         raise HTTPException(status_code=400, detail="Jira is not configured")
     try:

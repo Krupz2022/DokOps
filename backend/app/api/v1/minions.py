@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import get_async_db, get_current_user, get_db, require_god_mode
+from app.api.deps import get_async_db, get_current_user, require_god_mode
 from app.core.db import AsyncSessionLocal
 from app.models.audit import AuditLog
 from app.models.minion import Minion, MinionJob
@@ -331,6 +331,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 # orgs/groups — never auto-create from untrusted minion-supplied data
                 if status == "active" and org_name and env_name:
                     from app.services.patch_service import find_existing_membership
+                    # TODO(Phase 4): sync Session inside — briefly blocks the event loop
                     find_existing_membership(minion_id, org_name, env_name)
 
             elif msg_type == "heartbeat":
@@ -369,6 +370,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                         scanned_at = datetime.fromisoformat(scanned_at_str.replace("Z", "+00:00"))
                     except Exception:
                         pass
+                # TODO(Phase 4): sync Session inside — blocks the event loop on large scans
                 ingest_scan(minion_id, packages, scanned_at)
 
             elif msg_type == "pong":

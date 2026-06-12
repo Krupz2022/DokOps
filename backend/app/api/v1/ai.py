@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Body, Header
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from app.api import deps
@@ -14,9 +15,9 @@ from app.services.k8s_service import k8s_service
 router = APIRouter()
 
 @router.post("/config")
-def save_ai_config(
+async def save_ai_config(
     config: Dict[str, str],
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """
@@ -41,7 +42,7 @@ def save_ai_config(
         if key == "minion_auto_accept_key":
             from app.services.minion_service import hash_token
             value = hash_token(value)
-        setting = db.get(SystemSetting, key)
+        setting = await db.get(SystemSetting, key)
         if not setting:
             setting = SystemSetting(key=key, value=value)
             db.add(setting)
@@ -49,23 +50,23 @@ def save_ai_config(
             setting.value = value
             db.add(setting)
 
-    db.commit()
+    await db.commit()
     _invalidate_settings_cache()
     return {"message": "Configuration saved"}
 
 @router.get("/config")
-def get_ai_config(
-    db: Session = Depends(deps.get_db),
+async def get_ai_config(
+    db: AsyncSession = Depends(deps.get_async_db),
     current_user: User = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """
     Get current AI configuration (excluding sensitive keys).
     """
-    settings = db.exec(select(SystemSetting)).all()
+    settings = (await db.exec(select(SystemSetting))).all()
     config = {}
     for s in settings:
         config[s.key] = s.value
-        
+
     # Mask API Key
     if "ai_api_key" in config:
         config["ai_api_key"] = "********"
@@ -150,6 +151,7 @@ async def diagnose_stream(
     current_user: User = Depends(deps.get_current_user),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context")
 ) -> Any:
+    # Rule 6: SSE endpoint — no DB session held across the stream.
     import json
     async def event_stream():
         full_query = f"Investigate pod {namespace}/{pod_name}. {query}"
@@ -169,6 +171,7 @@ async def global_diagnose_stream(
     current_user: User = Depends(deps.get_current_user),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context")
 ) -> Any:
+    # Rule 6: SSE endpoint — no DB session held across the stream.
     import json
     async def event_stream():
         async for step in ai_service.run_global_agentic_loop(query, context=cluster_context, runbook_id=runbook_id):
@@ -187,12 +190,14 @@ async def analyze_batch(
     """
     Analyze logs for multiple pods via Re-Act streaming engine.
     """
+    # Rule 6: SSE endpoint — no DB session held across the stream.
     import json
     async def event_stream():
         async for step in ai_service.run_batch_agentic_loop(pods, query, context=cluster_context, runbook_id=runbook_id):
             yield f"data: {json.dumps(step)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 @router.post("/command")
 async def ai_command(
     request: dict = Body(...),

@@ -208,7 +208,8 @@ async def _delete_cluster_credentials(cluster_id: str, db: AsyncSession) -> None
     )).all()
     for cred in creds:
         await db.delete(cred)
-    await db.commit()
+    # No commit here — the caller commits so credential + cluster deletion share
+    # one transaction (otherwise a failed cluster delete orphans the credentials).
 
 
 @router.delete("/{cluster_id}")

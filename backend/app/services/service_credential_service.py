@@ -36,6 +36,8 @@ async def create_credential_async(
     return cred
 
 
+# TODO(Phase 7): remove this sync duplicate once remaining sync callers
+# (tests, any sync services) are migrated to create_credential_async.
 def create_credential(
     db: Session,
     scope_type: str,

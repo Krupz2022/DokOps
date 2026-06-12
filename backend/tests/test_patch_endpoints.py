@@ -61,7 +61,7 @@ def client_fixture(engine):
     app.dependency_overrides[get_current_user] = lambda: god_user
     app.dependency_overrides[require_god_mode] = lambda: god_user
 
-    with patch("app.services.patch_service.engine", engine), \
+    with patch("app.services.patch_service.AsyncSessionLocal", _AsyncSessionLocal), \
          patch("app.core.db.engine", engine), \
          patch("app.services.connectors.confluence_connector.engine", engine):
         with TestClient(app) as c:

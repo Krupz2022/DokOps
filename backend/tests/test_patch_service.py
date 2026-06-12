@@ -1,27 +1,51 @@
+import asyncio
+import json
+import os
+import tempfile
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from sqlmodel import Session, create_engine, SQLModel, select
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.patch import (
     Organisation, MinionGroup, MinionGroupMember,
     MinionPatch, PatchPipeline, PipelineStage,
     PatchPromotion, PatchSchedule, PatchPromotionResult,
 )
-from app.services.patch_service import ingest_scan, _build_patch_cmd
+from app.services.patch_service import _build_patch_cmd
 from app.models.minion import Minion
 
-TEST_DB = "sqlite://"
+
+def _make_engines(db_path: str):
+    """Return (sync_engine, AsyncSessionLocal_factory) sharing the same SQLite file."""
+    sync_url = f"sqlite:///{db_path}"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    eng = create_engine(sync_url, connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(eng)
+    async_eng = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    session_factory = async_sessionmaker(async_eng, class_=AsyncSession, expire_on_commit=False)
+    return eng, async_eng, session_factory
+
 
 @pytest.fixture(name="engine")
 def engine_fixture():
     from app.models.minion import Minion, MinionJob  # ensure minion tables exist
-    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(eng)
-    yield eng
-    SQLModel.metadata.drop_all(eng)
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    eng, async_eng, session_factory = _make_engines(db_path)
+    yield eng, async_eng, session_factory
+    eng.dispose()
+    asyncio.run(async_eng.dispose())
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
 
 def test_models_create_tables(engine):
     """All new models must be importable and tables must be created."""
-    with Session(engine) as db:
+    eng, _, _sf = engine
+    with Session(eng) as db:
         db.add(Organisation(name="Acme", slug="acme"))
         db.commit()
         org = db.exec(select(Organisation).where(Organisation.slug == "acme")).first()
@@ -29,7 +53,8 @@ def test_models_create_tables(engine):
         assert org.id is not None
 
 def test_minion_group_belongs_to_org(engine):
-    with Session(engine) as db:
+    eng, _, _sf = engine
+    with Session(eng) as db:
         org = Organisation(name="Corp", slug="corp")
         db.add(org)
         db.commit()
@@ -42,13 +67,15 @@ def test_minion_group_belongs_to_org(engine):
 
 @pytest.fixture
 def seeded_minion(engine):
-    with Session(engine) as db:
+    eng, _, _sf = engine
+    with Session(eng) as db:
         m = Minion(id="m1", hostname="host1", status="active")
         db.add(m)
         db.commit()
     return "m1"
 
 def test_ingest_scan_creates_patch_rows(engine, seeded_minion):
+    eng, _, session_factory = engine
     packages = [
         {
             "name": "nginx",
@@ -60,10 +87,11 @@ def test_ingest_scan_creates_patch_rows(engine, seeded_minion):
             "cve_ids": ["CVE-2023-44487"],
         }
     ]
-    with patch("app.services.patch_service.engine", engine):
-        ingest_scan("m1", packages, scanned_at=None)
+    from app.services import patch_service
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory):
+        asyncio.run(patch_service.ingest_scan("m1", packages, scanned_at=None))
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         rows = db.exec(select(MinionPatch).where(MinionPatch.minion_id == "m1")).all()
         assert len(rows) == 1
         assert rows[0].package_name == "nginx"
@@ -72,15 +100,17 @@ def test_ingest_scan_creates_patch_rows(engine, seeded_minion):
 
 def test_ingest_scan_replaces_old_rows(engine, seeded_minion):
     """Second scan must replace first — no stale rows."""
-    with patch("app.services.patch_service.engine", engine):
-        ingest_scan("m1", [{"name": "old-pkg", "installed_version": "1.0",
+    eng, _, session_factory = engine
+    from app.services import patch_service
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory):
+        asyncio.run(patch_service.ingest_scan("m1", [{"name": "old-pkg", "installed_version": "1.0",
                              "available_version": "2.0", "advisory_type": "bugfix",
-                             "severity": "low", "cve_ids": []}], scanned_at=None)
-        ingest_scan("m1", [{"name": "new-pkg", "installed_version": "3.0",
+                             "severity": "low", "cve_ids": []}], scanned_at=None))
+        asyncio.run(patch_service.ingest_scan("m1", [{"name": "new-pkg", "installed_version": "3.0",
                              "available_version": "4.0", "advisory_type": "security",
-                             "severity": "critical", "cve_ids": ["CVE-2024-0001"]}], scanned_at=None)
+                             "severity": "critical", "cve_ids": ["CVE-2024-0001"]}], scanned_at=None))
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         rows = db.exec(select(MinionPatch).where(MinionPatch.minion_id == "m1")).all()
         assert len(rows) == 1
         assert rows[0].package_name == "new-pkg"
@@ -105,18 +135,22 @@ def test_build_patch_cmd_custom(engine):
 # Tests for partial apply status + rescan
 # ---------------------------------------------------------------------------
 
-import asyncio
-import json
 from unittest.mock import patch as mock_patch
 
 
 @pytest.fixture(name="engine2")
 def engine2_fixture():
     from app.models.minion import MinionJob  # ensure all tables registered
-    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(eng)
-    yield eng
-    SQLModel.metadata.drop_all(eng)
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    eng, async_eng, session_factory = _make_engines(db_path)
+    yield eng, async_eng, session_factory
+    eng.dispose()
+    asyncio.run(async_eng.dispose())
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
 
 
 def _seed(db_engine):
@@ -155,10 +189,11 @@ def _fake_dispatch(results_by_minion: dict):
 
 
 def test_apply_patches_all_pass(engine2):
-    group_id, minion_ids = _seed(engine2)
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
     results = {mid: 0 for mid in minion_ids}
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         p = PatchPromotion(
             pipeline_id="pipe-1", to_stage_id="stage-1",
             patch_scope="security", triggered_by="test", status="running",
@@ -169,7 +204,7 @@ def test_apply_patches_all_pass(engine2):
         promo_id = p.id
 
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _fake_dispatch(results)
         mock_mgr._connections = {}
@@ -178,18 +213,19 @@ def test_apply_patches_all_pass(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         promo = db.get(PatchPromotion, promo_id)
         assert promo.status == "done"
         assert promo.failed_minions is None or json.loads(promo.failed_minions or "[]") == []
 
 
 def test_apply_patches_partial(engine2):
-    group_id, minion_ids = _seed(engine2)
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
     # minion-0 and minion-1 fail, minion-2 and minion-3 pass
     results = {minion_ids[0]: 1, minion_ids[1]: 1, minion_ids[2]: 0, minion_ids[3]: 0}
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         p = PatchPromotion(
             pipeline_id="pipe-1", to_stage_id="stage-1",
             patch_scope="security", triggered_by="test", status="running",
@@ -200,7 +236,7 @@ def test_apply_patches_partial(engine2):
         promo_id = p.id
 
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _fake_dispatch(results)
         mock_mgr._connections = {}
@@ -209,7 +245,7 @@ def test_apply_patches_partial(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         promo = db.get(PatchPromotion, promo_id)
         assert promo.status == "partial"
         failed = json.loads(promo.failed_minions or "[]")
@@ -217,10 +253,11 @@ def test_apply_patches_partial(engine2):
 
 
 def test_apply_patches_all_fail(engine2):
-    group_id, minion_ids = _seed(engine2)
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
     results = {mid: 1 for mid in minion_ids}
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         p = PatchPromotion(
             pipeline_id="pipe-1", to_stage_id="stage-1",
             patch_scope="security", triggered_by="test", status="running",
@@ -231,7 +268,7 @@ def test_apply_patches_all_fail(engine2):
         promo_id = p.id
 
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _fake_dispatch(results)
         mock_mgr._connections = {}
@@ -240,7 +277,7 @@ def test_apply_patches_all_fail(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         promo = db.get(PatchPromotion, promo_id)
         assert promo.status == "failed"
         failed = json.loads(promo.failed_minions or "[]")
@@ -249,8 +286,9 @@ def test_apply_patches_all_fail(engine2):
 
 def test_apply_patches_saves_result_rows(engine2):
     """A PatchPromotionResult row must exist for every minion after apply."""
-    group_id, minion_ids = _seed(engine2)
-    with Session(engine2) as db:
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
+    with Session(eng) as db:
         for mid in minion_ids:
             db.add(MinionPatch(
                 minion_id=mid,
@@ -273,7 +311,7 @@ def test_apply_patches_saves_result_rows(engine2):
 
     results = {mid: 0 for mid in minion_ids}
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _fake_dispatch(results)
         mock_mgr._connections = {}
@@ -282,7 +320,7 @@ def test_apply_patches_saves_result_rows(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         rows = db.exec(
             select(PatchPromotionResult)
             .where(PatchPromotionResult.promotion_id == promo_id)
@@ -302,8 +340,9 @@ def test_apply_patches_saves_result_rows(engine2):
 
 def test_apply_patches_result_row_failed_minion(engine2):
     """Failed minion must have status='failed' and non-zero exit_code in result row."""
-    group_id, minion_ids = _seed(engine2)
-    with Session(engine2) as db:
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
+    with Session(eng) as db:
         promo = PatchPromotion(
             pipeline_id="pipe-2", to_stage_id="stage-2",
             patch_scope="all", triggered_by="test", status="running",
@@ -315,7 +354,7 @@ def test_apply_patches_result_row_failed_minion(engine2):
 
     results = {minion_ids[0]: 1, minion_ids[1]: 0, minion_ids[2]: 0, minion_ids[3]: 0}
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _fake_dispatch(results)
         mock_mgr._connections = {}
@@ -324,7 +363,7 @@ def test_apply_patches_result_row_failed_minion(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         failed_rows = db.exec(
             select(PatchPromotionResult)
             .where(PatchPromotionResult.promotion_id == promo_id)
@@ -344,8 +383,9 @@ def test_apply_patches_result_row_failed_minion(engine2):
 
 def test_apply_patches_result_stdout_truncated(engine2):
     """stdout longer than 4096 chars must be stored truncated."""
-    group_id, minion_ids = _seed(engine2)
-    with Session(engine2) as db:
+    eng, _, session_factory = engine2
+    group_id, minion_ids = _seed(eng)
+    with Session(eng) as db:
         promo = PatchPromotion(
             pipeline_id="pipe-3", to_stage_id="stage-3",
             patch_scope="all", triggered_by="test", status="running",
@@ -361,7 +401,7 @@ def test_apply_patches_result_stdout_truncated(engine2):
         return {"exit_code": 0, "stdout": long_stdout, "output": long_stdout}
 
     from app.services import patch_service
-    with mock_patch("app.services.patch_service.engine", engine2), \
+    with mock_patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          mock_patch("app.services.minion_service.manager") as mock_mgr:
         mock_mgr.dispatch_job.side_effect = _long_dispatch
         mock_mgr._connections = {}
@@ -370,7 +410,7 @@ def test_apply_patches_result_stdout_truncated(engine2):
             custom_packages=None, actor="test", promotion_id=promo_id,
         ))
 
-    with Session(engine2) as db:
+    with Session(eng) as db:
         rows = db.exec(
             select(PatchPromotionResult)
             .where(PatchPromotionResult.promotion_id == promo_id)
@@ -386,9 +426,9 @@ from app.models.patch import PatchAlertEvent
 from unittest.mock import AsyncMock
 
 
-def _seed_pipeline(engine):
+def _seed_pipeline(db_engine):
     """Seed a pipeline with two stages (dev order=0, qa order=1) and return IDs."""
-    with Session(engine) as db:
+    with Session(db_engine) as db:
         org = Organisation(name="Beta", slug="beta")
         db.add(org)
         db.flush()
@@ -406,7 +446,8 @@ def _seed_pipeline(engine):
 
 
 def test_run_scheduled_stage_no_prior_run(engine):
-    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(engine)
+    eng, _, session_factory = engine
+    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(eng)
     sched = PatchSchedule(
         pipeline_id=pipeline_id, stage_id=stage_qa_id,
         cron_expr="0 2 * * 1", timezone="UTC",
@@ -415,10 +456,10 @@ def test_run_scheduled_stage_no_prior_run(engine):
     )
 
     from app.services import patch_service
-    with patch("app.services.patch_service.engine", engine):
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory):
         asyncio.run(patch_service.run_scheduled_stage(sched))
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         alerts = db.exec(
             select(PatchAlertEvent)
             .where(PatchAlertEvent.stage_id == stage_qa_id)
@@ -429,8 +470,9 @@ def test_run_scheduled_stage_no_prior_run(engine):
 
 
 def test_run_scheduled_stage_prior_failed(engine):
-    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(engine)
-    with Session(engine) as db:
+    eng, _, session_factory = engine
+    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(eng)
+    with Session(eng) as db:
         promo = PatchPromotion(
             pipeline_id=pipeline_id, to_stage_id=stage_dev_id,
             patch_scope="security", triggered_by="test",
@@ -446,10 +488,10 @@ def test_run_scheduled_stage_prior_failed(engine):
     )
 
     from app.services import patch_service
-    with patch("app.services.patch_service.engine", engine):
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory):
         asyncio.run(patch_service.run_scheduled_stage(sched))
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         alerts = db.exec(
             select(PatchAlertEvent)
             .where(PatchAlertEvent.stage_id == stage_qa_id)
@@ -459,8 +501,9 @@ def test_run_scheduled_stage_prior_failed(engine):
 
 
 def test_run_scheduled_stage_prior_partial(engine):
-    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(engine)
-    with Session(engine) as db:
+    eng, _, session_factory = engine
+    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(eng)
+    with Session(eng) as db:
         promo = PatchPromotion(
             pipeline_id=pipeline_id, to_stage_id=stage_dev_id,
             patch_scope="security", triggered_by="test",
@@ -477,10 +520,10 @@ def test_run_scheduled_stage_prior_partial(engine):
     )
 
     from app.services import patch_service
-    with patch("app.services.patch_service.engine", engine):
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory):
         asyncio.run(patch_service.run_scheduled_stage(sched))
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         alerts = db.exec(
             select(PatchAlertEvent)
             .where(PatchAlertEvent.stage_id == stage_qa_id)
@@ -490,8 +533,9 @@ def test_run_scheduled_stage_prior_partial(engine):
 
 
 def test_run_scheduled_stage_prior_done_calls_apply(engine):
-    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(engine)
-    with Session(engine) as db:
+    eng, _, session_factory = engine
+    pipeline_id, stage_dev_id, stage_qa_id, grp_dev_id, grp_qa_id = _seed_pipeline(eng)
+    with Session(eng) as db:
         promo = PatchPromotion(
             pipeline_id=pipeline_id, to_stage_id=stage_dev_id,
             patch_scope="security", triggered_by="test",
@@ -507,7 +551,7 @@ def test_run_scheduled_stage_prior_done_calls_apply(engine):
     )
 
     from app.services import patch_service
-    with patch("app.services.patch_service.engine", engine), \
+    with patch.object(patch_service, "AsyncSessionLocal", session_factory), \
          patch.object(patch_service, "apply_patches", new=AsyncMock()) as mock_apply:
         asyncio.run(patch_service.run_scheduled_stage(sched))
         mock_apply.assert_called_once()
@@ -516,7 +560,7 @@ def test_run_scheduled_stage_prior_done_calls_apply(engine):
         assert call_kwargs["scope"] == "custom"
         assert call_kwargs["custom_packages"] == '["nginx", "openssl"]'
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         from sqlmodel import select as _select
         promos = db.exec(
             _select(PatchPromotion).where(PatchPromotion.to_stage_id == stage_qa_id)
@@ -529,8 +573,9 @@ def test_run_scheduled_stage_prior_done_calls_apply(engine):
 
 def test_patch_schedule_notification_fields(engine):
     """PatchSchedule must store notifications JSON and ai_beautify bool with safe defaults."""
+    eng, _, _sf = engine
     from app.models.patch import PatchPipeline, PipelineStage
-    with Session(engine) as db:
+    with Session(eng) as db:
         org = Organisation(name="Acme", slug="acme-notif")
         db.add(org)
         db.commit()
@@ -582,10 +627,11 @@ def test_patch_schedule_notification_fields(engine):
 @pytest.mark.asyncio
 async def test_run_scheduled_stage_fires_notification(engine):
     """After apply_patches, send_notifications must be called with the schedule's config."""
+    eng, _, session_factory = engine
     from sqlmodel import Session
     from app.models.patch import PatchPipeline, PipelineStage, PatchSchedule
 
-    with Session(engine) as db:
+    with Session(eng) as db:
         org = Organisation(name="NotifOrg", slug="notif-org")
         db.add(org)
         db.commit()
@@ -622,7 +668,7 @@ async def test_run_scheduled_stage_fires_notification(engine):
          mock_patch("app.services.notification_service.send_notifications", new_callable=AsyncMock) as mock_notify:
         mock_apply.return_value = {}
         from app.services.patch_service import run_scheduled_stage
-        with mock_patch("app.services.patch_service.engine", engine):
+        with mock_patch("app.services.patch_service.AsyncSessionLocal", session_factory):
             await run_scheduled_stage(sched)
 
     mock_notify.assert_awaited_once()

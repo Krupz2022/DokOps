@@ -331,8 +331,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 # orgs/groups — never auto-create from untrusted minion-supplied data
                 if status == "active" and org_name and env_name:
                     from app.services.patch_service import find_existing_membership
-                    # TODO(Phase 4): sync Session inside — briefly blocks the event loop
-                    find_existing_membership(minion_id, org_name, env_name)
+                    await find_existing_membership(minion_id, org_name, env_name)
 
             elif msg_type == "heartbeat":
                 async with AsyncSessionLocal() as db:
@@ -370,8 +369,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                         scanned_at = datetime.fromisoformat(scanned_at_str.replace("Z", "+00:00"))
                     except Exception:
                         pass
-                # TODO(Phase 4): sync Session inside — blocks the event loop on large scans
-                ingest_scan(minion_id, packages, scanned_at)
+                await ingest_scan(minion_id, packages, scanned_at)
 
             elif msg_type == "pong":
                 async with AsyncSessionLocal() as db:

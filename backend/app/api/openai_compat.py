@@ -9,7 +9,8 @@ from typing import AsyncGenerator, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.models.setting import SystemSetting
@@ -23,8 +24,8 @@ _CLUSTER_RE = re.compile(r"cluster[_\s]*(id|name)?\s*[:=]\s*(\S+)", re.IGNORECAS
 
 # ── Settings helpers ───────────────────────────────────────────────────────────
 
-def _get_setting(key: str, db: Session) -> Optional[str]:
-    row = db.exec(select(SystemSetting).where(SystemSetting.key == key)).first()
+async def _get_setting(key: str, db: AsyncSession) -> Optional[str]:
+    row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
     return row.value if row else None
 
 
@@ -37,16 +38,16 @@ def _oa_error(message: str, error_type: str, status: int) -> HTTPException:
     )
 
 
-def _check_enabled(db: Session) -> None:
-    if _get_setting("openai_compat_enabled", db) != "true":
+async def _check_enabled(db: AsyncSession) -> None:
+    if await _get_setting("openai_compat_enabled", db) != "true":
         raise _oa_error("OpenAI-compatible API is disabled.", "server_error", 403)
 
 
-def _validate_api_key(authorization: Optional[str], db: Session) -> None:
+async def _validate_api_key(authorization: Optional[str], db: AsyncSession) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise _oa_error("Missing API key.", "authentication_error", 401)
     provided = authorization[len("Bearer "):]
-    stored_hash = _get_setting("openai_compat_api_key_hash", db)
+    stored_hash = await _get_setting("openai_compat_api_key_hash", db)
     if not stored_hash:
         raise _oa_error("No API key configured.", "authentication_error", 401)
     if not hmac.compare_digest(hashlib.sha256(provided.encode()).hexdigest(), stored_hash):
@@ -185,10 +186,10 @@ async def _stream_oa_chunks(
 @router.get("/models")
 async def list_models(
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
-    _check_enabled(db)
-    _validate_api_key(authorization, db)
+    await _check_enabled(db)
+    await _validate_api_key(authorization, db)
     return {
         "object": "list",
         "data": [{"id": "dokops", "object": "model", "created": 0, "owned_by": "dokops"}],
@@ -199,10 +200,11 @@ async def list_models(
 async def chat_completions(
     request: OAChatRequest,
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(deps.get_db),
+    db: AsyncSession = Depends(deps.get_async_db),
 ):
-    _check_enabled(db)
-    _validate_api_key(authorization, db)
+    # Rule 6: SSE streaming path — DB access completed before stream begins; no session held across yield.
+    await _check_enabled(db)
+    await _validate_api_key(authorization, db)
     hint = _extract_cluster_hint(request.messages)
     cluster = _resolve_cluster(hint)
     query, history = _messages_to_query(request.messages)

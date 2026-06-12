@@ -1,7 +1,8 @@
 from __future__ import annotations
 from typing import Any, List
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import deps
 from app.models.cluster import ClusterConnection
@@ -13,12 +14,12 @@ router = APIRouter()
 SUPPORTED_SERVICES = ["rabbitmq", "redis", "couchdb", "mongodb", "mysql", "postgres"]
 
 
-def get_vault_coverage(db: Session) -> List[dict]:
+async def get_vault_coverage(db: AsyncSession) -> List[dict]:
     """Return credential coverage per cluster."""
-    clusters = db.exec(select(ClusterConnection)).all()
-    creds = db.exec(
+    clusters = (await db.exec(select(ClusterConnection))).all()
+    creds = (await db.exec(
         select(ServiceCredential).where(ServiceCredential.scope_type == "cluster")
-    ).all()
+    )).all()
 
     creds_by_cluster: dict[str, list[str]] = {}
     for cred in creds:
@@ -37,8 +38,8 @@ def get_vault_coverage(db: Session) -> List[dict]:
 
 
 @router.get("/coverage")
-def vault_coverage(
-    db: Session = Depends(deps.get_db),
+async def vault_coverage(
+    db: AsyncSession = Depends(deps.get_async_db),
     _: User = Depends(deps.get_current_user),
 ) -> Any:
-    return get_vault_coverage(db)
+    return await get_vault_coverage(db)

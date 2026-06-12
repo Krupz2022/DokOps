@@ -153,10 +153,24 @@ def test_vault_resolver_noop_when_no_tokens(engine):
 
 # ─── Task 6: Vault Coverage API ───────────────────────────────────────────────
 
-def test_vault_coverage_groups_by_cluster(engine):
+def test_vault_coverage_groups_by_cluster():
+    import asyncio
+    import os
+    import tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession
     from app.models.cluster import ClusterConnection
 
-    with Session(engine) as db:
+    # Use a temp file so sync setup and async query share the same DB.
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    sync_eng = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(sync_eng)
+
+    cluster_id: str
+    with Session(sync_eng) as db:
         cluster = ClusterConnection(
             name="test-cluster",
             provider="generic",
@@ -168,19 +182,40 @@ def test_vault_coverage_groups_by_cluster(engine):
         db.add(cluster)
         db.commit()
         db.refresh(cluster)
+        cluster_id = cluster.id
 
-        create_credential(db, scope_type="cluster", scope_id=cluster.id,
+        create_credential(db, scope_type="cluster", scope_id=cluster_id,
                           service_type="rabbitmq", username="u", password="p", host="h")
-        create_credential(db, scope_type="cluster", scope_id=cluster.id,
+        create_credential(db, scope_type="cluster", scope_id=cluster_id,
                           service_type="redis", username="", password="p", host="h")
 
-        from app.api.v1.vault import get_vault_coverage
-        result = get_vault_coverage(db=db)
-        entry = next((r for r in result if r["cluster_id"] == cluster.id), None)
-        assert entry is not None
-        assert "rabbitmq" in entry["configured"]
-        assert "redis" in entry["configured"]
-        assert entry["total_services"] == 6
+    sync_eng.dispose()
+
+    async def _run():
+        async_eng = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        _AsyncSL = async_sessionmaker(async_eng, class_=AsyncSession, expire_on_commit=False)
+        try:
+            from app.api.v1.vault import get_vault_coverage
+            async with _AsyncSL() as async_db:
+                return await get_vault_coverage(db=async_db)
+        finally:
+            await async_eng.dispose()
+
+    result = asyncio.run(_run())
+
+    entry = next((r for r in result if r["cluster_id"] == cluster_id), None)
+    assert entry is not None
+    assert "rabbitmq" in entry["configured"]
+    assert "redis" in entry["configured"]
+    assert entry["total_services"] == 6
+
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
 
 
 # ─── Task 7: ToolsetService Builtin Directory ────────────────────────────────

@@ -16,7 +16,6 @@ from app.models.patch import (
     MinionGroup, MinionGroupMember, MinionPatch, Organisation,
     PatchPipeline, PatchPromotion, PatchPromotionResult, PatchSchedule, PipelineStage,
 )
-from app.models.minion import Minion
 
 _log = logging.getLogger(__name__)
 

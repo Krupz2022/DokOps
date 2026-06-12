@@ -1,9 +1,10 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import get_current_user, get_db, require_god_mode
+from app.api.deps import get_async_db, get_current_user, require_god_mode
 from app.models.patch import MinionGroup, MinionGroupMember, Organisation
 from app.models.user import User
 
@@ -34,72 +35,72 @@ class MemberAssign(BaseModel):
 
 
 @router.get("/groups")
-def list_all_groups(
-    db: Session = Depends(get_db),
+async def list_all_groups(
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
     """List all groups across all organisations (for credential scope dropdowns)."""
-    return db.exec(select(MinionGroup)).all()
+    return (await db.exec(select(MinionGroup))).all()
 
 
 @router.delete("/groups/{group_id}/members/{minion_id}")
-def remove_member(
+async def remove_member(
     group_id: str,
     minion_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    row = db.get(MinionGroupMember, (group_id, minion_id))
+    row = await db.get(MinionGroupMember, (group_id, minion_id))
     if not row:
         raise HTTPException(status_code=404)
-    db.delete(row)
-    db.commit()
+    await db.delete(row)
+    await db.commit()
     return {"removed": True}
 
 
 @router.post("/groups/{group_id}/members")
-def add_member(
+async def add_member(
     group_id: str,
     body: MemberAdd,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    if not db.get(MinionGroup, group_id):
+    if not await db.get(MinionGroup, group_id):
         raise HTTPException(status_code=404, detail="Group not found")
-    existing = db.get(MinionGroupMember, (group_id, body.minion_id))
+    existing = await db.get(MinionGroupMember, (group_id, body.minion_id))
     if existing:
         return {"added": False, "reason": "already member"}
     db.add(MinionGroupMember(group_id=group_id, minion_id=body.minion_id))
-    db.commit()
+    await db.commit()
     return {"added": True}
 
 
 @router.get("/groups/{group_id}")
-def get_group(
+async def get_group(
     group_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    grp = db.get(MinionGroup, group_id)
+    grp = await db.get(MinionGroup, group_id)
     if not grp:
         raise HTTPException(status_code=404)
-    members = db.exec(
+    members = (await db.exec(
         select(MinionGroupMember).where(MinionGroupMember.group_id == group_id)
-    ).all()
+    )).all()
     return {**grp.model_dump(), "member_ids": [m.minion_id for m in members]}
 
 
 @router.delete("/groups/{group_id}")
-def delete_group(
+async def delete_group(
     group_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    grp = db.get(MinionGroup, group_id)
+    grp = await db.get(MinionGroup, group_id)
     if not grp:
         raise HTTPException(status_code=404)
-    db.delete(grp)
-    db.commit()
+    await db.delete(grp)
+    await db.commit()
     return {"deleted": True}
 
 
@@ -107,36 +108,36 @@ def delete_group(
 
 
 @router.get("/")
-def list_orgs(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return db.exec(select(Organisation)).all()
+async def list_orgs(db: AsyncSession = Depends(get_async_db), _: User = Depends(get_current_user)):
+    return (await db.exec(select(Organisation))).all()
 
 
 @router.post("/")
-def create_org(
+async def create_org(
     body: OrgCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    if db.exec(select(Organisation).where(Organisation.slug == body.slug)).first():
+    if (await db.exec(select(Organisation).where(Organisation.slug == body.slug))).first():
         raise HTTPException(status_code=409, detail="Slug already in use")
     org = Organisation(name=body.name, slug=body.slug)
     db.add(org)
-    db.commit()
-    db.refresh(org)
+    await db.commit()
+    await db.refresh(org)
     return org
 
 
 @router.post("/{org_id}/assign")
-def assign_minion(
+async def assign_minion(
     org_id: str,
     body: MemberAssign,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
     """Move a minion to a different group within this org (one group per org enforced)."""
-    if not db.get(Organisation, org_id):
+    if not await db.get(Organisation, org_id):
         raise HTTPException(status_code=404, detail="Organisation not found")
-    grp = db.get(MinionGroup, body.group_id)
+    grp = await db.get(MinionGroup, body.group_id)
     if not grp or grp.org_id != org_id:
         raise HTTPException(status_code=400, detail="Group does not belong to this org")
     from app.services.patch_service import assign_minion_to_group
@@ -145,45 +146,45 @@ def assign_minion(
 
 
 @router.get("/{org_id}/groups")
-def list_groups(
+async def list_groups(
     org_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    return db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id)).all()
+    return (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all()
 
 
 @router.post("/{org_id}/groups")
-def create_group(
+async def create_group(
     org_id: str,
     body: GroupCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    if not db.get(Organisation, org_id):
+    if not await db.get(Organisation, org_id):
         raise HTTPException(status_code=404, detail="Organisation not found")
     grp = MinionGroup(org_id=org_id, name=body.name, description=body.description)
     db.add(grp)
-    db.commit()
-    db.refresh(grp)
+    await db.commit()
+    await db.refresh(grp)
     return grp
 
 
 @router.get("/{org_id}")
-def get_org(
+async def get_org(
     org_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    org = db.get(Organisation, org_id)
+    org = await db.get(Organisation, org_id)
     if not org:
         raise HTTPException(status_code=404)
-    groups = db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id)).all()
-    members = db.exec(
+    groups = (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all()
+    members = (await db.exec(
         select(MinionGroupMember).where(
             MinionGroupMember.group_id.in_([g.id for g in groups])  # type: ignore[attr-defined]
         )
-    ).all()
+    )).all()
     members_by_group: dict[str, list[str]] = {}
     for m in members:
         members_by_group.setdefault(m.group_id, []).append(m.minion_id)
@@ -194,14 +195,14 @@ def get_org(
 
 
 @router.delete("/{org_id}")
-def delete_org(
+async def delete_org(
     org_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     _: User = Depends(require_god_mode),
 ):
-    org = db.get(Organisation, org_id)
+    org = await db.get(Organisation, org_id)
     if not org:
         raise HTTPException(status_code=404)
-    db.delete(org)
-    db.commit()
+    await db.delete(org)
+    await db.commit()
     return {"deleted": True}

@@ -3,9 +3,9 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.core.encryption import decrypt
 from app.models.registry import RegistryConnection
 from app.models.setting import SystemSetting
@@ -296,23 +296,23 @@ async def _exchange_oci_token(
 
 
 class RegistryService:
-    def is_enabled(self) -> bool:
-        with Session(engine) as db:
-            row = db.get(SystemSetting, "registry_lookup_enabled")
+    async def is_enabled(self) -> bool:
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "registry_lookup_enabled")
         return row is not None and row.value.lower() == "true"
 
     def list_built_in(self) -> list[dict]:
         return BUILT_IN_REGISTRIES.copy()
 
-    def _get_user_registries(self) -> list[RegistryConnection]:
-        with Session(engine) as db:
-            return list(db.exec(select(RegistryConnection)).all())
+    async def _get_user_registries(self) -> list[RegistryConnection]:
+        async with AsyncSessionLocal() as db:
+            return list((await db.exec(select(RegistryConnection))).all())
 
-    def find_registry_by_name_or_url(self, identifier: str) -> Optional[RegistryConnection]:
+    async def find_registry_by_name_or_url(self, identifier: str) -> Optional[RegistryConnection]:
         """Find a registry by display name (case-insensitive) or hostname."""
         identifier_lower = identifier.lower().strip()
-        with Session(engine) as db:
-            rows = list(db.exec(select(RegistryConnection)).all())
+        async with AsyncSessionLocal() as db:
+            rows = list((await db.exec(select(RegistryConnection))).all())
         for r in rows:
             if r.name.lower() == identifier_lower or r.url.lower() == identifier_lower:
                 return r
@@ -322,13 +322,13 @@ class RegistryService:
                 return r
         return None
 
-    def _get_fetch_allowlist(self) -> set[str]:
-        user_urls = {r.url for r in self._get_user_registries()}
+    async def _get_fetch_allowlist(self) -> set[str]:
+        user_urls = {r.url for r in await self._get_user_registries()}
         return FETCH_ALLOWLIST | user_urls
 
     async def list_catalog(self, registry_id: str) -> tuple[list[str], Optional[str]]:
-        with Session(engine) as db:
-            reg = db.get(RegistryConnection, registry_id)
+        async with AsyncSessionLocal() as db:
+            reg = await db.get(RegistryConnection, registry_id)
         if not reg:
             return [], "Registry not found."
         pw_plain: Optional[str] = None
@@ -341,8 +341,8 @@ class RegistryService:
 
     async def check_image(self, registry_id: str, image: str) -> dict:
         """Check if image (e.g. 'myapp:v1.2.3' or 'myapp') exists in the registry."""
-        with Session(engine) as db:
-            reg = db.get(RegistryConnection, registry_id)
+        async with AsyncSessionLocal() as db:
+            reg = await db.get(RegistryConnection, registry_id)
         if not reg:
             return {"exists": False, "error": "Registry not found"}
 
@@ -369,7 +369,7 @@ class RegistryService:
     async def search_image(self, image_name: str) -> list[dict]:
         registry, path, _tag = _parse_image(image_name)
         results: list[dict] = []
-        user_regs = self._get_user_registries()
+        user_regs = await self._get_user_registries()
 
         if registry == "hub.docker.com":
             # Image has no explicit registry hostname — try all connected private
@@ -430,7 +430,7 @@ class RegistryService:
     async def fetch_url(self, url: str) -> str:
         hostname = urlparse(url).hostname or ""
         # Fast-path: check static allowlist before hitting the DB
-        if hostname not in FETCH_ALLOWLIST and hostname not in self._get_fetch_allowlist():
+        if hostname not in FETCH_ALLOWLIST and hostname not in await self._get_fetch_allowlist():
             raise ValueError(
                 f"Domain '{hostname}' is not in the registry fetch allowlist. "
                 "Only configured registry domains are accessible."

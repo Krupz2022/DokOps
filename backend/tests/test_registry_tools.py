@@ -24,7 +24,8 @@ def test_registry_tools_have_image_name_input():
 @pytest.mark.asyncio
 async def test_search_container_image_disabled():
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = False
+        mock_svc.is_enabled = AsyncMock(return_value=False)
+        mock_svc._get_user_registries = AsyncMock(return_value=[])
         from app.tools import registry as reg_module
         result = await reg_module._search_container_image_tool("nginx")
     assert result["success"] is False
@@ -37,7 +38,8 @@ async def test_search_container_image_returns_matches():
         {"registry": "hub.docker.com", "full_image": "library/nginx", "tags": ["latest", "1.25"]}
     ]
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = True
+        mock_svc.is_enabled = AsyncMock(return_value=True)
+        mock_svc._get_user_registries = AsyncMock(return_value=[])
         mock_svc.search_image = AsyncMock(return_value=mock_matches)
         from app.tools import registry as reg_module
         result = await reg_module._search_container_image_tool("nginx")
@@ -48,7 +50,8 @@ async def test_search_container_image_returns_matches():
 @pytest.mark.asyncio
 async def test_search_container_image_no_matches():
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = True
+        mock_svc.is_enabled = AsyncMock(return_value=True)
+        mock_svc._get_user_registries = AsyncMock(return_value=[])
         mock_svc.search_image = AsyncMock(return_value=[])
         from app.tools import registry as reg_module
         result = await reg_module._search_container_image_tool("ghost-image-xyz")
@@ -60,7 +63,7 @@ async def test_search_container_image_no_matches():
 @pytest.mark.asyncio
 async def test_fetch_url_disabled():
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = False
+        mock_svc.is_enabled = AsyncMock(return_value=False)
         from app.tools import registry as reg_module
         result = await reg_module._fetch_url_tool("https://hub.docker.com/r/library/nginx")
     assert result["success"] is False
@@ -69,7 +72,7 @@ async def test_fetch_url_disabled():
 @pytest.mark.asyncio
 async def test_fetch_url_blocked_domain():
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = True
+        mock_svc.is_enabled = AsyncMock(return_value=True)
         mock_svc.fetch_url = AsyncMock(
             side_effect=ValueError("not in the registry fetch allowlist")
         )
@@ -82,7 +85,7 @@ async def test_fetch_url_blocked_domain():
 @pytest.mark.asyncio
 async def test_fetch_url_success():
     with patch("app.tools.registry._registry_svc") as mock_svc:
-        mock_svc.is_enabled.return_value = True
+        mock_svc.is_enabled = AsyncMock(return_value=True)
         mock_svc.fetch_url = AsyncMock(return_value="tag: v1.25")
         from app.tools import registry as reg_module
         result = await reg_module._fetch_url_tool("https://hub.docker.com/r/library/nginx")

@@ -26,6 +26,18 @@ async def test_get_snapshot_returns_copy():
 from unittest.mock import MagicMock, AsyncMock, patch
 
 
+def _make_async_session_mock(rows):
+    """Build an AsyncSessionLocal context-manager mock that returns given rows from exec()."""
+    mock_session = AsyncMock()
+    mock_exec_result = MagicMock()
+    mock_exec_result.all.return_value = rows
+    mock_session.exec = AsyncMock(return_value=mock_exec_result)
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    return mock_cm
+
+
 @pytest.mark.asyncio
 async def test_healthy_integration_stored_in_cache():
     svc = IntegrationHealthService()
@@ -40,12 +52,9 @@ async def test_healthy_integration_stored_in_cache():
     mock_svc_instance.test_connection = AsyncMock(return_value=(True, "Connected"))
     mock_svc_class = MagicMock(return_value=mock_svc_instance)
 
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    mock_session.exec.return_value.all.return_value = [mock_row]
+    mock_cm = _make_async_session_mock([mock_row])
 
-    with patch("app.services.integration_health_service.Session", return_value=mock_session), \
+    with patch("app.services.integration_health_service.AsyncSessionLocal", return_value=mock_cm), \
          patch.dict("app.services.integration_health_service._SERVICE_MAP",
                     {"elasticsearch": mock_svc_class}, clear=True), \
          patch("app.services.integration_health_service.build_auth_headers", return_value={}):
@@ -70,12 +79,9 @@ async def test_unreachable_integration_stored_in_cache():
     mock_svc_instance.test_connection = AsyncMock(return_value=(False, "connection refused"))
     mock_svc_class = MagicMock(return_value=mock_svc_instance)
 
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    mock_session.exec.return_value.all.return_value = [mock_row]
+    mock_cm = _make_async_session_mock([mock_row])
 
-    with patch("app.services.integration_health_service.Session", return_value=mock_session), \
+    with patch("app.services.integration_health_service.AsyncSessionLocal", return_value=mock_cm), \
          patch.dict("app.services.integration_health_service._SERVICE_MAP",
                     {"loki": mock_svc_class}, clear=True), \
          patch("app.services.integration_health_service.build_auth_headers", return_value={}):
@@ -100,12 +106,9 @@ async def test_exception_in_test_connection_marks_unhealthy():
     mock_svc_instance.test_connection = AsyncMock(side_effect=RuntimeError("timeout"))
     mock_svc_class = MagicMock(return_value=mock_svc_instance)
 
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    mock_session.exec.return_value.all.return_value = [mock_row]
+    mock_cm = _make_async_session_mock([mock_row])
 
-    with patch("app.services.integration_health_service.Session", return_value=mock_session), \
+    with patch("app.services.integration_health_service.AsyncSessionLocal", return_value=mock_cm), \
          patch.dict("app.services.integration_health_service._SERVICE_MAP",
                     {"datadog": mock_svc_class}, clear=True), \
          patch("app.services.integration_health_service.build_auth_headers", return_value={}):
@@ -123,12 +126,9 @@ async def test_unknown_backend_marked_unhealthy():
     mock_row = MagicMock()
     mock_row.backend = "unknown_service"
 
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    mock_session.exec.return_value.all.return_value = [mock_row]
+    mock_cm = _make_async_session_mock([mock_row])
 
-    with patch("app.services.integration_health_service.Session", return_value=mock_session), \
+    with patch("app.services.integration_health_service.AsyncSessionLocal", return_value=mock_cm), \
          patch.dict("app.services.integration_health_service._SERVICE_MAP", {}, clear=True):
         await svc._check_integrations()
 

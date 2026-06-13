@@ -6,7 +6,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.license_constants import ACTIVATION_ENABLED, LICENSE_SERVER_URL
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.activation import Activation
 
 
@@ -68,8 +68,8 @@ async def run_heartbeat() -> None:
     if not ACTIVATION_ENABLED:
         return
 
-    with Session(engine) as db:
-        row = db.exec(select(Activation)).first()
+    async with AsyncSessionLocal() as db:
+        row = (await db.exec(select(Activation))).first()
         if not row or not row.is_active:
             return
 
@@ -86,7 +86,7 @@ async def run_heartbeat() -> None:
 
         row.last_heartbeat_at = datetime.utcnow()
         db.add(row)
-        db.commit()
+        await db.commit()
 
 
 async def heartbeat_loop() -> None:

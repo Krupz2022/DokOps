@@ -152,18 +152,18 @@ _FINAL_REVIEW_PROMPT = (
 )
 
 
-def _build_kubeconfig_for_cluster(cluster_id: str) -> Optional[str]:
+async def _build_kubeconfig_for_cluster(cluster_id: str) -> Optional[str]:
     """Write a minimal kubeconfig for a DB cluster to a temp file.
     Returns the file path, or None if the cluster is not found / has no credentials."""
     try:
         import yaml as _yaml
-        from sqlmodel import Session, select
-        from app.core.db import engine as _engine
+        from sqlmodel import select
+        from app.core.db import AsyncSessionLocal as _ASL
         from app.models.cluster import ClusterConnection
         from app.core.encryption import decrypt as _decrypt
 
-        with Session(_engine) as _db:
-            conn = _db.get(ClusterConnection, cluster_id)
+        async with _ASL() as _db:
+            conn = await _db.get(ClusterConnection, cluster_id)
         if not conn:
             return None
 
@@ -726,11 +726,10 @@ Rules:
         # Resolve $VAULT: tokens if a cluster context is provided
         if cluster_id and "$VAULT:" in cmd:
             from app.services.vault_resolver import vault_resolver, VaultCredentialNotFound, VaultFieldNotFound
-            from sqlmodel import Session
-            from app.core.db import engine as _engine
+            from app.core.db import AsyncSessionLocal as _ASL
             try:
-                with Session(_engine) as _db:
-                    cmd = vault_resolver.resolve(cmd, cluster_id, _db)
+                async with _ASL() as _db:
+                    cmd = await vault_resolver.resolve(cmd, cluster_id, _db)
             except (VaultCredentialNotFound, VaultFieldNotFound) as e:
                 return f"Vault error: {e}"
 
@@ -758,7 +757,7 @@ Rules:
             # regardless of what's in the mounted ~/.kube/config.
             _tmp_kubeconfig: Optional[str] = None
             if cluster_id and not cluster_id.startswith("local-"):
-                _tmp_kubeconfig = _build_kubeconfig_for_cluster(cluster_id)
+                _tmp_kubeconfig = await _build_kubeconfig_for_cluster(cluster_id)
             if _tmp_kubeconfig:
                 execution_env["KUBECONFIG"] = _tmp_kubeconfig
 
@@ -1115,13 +1114,13 @@ Rules:
             # that format so vault credentials saved against local clusters still resolve.
             cluster_id: Optional[str] = None
             if context:
-                from sqlmodel import Session, select
-                from app.core.db import engine as _engine
+                from sqlmodel import select
+                from app.core.db import AsyncSessionLocal as _ASL
                 from app.models.cluster import ClusterConnection
-                with Session(_engine) as _cdb:
-                    cluster = _cdb.exec(
+                async with _ASL() as _cdb:
+                    cluster = (await _cdb.exec(
                         select(ClusterConnection).where(ClusterConnection.name == context)
-                    ).first()
+                    )).first()
                     if cluster:
                         cluster_id = cluster.id
                     else:
@@ -1522,13 +1521,13 @@ When done, give a per-pod root cause analysis.
             # "local-<name>" IDs (see list_clusters) — fall back to that format.
             cluster_id: Optional[str] = None
             if context:
-                from sqlmodel import Session, select
-                from app.core.db import engine as _engine
+                from sqlmodel import select
+                from app.core.db import AsyncSessionLocal as _ASL
                 from app.models.cluster import ClusterConnection
-                with Session(_engine) as _cdb:
-                    _cluster = _cdb.exec(
+                async with _ASL() as _cdb:
+                    _cluster = (await _cdb.exec(
                         select(ClusterConnection).where(ClusterConnection.name == context)
-                    ).first()
+                    )).first()
                     cluster_id = _cluster.id if _cluster else f"local-{context}"
 
             # god_mode not available here (no user_id); destructive toolset scripts blocked by default.

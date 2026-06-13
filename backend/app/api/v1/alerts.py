@@ -56,7 +56,7 @@ async def receive_webhook(
 
     parser = _PARSERS[source]
     alerts = parser(payload)
-    # Rule 8: alert_handler_service.handle opens its own sync Session internally.
+    # alert_handler_service.handle opens its own AsyncSession windows internally.
     # Never share the router's request session with a background coroutine.
     for alert in alerts:
         background_tasks.add_task(alert_handler_service.handle, alert)

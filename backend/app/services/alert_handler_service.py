@@ -5,8 +5,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
+from app.core.db import AsyncSessionLocal
 from app.models.alert_incident import AlertIncident
 from app.models.audit import AuditLog
 from app.models.setting import SystemSetting  # ensures table is registered in metadata
@@ -55,47 +56,53 @@ def build_jira_body(incident: AlertIncident) -> str:
 
 class AlertHandlerService:
 
-    def _get_suppression_minutes(self, db: Session) -> int:
-        row = db.get(SystemSetting, "alert_suppression_minutes")
-        try:
-            return int(row.value) if row else SUPPRESSION_WINDOW_MINUTES_DEFAULT
-        except (ValueError, TypeError):
-            return SUPPRESSION_WINDOW_MINUTES_DEFAULT
+    async def _get_suppression_minutes(self) -> int:
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "alert_suppression_minutes")
+            try:
+                return int(row.value) if row else SUPPRESSION_WINDOW_MINUTES_DEFAULT
+            except (ValueError, TypeError):
+                return SUPPRESSION_WINDOW_MINUTES_DEFAULT
 
-    def _is_duplicate(self, alert: NormalizedAlert, db: Session) -> bool:
-        suppression_minutes = self._get_suppression_minutes(db)
+    async def _is_duplicate(self, alert: NormalizedAlert) -> bool:
+        suppression_minutes = await self._get_suppression_minutes()
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=suppression_minutes)
-        existing = db.exec(
-            select(AlertIncident).where(
-                AlertIncident.fingerprint == alert.fingerprint,
-                AlertIncident.status != "closed",
-                AlertIncident.created_at >= cutoff,
-            )
-        ).first()
+        async with AsyncSessionLocal() as db:
+            existing = (await db.exec(
+                select(AlertIncident).where(
+                    AlertIncident.fingerprint == alert.fingerprint,
+                    AlertIncident.status != "closed",
+                    AlertIncident.created_at >= cutoff,
+                )
+            )).first()
         return existing is not None
 
-    def _check_remediation_rate_limit(
-        self, alert_name: str, action: str, max_per_hour: int, db: Session
+    async def _check_remediation_rate_limit(
+        self, alert_name: str, action: str, max_per_hour: int
     ) -> bool:
         """Returns True if we are UNDER the rate limit (safe to remediate)."""
         cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-        count = len(db.exec(
-            select(AlertIncident).where(
-                AlertIncident.alert_name == alert_name,
-                AlertIncident.remediation_action == action,
-                AlertIncident.status == "remediated",
-                AlertIncident.created_at >= cutoff,
-            )
-        ).all())
+        async with AsyncSessionLocal() as db:
+            count = len((await db.exec(
+                select(AlertIncident).where(
+                    AlertIncident.alert_name == alert_name,
+                    AlertIncident.remediation_action == action,
+                    AlertIncident.status == "remediated",
+                    AlertIncident.created_at >= cutoff,
+                )
+            )).all())
         return count < max_per_hour
 
-    def _update_status(self, incident: AlertIncident, status: str, db: Session) -> None:
-        incident.status = status
-        db.add(incident)
-        db.commit()
+    async def _update_status(self, incident_id: int, status: str) -> None:
+        async with AsyncSessionLocal() as db:
+            incident = await db.get(AlertIncident, incident_id)
+            if incident:
+                incident.status = status
+                db.add(incident)
+                await db.commit()
 
     async def _collect_evidence(
-        self, incident: AlertIncident, db: Session
+        self, incident: AlertIncident
     ) -> Dict[str, Any]:
         from app.services.k8s_service import k8s_service
         evidence: Dict[str, Any] = {}
@@ -137,17 +144,18 @@ class AlertHandlerService:
             steps.append({"type": "error", "message": str(e)})
         return steps
 
-    async def _create_jira_ticket(self, incident: AlertIncident, db: Session) -> None:
-        from app.models.setting import SystemSetting
-        from app.services.connectors.jira_connector import JiraConnector
+    async def _create_jira_ticket(self, incident: AlertIncident) -> Optional[str]:
+        """Returns jira ticket key if created, else None."""
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "alert_jira_config")
+            if not row or not row.value:
+                return None
+            try:
+                jira_config = json.loads(row.value)
+            except json.JSONDecodeError:
+                return None
 
-        row = db.get(SystemSetting, "alert_jira_config")
-        if not row or not row.value:
-            return
-        try:
-            jira_config = json.loads(row.value)
-        except json.JSONDecodeError:
-            return
+        from app.services.connectors.jira_connector import JiraConnector
 
         summary = f"[{incident.severity.upper()}] {incident.alert_name} — {incident.namespace}/{incident.pod_name}"
         description = build_jira_body(incident)
@@ -156,19 +164,31 @@ class AlertHandlerService:
         jira_config["description"] = description
 
         connector = JiraConnector()
+        ticket_key = None
+        ticket_url = None
         try:
             result = await connector.execute(jira_config, {})
             if result.get("success") and result.get("data"):
-                incident.jira_ticket_key = result["data"].get("issue_key")
-                incident.jira_ticket_url = result["data"].get("url")
-                db.add(incident)
-                db.commit()
+                ticket_key = result["data"].get("issue_key")
+                ticket_url = result["data"].get("url")
         except Exception as e:
             logger.warning(f"Jira ticket creation failed for incident {incident.id}: {e}")
 
-    async def _notify(self, incident: AlertIncident, db: Session) -> None:
-        from app.models.setting import SystemSetting
+        if ticket_key or ticket_url:
+            async with AsyncSessionLocal() as db:
+                fresh = await db.get(AlertIncident, incident.id)
+                if fresh:
+                    fresh.jira_ticket_key = ticket_key
+                    fresh.jira_ticket_url = ticket_url
+                    db.add(fresh)
+                    await db.commit()
+                    # propagate back to in-memory incident for downstream steps
+                    incident.jira_ticket_key = ticket_key
+                    incident.jira_ticket_url = ticket_url
 
+        return ticket_key
+
+    async def _notify(self, incident: AlertIncident) -> None:
         rca_summary = ""
         if incident.rca_report:
             try:
@@ -190,33 +210,47 @@ class AlertHandlerService:
         if incident.jira_ticket_url:
             message += f"\n*Jira:* {incident.jira_ticket_url}"
 
+        # Read notification config in one short session
+        slack_url = None
+        teams_url = None
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "alert_slack_webhook")
+            if row and row.value:
+                slack_url = row.value
+            row = await db.get(SystemSetting, "alert_teams_webhook")
+            if row and row.value:
+                teams_url = row.value
+
         # Slack
-        row = db.get(SystemSetting, "alert_slack_webhook")
-        if row and row.value:
+        if slack_url:
             from app.services.connectors.slack_connector import SlackConnector
             try:
-                await SlackConnector().execute({"webhook_url": row.value, "message": message}, {})
+                await SlackConnector().execute({"webhook_url": slack_url, "message": message}, {})
             except Exception as e:
                 logger.warning(f"Slack notify failed: {e}")
 
         # Teams
-        row = db.get(SystemSetting, "alert_teams_webhook")
-        if row and row.value:
+        if teams_url:
             from app.services.connectors.teams_connector import TeamsConnector
             try:
-                await TeamsConnector().execute({"webhook_url": row.value, "message": message}, {})
+                await TeamsConnector().execute({"webhook_url": teams_url, "message": message}, {})
             except Exception as e:
                 logger.warning(f"Teams notify failed: {e}")
 
-        incident.notification_sent_at = datetime.now(timezone.utc)
-        db.add(incident)
-        db.commit()
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(AlertIncident, incident.id)
+            if fresh:
+                fresh.notification_sent_at = datetime.now(timezone.utc)
+                db.add(fresh)
+                await db.commit()
 
-    async def _trigger_workflows(self, incident: AlertIncident, alert: NormalizedAlert, db: Session) -> None:
+    async def _trigger_workflows(self, incident: AlertIncident, alert: NormalizedAlert) -> None:
         from app.models.workflow import Workflow
         from app.services.workflow_service import trigger_alert_workflow
 
-        rows = db.exec(select(Workflow).where(Workflow.trigger_type == "alert")).all()
+        async with AsyncSessionLocal() as db:
+            rows = (await db.exec(select(Workflow).where(Workflow.trigger_type == "alert"))).all()
+
         for workflow in rows:
             if not workflow.trigger_config:
                 continue
@@ -235,21 +269,29 @@ class AlertHandlerService:
                 )
                 if incident.workflow_run_id is None:
                     incident.workflow_run_id = run_id
-                    db.add(incident)
-                    db.commit()
+                    async with AsyncSessionLocal() as db:
+                        fresh = await db.get(AlertIncident, incident.id)
+                        if fresh:
+                            fresh.workflow_run_id = run_id
+                            db.add(fresh)
+                            await db.commit()
             except Exception as e:
                 logger.warning(f"Workflow trigger failed for workflow {workflow.id}: {e}")
 
-    async def _maybe_remediate(self, incident: AlertIncident, db: Session) -> None:
-        from app.models.setting import SystemSetting
+    async def _maybe_remediate(self, incident: AlertIncident) -> None:
         from app.services.k8s_service import k8s_service
 
-        row = db.get(SystemSetting, "alert_remediation_policy")
-        if not row or not row.value:
-            return
-        try:
-            policy = json.loads(row.value)
-        except json.JSONDecodeError:
+        # Read remediation policy
+        policy = None
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "alert_remediation_policy")
+            if row and row.value:
+                try:
+                    policy = json.loads(row.value)
+                except json.JSONDecodeError:
+                    pass
+
+        if not policy:
             return
 
         rule = policy.get(incident.alert_name)
@@ -259,7 +301,7 @@ class AlertHandlerService:
         action = rule.get("action")
         max_per_hour = rule.get("max_per_hour", 1)
 
-        if not self._check_remediation_rate_limit(incident.alert_name, action, max_per_hour, db):
+        if not await self._check_remediation_rate_limit(incident.alert_name, action, max_per_hour):
             logger.warning(
                 f"Remediation rate limit reached for {incident.alert_name} ({action}). Skipping."
             )
@@ -269,39 +311,49 @@ class AlertHandlerService:
         if action == "restart_pod" and incident.namespace and incident.pod_name:
             outcome = await k8s_service.restart_pod(incident.namespace, incident.pod_name)
 
-        incident.remediation_action = action
-        incident.remediation_outcome = outcome
-        incident.status = "remediated"
-        db.add(incident)
-        db.commit()
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(AlertIncident, incident.id)
+            if fresh:
+                fresh.remediation_action = action
+                fresh.remediation_outcome = outcome
+                fresh.status = "remediated"
+                db.add(fresh)
+                await db.commit()
+                # propagate back
+                incident.remediation_action = action
+                incident.remediation_outcome = outcome
+                incident.status = "remediated"
 
-        db.add(AuditLog(
-            actor="SYSTEM",
-            action=f"auto_remediate:{action}",
-            resource=f"{incident.namespace}/{incident.pod_name}",
-            result="SUCCESS",
-            mode="NORMAL",
-            source="ALERT",
-            details=f"incident_id={incident.id} alert={incident.alert_name} outcome={outcome}",
-        ))
-        db.commit()
+            db.add(AuditLog(
+                actor="SYSTEM",
+                action=f"auto_remediate:{action}",
+                resource=f"{incident.namespace}/{incident.pod_name}",
+                result="SUCCESS",
+                mode="NORMAL",
+                source="ALERT",
+                details=f"incident_id={incident.id} alert={incident.alert_name} outcome={outcome}",
+            ))
+            await db.commit()
 
-        await self._notify_remediation(incident, db)
+        await self._notify_remediation(incident)
 
-    async def _notify_remediation(self, incident: AlertIncident, db: Session) -> None:
-        from app.models.setting import SystemSetting
-
+    async def _notify_remediation(self, incident: AlertIncident) -> None:
         message = (
             f"✅ *Auto-remediated:* {incident.alert_name}\n"
             f"Action: `{incident.remediation_action}` on `{incident.namespace}/{incident.pod_name}`\n"
             f"Outcome: {incident.remediation_outcome}"
         )
+
         if incident.jira_ticket_url and incident.jira_ticket_key:
-            from app.services.connectors.jira_connector import JiraConnector
-            row = db.get(SystemSetting, "alert_jira_config")
-            if row and row.value:
+            jira_config_value = None
+            async with AsyncSessionLocal() as db:
+                row = await db.get(SystemSetting, "alert_jira_config")
+                if row and row.value:
+                    jira_config_value = row.value
+            if jira_config_value:
+                from app.services.connectors.jira_connector import JiraConnector
                 try:
-                    jira_config = json.loads(row.value)
+                    jira_config = json.loads(jira_config_value)
                     jira_config["action"] = "add_comment"
                     jira_config["issue_key"] = incident.jira_ticket_key
                     jira_config["comment"] = message
@@ -309,15 +361,19 @@ class AlertHandlerService:
                 except Exception as e:
                     logger.warning(f"Jira remediation comment failed: {e}")
 
-        row = db.get(SystemSetting, "alert_slack_webhook")
-        if row and row.value:
+        slack_url = None
+        async with AsyncSessionLocal() as db:
+            row = await db.get(SystemSetting, "alert_slack_webhook")
+            if row and row.value:
+                slack_url = row.value
+        if slack_url:
             from app.services.connectors.slack_connector import SlackConnector
             try:
-                await SlackConnector().execute({"webhook_url": row.value, "message": message}, {})
+                await SlackConnector().execute({"webhook_url": slack_url, "message": message}, {})
             except Exception as e:
                 logger.warning(f"Slack remediation notify failed: {e}")
 
-    async def _resolve_cluster(self, alert: NormalizedAlert, db: Session) -> Optional[str]:
+    async def _resolve_cluster(self, alert: NormalizedAlert) -> Optional[str]:
         """
         Determine which registered cluster this alert belongs to.
 
@@ -330,7 +386,8 @@ class AlertHandlerService:
         from app.models.cluster import ClusterConnection
         from app.services.k8s_service import k8s_service
 
-        clusters = db.exec(select(ClusterConnection)).all()
+        async with AsyncSessionLocal() as db:
+            clusters = (await db.exec(select(ClusterConnection))).all()
         cluster_names = [c.name for c in clusters]
 
         if not cluster_names:
@@ -391,40 +448,33 @@ class AlertHandlerService:
     async def handle(self, alert: NormalizedAlert) -> None:
         """Full 7-step pipeline. Called as a FastAPI BackgroundTask.
 
-        Opens its own sync Session so the router's request session is never
-        shared across the async background boundary (rule 8 / Phase 4).
+        Uses short-lived AsyncSession windows around each DB operation so the
+        session is never held open across long AI-RCA or HTTP awaits.
         """
-        from app.core.db import sync_engine
-        with Session(sync_engine) as db:
-            await self._handle_with_session(alert, db)
-
-    async def _handle_with_session(self, alert: NormalizedAlert, db: Session) -> None:
-        """Inner entry point once a session is available."""
         logger.info(f"Alert received: {alert.source}/{alert.alert_name} fp={alert.fingerprint}")
 
         # Step 1: Deduplicate
-        if self._is_duplicate(alert, db):
+        if await self._is_duplicate(alert):
             logger.info(f"Alert suppressed (duplicate within window): {alert.fingerprint}")
             return
 
-        # Step 2: Resolve which cluster this alert belongs to, then pin all
-        # subsequent k8s calls to that cluster via active_cluster_ctx.
+        # Step 2: Resolve which cluster this alert belongs to
         from app.services.k8s_service import active_cluster_ctx
-        cluster_name = await self._resolve_cluster(alert, db)
+        cluster_name = await self._resolve_cluster(alert)
         ctx_token = active_cluster_ctx.set(cluster_name) if cluster_name else None
         logger.info("Alert cluster resolved: %s", cluster_name or "(default)")
 
         try:
-            await self._handle_pipeline(alert, db, cluster_name)
+            await self._handle_pipeline(alert, cluster_name)
         finally:
             if ctx_token is not None:
                 active_cluster_ctx.reset(ctx_token)
 
     async def _handle_pipeline(
-        self, alert: NormalizedAlert, db: Session, cluster_name: Optional[str]
+        self, alert: NormalizedAlert, cluster_name: Optional[str]
     ) -> None:
         """Inner pipeline — runs after cluster context is set on active_cluster_ctx."""
-        # Step 3: Persist
+        # Step 3: Persist incident (short session)
         incident = AlertIncident(
             fingerprint=alert.fingerprint,
             source=alert.source,
@@ -435,56 +485,67 @@ class AlertHandlerService:
             cluster_name=cluster_name,
             status="pending",
         )
-        db.add(incident)
-        db.commit()
-        db.refresh(incident)
+        async with AsyncSessionLocal() as db:
+            db.add(incident)
+            await db.commit()
+            await db.refresh(incident)
 
-        # Step 4: Collect evidence FIRST (before any restart)
-        self._update_status(incident, "collecting", db)
+        # Step 4: Collect evidence FIRST (long async I/O — no session held open)
+        await self._update_status(incident.id, "collecting")
         evidence = {}
         try:
-            evidence = await self._collect_evidence(incident, db)
+            evidence = await self._collect_evidence(incident)
         except Exception as e:
             logger.warning(f"Evidence collection error (continuing): {e}")
-        incident.evidence = json.dumps(evidence)
-        db.add(incident)
-        db.commit()
 
-        # Step 5: AI RCA
-        self._update_status(incident, "rca_running", db)
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(AlertIncident, incident.id)
+            if fresh:
+                fresh.evidence = json.dumps(evidence)
+                db.add(fresh)
+                await db.commit()
+                incident.evidence = fresh.evidence
+
+        # Step 5: AI RCA (long async — no session held open)
+        await self._update_status(incident.id, "rca_running")
         rca_steps = []
         try:
             rca_steps = await self._run_rca(incident, evidence)
         except Exception as e:
             logger.warning(f"RCA error (continuing): {e}")
             rca_steps = [{"type": "error", "message": str(e)}]
-        incident.rca_report = json.dumps(rca_steps)
-        db.add(incident)
-        db.commit()
 
-        # Step 6: Create Jira ticket
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(AlertIncident, incident.id)
+            if fresh:
+                fresh.rca_report = json.dumps(rca_steps)
+                db.add(fresh)
+                await db.commit()
+                incident.rca_report = fresh.rca_report
+
+        # Step 6a: Create Jira ticket (async HTTP — no session held open)
         try:
-            await self._create_jira_ticket(incident, db)
+            await self._create_jira_ticket(incident)
         except Exception as e:
             logger.warning(f"Jira step error (continuing): {e}")
 
-        # Step 6: Notify channels
+        # Step 6b: Notify channels (async HTTP — no session held open)
         try:
-            await self._notify(incident, db)
+            await self._notify(incident)
         except Exception as e:
             logger.warning(f"Notify step error (continuing): {e}")
         if incident.status != "remediated":
-            self._update_status(incident, "notified", db)
+            await self._update_status(incident.id, "notified")
 
         # Step 7: Trigger matching workflows
         try:
-            await self._trigger_workflows(incident, alert, db)
+            await self._trigger_workflows(incident, alert)
         except Exception as e:
             logger.warning(f"Workflow trigger error (continuing): {e}")
 
         # Step 8: Check allowlist and maybe remediate
         try:
-            await self._maybe_remediate(incident, db)
+            await self._maybe_remediate(incident)
         except Exception as e:
             logger.warning(f"Remediation step error (continuing): {e}")
 

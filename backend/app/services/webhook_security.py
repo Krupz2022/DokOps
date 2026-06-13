@@ -7,9 +7,9 @@ from collections import defaultdict
 from typing import Dict, Optional
 
 from fastapi import HTTPException, Request
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.setting import SystemSetting
 
 VALID_SOURCES = frozenset(
@@ -35,9 +35,9 @@ def check_rate_limit(source: str) -> None:
         raise HTTPException(status_code=429, detail=f"Rate limit exceeded for source '{source}'")
 
 
-def _get_secrets() -> Dict[str, str]:
-    with Session(engine) as session:
-        row = session.get(SystemSetting, "alert_webhook_secrets")
+async def _get_secrets() -> Dict[str, str]:
+    async with AsyncSessionLocal() as session:
+        row = await session.get(SystemSetting, "alert_webhook_secrets")
         if not row or not row.value:
             return {}
         try:
@@ -68,7 +68,7 @@ async def validate_webhook_source(source: str, request: Request) -> bytes:
 
     check_rate_limit(source)
 
-    secrets = _get_secrets()
+    secrets = await _get_secrets()
     secret = secrets.get(source)
     if not secret:
         raise HTTPException(status_code=503, detail=f"Webhook source '{source}' is not configured in Alert settings")

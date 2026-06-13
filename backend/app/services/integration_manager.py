@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 
 logger = logging.getLogger(__name__)
 
-from app.core.db import engine
+from app.core.db import sync_engine  # sync-pin: called from sync agent_executor_service._build_agent_tool_catalog
 from app.core.ttl_cache import TTLCache
 from app.models.integration import IntegrationSettings
 from app.services.integrations.base import build_auth_headers
@@ -47,7 +47,7 @@ class IntegrationManager:
         """Query DB for active integrations and return merged TOOL_REGISTRY-compatible dict."""
         merged: Dict[str, Any] = {}
         try:
-            with Session(engine) as session:
+            with Session(sync_engine) as session:
                 rows = session.exec(
                     select(IntegrationSettings).where(IntegrationSettings.is_active == True)  # noqa: E712
                 ).all()

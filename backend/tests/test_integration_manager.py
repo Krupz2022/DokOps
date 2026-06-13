@@ -9,8 +9,8 @@ def isolated_db(monkeypatch):
     import app.models.integration  # noqa
     import app.models.audit        # noqa
     SQLModel.metadata.create_all(test_engine)
-    monkeypatch.setattr("app.core.db.engine", test_engine)
-    monkeypatch.setattr("app.services.integration_manager.engine", test_engine)
+    monkeypatch.setattr("app.core.db.sync_engine", test_engine)
+    monkeypatch.setattr("app.services.integration_manager.sync_engine", test_engine)
     yield test_engine
 
 

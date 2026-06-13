@@ -8,22 +8,32 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from sqlmodel import Session
 
-from app.core.db import engine
+from app.core.db import sync_engine
 from app.models.setting import SystemSetting
 
 logger = logging.getLogger(__name__)
 
 
 # ── Settings helpers ──────────────────────────────────────────────────────────
+# R8 pin: these helpers are called from two sites:
+#   1. _run_confluence_sync_blocking() — runs in a thread-pool executor (no
+#      event loop), so async/await is impossible here; Session(sync_engine) is
+#      the only correct approach for this path.
+#   2. _load_confluence_schedule() — a startup registration helper that
+#      historically ran synchronously; converting it async would require
+#      propagating async through the APScheduler registration call-chain,
+#      which is out of scope for this migration batch.
+# Both callers are intentional sync escape-hatches (Recipe R8). Each future
+# conversion should be tracked in its own task.
 
 def _get_setting(key: str) -> Optional[str]:
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         row = session.get(SystemSetting, key)
         return row.value if row else None
 
 
 def _save_setting(key: str, value: str) -> None:
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         row = session.get(SystemSetting, key)
         if row:
             row.value = value
@@ -214,10 +224,15 @@ def _run_confluence_sync_blocking() -> None:
             for pid, title, text, page_url in confluence_connector.get_space_pages(space_key):
                 if not text.strip():
                     continue
-                # TODO(Phase 4c): rag_service.ingest_text is now async; called from a thread
-                # executor (sync context). Use asyncio.run() to bridge until the scheduler
-                # job itself is converted to a fully async task.
-                asyncio.run(rag_service.ingest_text(  # noqa: Phase-4c-sync-bridge
+                # NOTE (permanent R8 bridge): rag_service.ingest_text is async.
+                # This function runs in a thread-pool executor (called via
+                # loop.run_in_executor from the APScheduler async _job wrapper),
+                # so there is NO running event loop in this thread.  asyncio.run()
+                # is the correct and intentional bridge here — it creates a
+                # fresh event loop for this blocking worker thread.
+                # Do NOT replace with asyncio.get_event_loop().run_until_complete()
+                # (that would fail since there is no current loop in the thread).
+                asyncio.run(rag_service.ingest_text(  # noqa: R8-thread-executor-bridge
                     text=text,
                     title=title,
                     source_type="confluence",

@@ -1746,7 +1746,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             rag_result = await _registry.execute_rag_tool(tool_name, tool_inputs)
                             observation = sanitize_for_llm(str(rag_result.get("data") or rag_result.get("error") or "No results."))
                         elif tool_name.startswith("mcp__"):
-                            exec_res = _mcp_svc.execute_tool(tool_name, tool_inputs)
+                            exec_res = await _mcp_svc.execute_tool(tool_name, tool_inputs)
                             if isinstance(exec_res, dict) and exec_res.get("requires_confirmation"):
                                 pending_op_data = exec_res.get("pending_operation", {})
                                 op_id = str(uuid.uuid4())

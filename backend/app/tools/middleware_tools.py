@@ -3,9 +3,9 @@ import asyncio
 import logging
 from typing import Any, Dict
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.service_diag import DiscoveredService
 from app.services.service_credential_service import resolve_credential
 from app.services.probe_registry import render_command, PROBES
@@ -14,13 +14,13 @@ from app.services.minion_service import manager
 log = logging.getLogger(__name__)
 
 
-def list_minion_services(minion_id: str) -> Dict[str, Any]:
+async def list_minion_services(minion_id: str) -> Dict[str, Any]:
     """List services discovered on this minion. Call this first before running probes."""
     try:
-        with Session(engine) as db:
-            services = db.exec(
+        async with AsyncSessionLocal() as db:
+            services = (await db.exec(
                 select(DiscoveredService).where(DiscoveredService.minion_id == minion_id)
-            ).all()
+            )).all()
         return {
             "success": True,
             "data": [
@@ -44,13 +44,13 @@ def list_minion_services(minion_id: str) -> Dict[str, Any]:
 async def run_service_probe(minion_id: str, service_type: str, probe_name: str) -> Dict[str, Any]:
     """Run a named probe for a service on a minion. Credentials are resolved automatically."""
     try:
-        with Session(engine) as db:
-            service = db.exec(
+        async with AsyncSessionLocal() as db:
+            service = (await db.exec(
                 select(DiscoveredService).where(
                     DiscoveredService.minion_id == minion_id,
                     DiscoveredService.service_type == service_type,
                 )
-            ).first()
+            )).first()
             if not service:
                 return {
                     "success": False,
@@ -60,7 +60,7 @@ async def run_service_probe(minion_id: str, service_type: str, probe_name: str) 
                         "Run list_minion_services first to see what is running."
                     ),
                 }
-            cred = resolve_credential(minion_id, service_type, db)
+            cred = await resolve_credential(minion_id, service_type, db)
 
         cmd = render_command(
             service_type=service_type,

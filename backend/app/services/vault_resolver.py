@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json
 import re
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.service_diag import ServiceCredential
 from app.core.encryption import decrypt
 
@@ -18,26 +19,37 @@ class VaultFieldNotFound(Exception):
 class VaultResolver:
     PATTERN = re.compile(r'\$VAULT:([a-z]+):([a-zA-Z0-9_.]+)')
 
-    def resolve(self, command: str, cluster_id: str, db: Session) -> str:
+    async def resolve(self, command: str, cluster_id: str, db: AsyncSession) -> str:
         """Replace all $VAULT:<service>:<field> tokens with decrypted values.
         Never logs resolved values. Raises VaultCredentialNotFound or
-        VaultFieldNotFound if a token cannot be resolved."""
+        VaultFieldNotFound if a token cannot be resolved.
+
+        Async because DB lookups must not block the event loop. We pre-fetch all
+        distinct service credentials referenced in the command, then do the
+        synchronous re.sub substitution against the in-memory cache.
+        """
         if not self.PATTERN.search(command):
             return command
+
+        # Pre-fetch all distinct service types referenced in the command.
+        service_types = {m.group(1) for m in self.PATTERN.finditer(command)}
+        cred_cache: dict[str, ServiceCredential] = {}
+        for svc in service_types:
+            cred = (await db.exec(
+                select(ServiceCredential).where(
+                    ServiceCredential.scope_type == "cluster",
+                    ServiceCredential.scope_id == cluster_id,
+                    ServiceCredential.service_type == svc,
+                )
+            )).first()
+            if cred is None:
+                raise VaultCredentialNotFound(cluster_id, svc)
+            cred_cache[svc] = cred
 
         def replace(match: re.Match) -> str:
             service_type = match.group(1)
             field = match.group(2)
-            cred = db.exec(
-                select(ServiceCredential).where(
-                    ServiceCredential.scope_type == "cluster",
-                    ServiceCredential.scope_id == cluster_id,
-                    ServiceCredential.service_type == service_type,
-                )
-            ).first()
-            if cred is None:
-                raise VaultCredentialNotFound(cluster_id, service_type)
-            return self._extract_field(cred, field)
+            return self._extract_field(cred_cache[service_type], field)
 
         return self.PATTERN.sub(replace, command)
 

@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 from sqlmodel import Session
-from app.core.db import engine
+from app.core.db import sync_engine  # sync-pin: _get_setting called synchronously from chat.py + ai_service.py; tests mock it as sync MagicMock
 from app.models.setting import SystemSetting
 
 _log = logging.getLogger("dokops.context_manager")
@@ -49,7 +49,7 @@ CONVERSATION_COMPACTION_PROMPT = (
 
 class ContextManager:
     def _get_setting(self, key: str) -> Optional[str]:
-        with Session(engine) as session:
+        with Session(sync_engine) as session:
             s = session.get(SystemSetting, key)
             return s.value if s else None
 

@@ -154,61 +154,120 @@ def test_service_credentials_api_schema_accepts_cluster_scope():
 from app.services.vault_resolver import VaultResolver, VaultCredentialNotFound, VaultFieldNotFound
 
 
+# ── Async helper shared by vault resolver tests ────────────────────────────────
+
+def _run_with_async_db(seed_fn, test_fn):
+    """Seed via sync Session, then run an async test_fn(adb) against the same DB."""
+    import asyncio, os, tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel import create_engine as _ce
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AS
+    import sqlmodel as _sm
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        se = _ce(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+        _sm.SQLModel.metadata.create_all(se)
+        with Session(se) as db:
+            seed_fn(db)
+        se.dispose()
+
+        aeng = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        ASL = async_sessionmaker(aeng, class_=_AS, expire_on_commit=False)
+
+        async def _runner():
+            async with ASL() as adb:
+                return await test_fn(adb)
+
+        result = asyncio.run(_runner())
+        asyncio.run(aeng.dispose())
+        return result
+    finally:
+        try:
+            os.unlink(db_path)
+        except OSError:
+            pass
+
+
 def test_vault_resolver_substitutes_username(engine):
-    with Session(engine) as db:
+    def seed(db):
         create_credential(
             db, scope_type="cluster", scope_id="c1",
             service_type="rabbitmq", username="admin", password="s3cr3t",
             host="rabbit.svc", port=5672, extra='{"vhost": "/prod"}',
         )
+
+    async def run(adb):
         resolver = VaultResolver()
-        result = resolver.resolve(
+        return await resolver.resolve(
             "curl -u $VAULT:rabbitmq:username:$VAULT:rabbitmq:password http://$VAULT:rabbitmq:host:15672/api/queues",
             cluster_id="c1",
-            db=db,
+            db=adb,
         )
-        assert "admin" in result
-        assert "s3cr3t" in result
-        assert "rabbit.svc" in result
-        assert "$VAULT:" not in result
+
+    result = _run_with_async_db(seed, run)
+    assert "admin" in result
+    assert "s3cr3t" in result
+    assert "rabbit.svc" in result
+    assert "$VAULT:" not in result
 
 
 def test_vault_resolver_substitutes_extra_field(engine):
-    with Session(engine) as db:
+    def seed(db):
         create_credential(
             db, scope_type="cluster", scope_id="c2",
             service_type="rabbitmq", username="u", password="p",
             host="h", extra='{"vhost": "/myvhost"}',
         )
+
+    async def run(adb):
         resolver = VaultResolver()
-        result = resolver.resolve("vhost=$VAULT:rabbitmq:extra.vhost", cluster_id="c2", db=db)
-        assert "vhost=/myvhost" in result
+        return await resolver.resolve("vhost=$VAULT:rabbitmq:extra.vhost", cluster_id="c2", db=adb)
+
+    result = _run_with_async_db(seed, run)
+    assert "vhost=/myvhost" in result
 
 
 def test_vault_resolver_raises_when_no_credential(engine):
-    with Session(engine) as db:
+    def seed(db):
+        pass  # no credentials seeded
+
+    async def run(adb):
         resolver = VaultResolver()
-        with pytest.raises(VaultCredentialNotFound) as exc:
-            resolver.resolve("$VAULT:redis:password", cluster_id="no-such-cluster", db=db)
-        assert "redis" in str(exc.value)
+        return await resolver.resolve("$VAULT:redis:password", cluster_id="no-such-cluster", db=adb)
+
+    with pytest.raises(VaultCredentialNotFound) as exc:
+        _run_with_async_db(seed, run)
+    assert "redis" in str(exc.value)
 
 
 def test_vault_resolver_raises_for_unknown_field(engine):
-    with Session(engine) as db:
+    def seed(db):
         create_credential(
             db, scope_type="cluster", scope_id="c3",
             service_type="redis", username="", password="pass", host="redis.svc",
         )
+
+    async def run(adb):
         resolver = VaultResolver()
-        with pytest.raises(VaultFieldNotFound):
-            resolver.resolve("$VAULT:redis:extra.nonexistent_key", cluster_id="c3", db=db)
+        return await resolver.resolve("$VAULT:redis:extra.nonexistent_key", cluster_id="c3", db=adb)
+
+    with pytest.raises(VaultFieldNotFound):
+        _run_with_async_db(seed, run)
 
 
 def test_vault_resolver_noop_when_no_tokens(engine):
-    with Session(engine) as db:
+    async def run(adb):
         resolver = VaultResolver()
         cmd = "kubectl get pods -n default"
-        assert resolver.resolve(cmd, cluster_id="any", db=db) == cmd
+        return await resolver.resolve(cmd, cluster_id="any", db=adb)
+
+    def seed(db):
+        pass
+
+    result = _run_with_async_db(seed, run)
+    assert result == "kubectl get pods -n default"
 
 
 # ─── Task 6: Vault Coverage API ───────────────────────────────────────────────

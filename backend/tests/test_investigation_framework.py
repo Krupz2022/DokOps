@@ -178,6 +178,7 @@ def _build_loop_patches(classify_result: bool, complete_response: str = "Done.")
     mock_mcp.build_openai_tools_schema = _AsMock(return_value=[])
     mock_mcp.build_gemini_tools_schema = _AsMock(return_value=[])
     mock_mcp.get_all_tools_for_prompt = _AsMock(return_value="")
+    mock_mcp.execute_tool = _AsMock(return_value={"success": True, "data": "ok"})
 
     mock_int_mgr = _MM()
     mock_int_mgr.get_active_tool_registry.return_value = {}

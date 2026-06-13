@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.integration import IntegrationSettings
 from app.services.integrations.base import build_auth_headers
 from app.services.integration_manager import _SERVICE_MAP
@@ -67,10 +67,10 @@ class IntegrationHealthService:
 
     async def _check_integrations(self) -> None:
         try:
-            with Session(engine) as session:
-                rows = session.exec(
+            async with AsyncSessionLocal() as session:
+                rows = (await session.exec(
                     select(IntegrationSettings).where(IntegrationSettings.is_active == True)  # noqa: E712
-                ).all()
+                )).all()
         except Exception as e:
             logger.error("integration_health: DB query failed: %s", e)
             return

@@ -51,6 +51,11 @@ def test_create_credential_with_host(engine):
 
 
 def test_resolve_cluster_credential_returns_decrypted(engine):
+    import asyncio, os, tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+
+    # Seed via sync engine
     with Session(engine) as db:
         create_credential(
             db,
@@ -62,17 +67,72 @@ def test_resolve_cluster_credential_returns_decrypted(engine):
             host="redis.infra.svc",
             port=6379,
         )
-        result = resolve_cluster_credential("cluster-xyz", "redis", db)
-        assert result is not None
-        assert result["password"] == "r3dis_pass"
-        assert result["host"] == "redis.infra.svc"
-        assert result["port"] == 6379
+
+    # Use a shared temp-file DB for async round-trip
+    _fd, _db_path = tempfile.mkstemp(suffix=".db")
+    os.close(_fd)
+    try:
+        from sqlmodel import create_engine as _ce
+        _se = _ce(f"sqlite:///{_db_path}", connect_args={"check_same_thread": False})
+        import sqlmodel as _sm
+        _sm.SQLModel.metadata.create_all(_se)
+        with Session(_se) as db2:
+            create_credential(db2, scope_type="cluster", scope_id="cluster-xyz",
+                              service_type="redis", username="", password="r3dis_pass",
+                              host="redis.infra.svc", port=6379)
+        _se.dispose()
+
+        _aeng = create_async_engine(f"sqlite+aiosqlite:///{_db_path}")
+        _ASL = async_sessionmaker(_aeng, class_=_AsyncSession, expire_on_commit=False)
+
+        async def _run():
+            async with _ASL() as adb:
+                return await resolve_cluster_credential("cluster-xyz", "redis", adb)
+
+        result = asyncio.run(_run())
+        asyncio.run(_aeng.dispose())
+    finally:
+        try:
+            os.unlink(_db_path)
+        except OSError:
+            pass
+
+    assert result is not None
+    assert result["password"] == "r3dis_pass"
+    assert result["host"] == "redis.infra.svc"
+    assert result["port"] == 6379
 
 
 def test_resolve_cluster_credential_returns_none_when_missing(engine):
-    with Session(engine) as db:
-        result = resolve_cluster_credential("nonexistent-cluster", "rabbitmq", db)
-        assert result is None
+    import asyncio, os, tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+
+    _fd, _db_path = tempfile.mkstemp(suffix=".db")
+    os.close(_fd)
+    try:
+        from sqlmodel import create_engine as _ce
+        _se = _ce(f"sqlite:///{_db_path}", connect_args={"check_same_thread": False})
+        import sqlmodel as _sm
+        _sm.SQLModel.metadata.create_all(_se)
+        _se.dispose()
+
+        _aeng = create_async_engine(f"sqlite+aiosqlite:///{_db_path}")
+        _ASL = async_sessionmaker(_aeng, class_=_AsyncSession, expire_on_commit=False)
+
+        async def _run():
+            async with _ASL() as adb:
+                return await resolve_cluster_credential("nonexistent-cluster", "rabbitmq", adb)
+
+        result = asyncio.run(_run())
+        asyncio.run(_aeng.dispose())
+    finally:
+        try:
+            os.unlink(_db_path)
+        except OSError:
+            pass
+
+    assert result is None
 
 
 def test_service_credentials_api_schema_accepts_cluster_scope():

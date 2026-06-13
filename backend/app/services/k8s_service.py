@@ -160,13 +160,13 @@ class K8sService:
 
     async def load_from_db(self) -> None:
         """Load all ClusterConnection rows from DB and register live clients."""
-        from sqlmodel import Session, select
-        from app.core.db import engine
+        from sqlmodel import select
+        from app.core.db import AsyncSessionLocal
         from app.models.cluster import ClusterConnection
 
         try:
-            with Session(engine) as db:
-                connections = db.exec(select(ClusterConnection)).all()
+            async with AsyncSessionLocal() as db:
+                connections = (await db.exec(select(ClusterConnection))).all()
             loaded: list[str] = []
             for conn in connections:
                 try:

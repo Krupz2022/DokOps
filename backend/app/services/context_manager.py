@@ -1,8 +1,6 @@
 import logging
 from typing import Optional
-from sqlmodel import Session
-from app.core.db import sync_engine  # sync-pin: _get_setting called synchronously from chat.py + ai_service.py; tests mock it as sync MagicMock
-from app.models.setting import SystemSetting
+from app.core import settings_cache
 
 _log = logging.getLogger("dokops.context_manager")
 
@@ -49,9 +47,10 @@ CONVERSATION_COMPACTION_PROMPT = (
 
 class ContextManager:
     def _get_setting(self, key: str) -> Optional[str]:
-        with Session(sync_engine) as session:
-            s = session.get(SystemSetting, key)
-            return s.value if s else None
+        # Stays synchronous (called from both sync and async contexts; tests mock it
+        # as a sync MagicMock), but routes through the process-wide settings cache so
+        # an event-loop call doesn't block on a per-call DB round-trip (Recipe R8).
+        return settings_cache.get_setting(key)
 
     def count_tokens(self, text: str, provider: str) -> int:
         if provider in ("OPENAI", "AZURE"):

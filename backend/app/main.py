@@ -210,6 +210,11 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    # Release the async connection pool so asyncpg/aiosqlite connections close
+    # cleanly instead of being torn down with the event loop.
+    from app.core.db import async_engine
+    await async_engine.dispose()
+
 app = FastAPI(
     title=settings.PROJECT_NAME, 
     openapi_url=f"{settings.API_V1_STR}/openapi.json",

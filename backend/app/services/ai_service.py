@@ -2,8 +2,7 @@ import asyncio
 import logging
 import google.generativeai as genai
 from openai import OpenAI, AzureOpenAI
-from sqlmodel import Session, select
-from app.core.db import engine
+from sqlmodel import select
 from app.models.setting import SystemSetting
 from app.core.config import settings
 import json

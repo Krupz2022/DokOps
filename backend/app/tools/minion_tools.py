@@ -3,19 +3,19 @@ import json
 import logging
 from typing import Any, Dict
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 from app.models.minion import Minion
 from app.services.minion_service import is_read_allowed, manager
 
 log = logging.getLogger(__name__)
 
 
-def minion_list() -> Dict[str, Any]:
+async def minion_list() -> Dict[str, Any]:
     try:
-        with Session(engine) as db:
-            minions = db.exec(select(Minion)).all()
+        async with AsyncSessionLocal() as db:
+            minions = (await db.exec(select(Minion))).all()
         return {
             "success": True,
             "data": [
@@ -34,10 +34,10 @@ def minion_list() -> Dict[str, Any]:
         return {"success": False, "data": None, "error": str(e)}
 
 
-def minion_grains(minion_id: str) -> Dict[str, Any]:
+async def minion_grains(minion_id: str) -> Dict[str, Any]:
     try:
-        with Session(engine) as db:
-            m = db.get(Minion, minion_id)
+        async with AsyncSessionLocal() as db:
+            m = await db.get(Minion, minion_id)
         if not m:
             return {"success": False, "data": None, "error": f"Minion {minion_id!r} not found"}
         return {"success": True, "data": json.loads(m.grains), "error": None}

@@ -133,9 +133,10 @@ def test_read_allowlist_rejects_systemctl_restart():
     assert is_read_allowed("systemctl restart nginx") is False
 
 
-def test_minion_list_tool_returns_dict():
+@pytest.mark.asyncio
+async def test_minion_list_tool_returns_dict():
     from app.tools.minion_tools import minion_list
-    result = minion_list()
+    result = await minion_list()
     assert "success" in result
     assert isinstance(result["data"], list)
 

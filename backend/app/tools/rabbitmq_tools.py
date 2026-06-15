@@ -9,11 +9,13 @@ logger = logging.getLogger(__name__)
 
 def _get_credential(cluster_id: Optional[str] = None, instance_name: Optional[str] = None):
     from sqlmodel import Session, select
-    from app.core.db import engine
+    from app.core.db import sync_engine
     from app.core.encryption import decrypt
     from app.models.service_diag import ServiceCredential
 
-    with Session(engine) as db:
+    # R8: sync session by design — _get_credential is only ever invoked via
+    # asyncio.to_thread(), so it runs on a worker thread, not the event loop.
+    with Session(sync_engine) as db:
         cred = None
         for scope_type, scope_id in [("cluster", cluster_id), ("global", None)]:
             if scope_type == "cluster" and not cluster_id:

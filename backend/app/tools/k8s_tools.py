@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _K8S_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-\.]*$')
 
 
-def _safe_kubectl_env() -> Tuple[dict, Optional[str]]:
+async def _safe_kubectl_env() -> Tuple[dict, Optional[str]]:
     """Return (env_overrides, tmp_kubeconfig_path) for subprocess kubectl calls.
 
     Detects the "is a directory" problem that occurs in Docker when
@@ -26,8 +26,8 @@ def _safe_kubectl_env() -> Tuple[dict, Optional[str]]:
     The caller must delete tmp_kubeconfig_path (if not None) after kubectl exits.
     """
     import yaml as _yaml
-    from sqlmodel import Session as _Session, select as _select
-    from app.core.db import engine as _engine
+    from sqlmodel import select as _select
+    from app.core.db import AsyncSessionLocal
     from app.models.cluster import ClusterConnection
     from app.core.encryption import decrypt as _decrypt
 
@@ -44,8 +44,8 @@ def _safe_kubectl_env() -> Tuple[dict, Optional[str]]:
     # 3. Kubeconfig path is missing or is a directory (container mount issue).
     #    Build a temp kubeconfig from the first available DB cluster.
     try:
-        with _Session(_engine) as _db:
-            conn = _db.exec(_select(ClusterConnection)).first()
+        async with AsyncSessionLocal() as _db:
+            conn = (await _db.exec(_select(ClusterConnection))).first()
         if not conn:
             return {}, None
 
@@ -96,7 +96,7 @@ async def kubectl_fallback(command: str) -> Dict[str, Any]:
     Only called when kubernetes-client raises an exception.
     """
     logger.warning(f"Using kubectl fallback for command: {command}")
-    env_override, tmp_kc = _safe_kubectl_env()
+    env_override, tmp_kc = await _safe_kubectl_env()
     try:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -2518,7 +2518,7 @@ async def apply_manifest(manifest_yaml: str, reason: str, confirmed: bool = Fals
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(manifest_yaml)
             tmp_path = f.name
-        env_override, tmp_kc = _safe_kubectl_env()
+        env_override, tmp_kc = await _safe_kubectl_env()
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,

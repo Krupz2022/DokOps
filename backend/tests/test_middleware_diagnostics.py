@@ -99,30 +99,78 @@ from app.services.service_credential_service import create_credential, resolve_c
 from app.models.patch import Organisation, MinionGroup, MinionGroupMember
 
 
+# ── Async helper for resolve_credential tests ──────────────────────────────────
+
+def _run_resolve_credential(seed_fn, minion_id, service_type):
+    """Seed via sync Session on a temp-file DB, then resolve via AsyncSession."""
+    import asyncio
+    import os
+    import tempfile
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel import create_engine as _ce
+    from sqlmodel.ext.asyncio.session import AsyncSession as _AS
+    import sqlmodel as _sm
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        se = _ce(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+        _sm.SQLModel.metadata.create_all(se)
+        with Session(se) as db:
+            seed_fn(db)
+        se.dispose()
+
+        aeng = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        ASL = async_sessionmaker(aeng, class_=_AS, expire_on_commit=False)
+
+        async def _runner():
+            async with ASL() as adb:
+                return await resolve_credential(minion_id, service_type, adb)
+
+        result = asyncio.run(_runner())
+        asyncio.run(aeng.dispose())
+        return result
+    finally:
+        try:
+            os.unlink(db_path)
+        except OSError:
+            pass
+
+
 def test_resolve_returns_none_when_no_creds(engine, minion_id):
-    with Session(engine) as db:
-        result = resolve_credential(minion_id, "redis", db)
+    def seed(db):
+        pass  # no credentials seeded
+
+    result = _run_resolve_credential(seed, minion_id, "redis")
     assert result is None
 
 
 def test_resolve_global_credential(engine, minion_id):
-    with Session(engine) as db:
+    def seed(db):
+        db.add(Minion(id=minion_id, hostname="host1", status="active"))
+        db.commit()
         create_credential(db, "global", "redis", "admin", "globalpass")
-        result = resolve_credential(minion_id, "redis", db)
+
+    result = _run_resolve_credential(seed, minion_id, "redis")
     assert result["username"] == "admin"
     assert result["password"] == "globalpass"
 
 
 def test_resolve_minion_overrides_global(engine, minion_id):
-    with Session(engine) as db:
+    def seed(db):
+        db.add(Minion(id=minion_id, hostname="host1", status="active"))
+        db.commit()
         create_credential(db, "global", "redis", "admin", "globalpass")
         create_credential(db, "minion", "redis", "local", "localpass", scope_id=minion_id)
-        result = resolve_credential(minion_id, "redis", db)
+
+    result = _run_resolve_credential(seed, minion_id, "redis")
     assert result["password"] == "localpass"
 
 
 def test_resolve_group_overrides_global(engine, minion_id):
-    with Session(engine) as db:
+    def seed(db):
+        db.add(Minion(id=minion_id, hostname="host1", status="active"))
+        db.commit()
         org = Organisation(name="TestOrg", slug="testorg")
         db.add(org)
         db.commit()
@@ -135,12 +183,15 @@ def test_resolve_group_overrides_global(engine, minion_id):
         db.commit()
         create_credential(db, "global", "redis", "admin", "globalpass")
         create_credential(db, "group", "redis", "grpuser", "grppass", scope_id=grp.id)
-        result = resolve_credential(minion_id, "redis", db)
+
+    result = _run_resolve_credential(seed, minion_id, "redis")
     assert result["password"] == "grppass"
 
 
 def test_resolve_minion_overrides_group(engine, minion_id):
-    with Session(engine) as db:
+    def seed(db):
+        db.add(Minion(id=minion_id, hostname="host1", status="active"))
+        db.commit()
         org = Organisation(name="TestOrg2", slug="testorg2")
         db.add(org)
         db.commit()
@@ -153,7 +204,8 @@ def test_resolve_minion_overrides_group(engine, minion_id):
         db.commit()
         create_credential(db, "group", "redis", "grpuser", "grppass", scope_id=grp.id)
         create_credential(db, "minion", "redis", "local", "localpass", scope_id=minion_id)
-        result = resolve_credential(minion_id, "redis", db)
+
+    result = _run_resolve_credential(seed, minion_id, "redis")
     assert result["password"] == "localpass"
 
 

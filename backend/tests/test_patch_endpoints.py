@@ -63,7 +63,7 @@ def client_fixture(engine):
 
     with patch("app.services.patch_service.AsyncSessionLocal", _AsyncSessionLocal), \
          patch("app.core.db.engine", engine), \
-         patch("app.services.connectors.confluence_connector.engine", engine):
+         patch("app.services.connectors.confluence_connector.sync_engine", engine):
         with TestClient(app) as c:
             yield c
 

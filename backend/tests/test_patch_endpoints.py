@@ -39,16 +39,12 @@ def engine_fixture():
 @pytest.fixture(name="client")
 def client_fixture(engine):
     from app.main import app
-    from app.api.deps import get_db, get_async_db, get_current_user, require_god_mode
+    from app.api.deps import get_async_db, get_current_user, require_god_mode
 
     db_url = str(engine.url)
     async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
-
-    def override_db():
-        with Session(engine) as session:
-            yield session
 
     async def override_async_db():
         async with _AsyncSessionLocal() as session:
@@ -56,7 +52,6 @@ def client_fixture(engine):
 
     god_user = User(username="admin", email="admin@test.com", hashed_password="x", role="god")
 
-    app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_async_db] = override_async_db
     app.dependency_overrides[get_current_user] = lambda: god_user
     app.dependency_overrides[require_god_mode] = lambda: god_user

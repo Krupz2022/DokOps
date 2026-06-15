@@ -1,16 +1,16 @@
 import logging
-from typing import AsyncGenerator, Generator, Optional
+from typing import AsyncGenerator, Optional
 from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import ValidationError
-from sqlmodel import Session, select
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.security import ALGORITHM
 from app.models.user import User
-from app.core.db import engine, AsyncSessionLocal
+from app.core.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +18,6 @@ reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login/access-token",
     auto_error=False,  # Don't auto-raise; we also accept cookies
 )
-
-def get_db() -> Generator:
-    with Session(engine) as session:
-        yield session
-
 
 async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:

@@ -1,10 +1,6 @@
 import asyncio
-import os
-import tempfile
 from datetime import datetime
 from sqlmodel import SQLModel, create_engine, Session
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi.testclient import TestClient
 import pytest
 
@@ -17,49 +13,16 @@ import app.models.audit      # noqa
 import app.models.setting    # noqa
 
 
-# ── Fixtures for API-level tests ─────────────────────────────────────────────
+# ── Fixtures for API-level tests — delegate to shared conftest fixtures ───────
 
 @pytest.fixture(name="session")
-def session_fixture():
-    # Use a temp file so both sync and async engines share the same DB.
-    fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
-    try:
-        os.unlink(db_path)
-    except OSError:
-        pass
+def session_fixture(isolated_session):
+    return isolated_session
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session):
-    from app.main import app as fastapi_app
-    from app.api import deps
-
-    db_url = str(session.bind.url)
-    async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    _async_engine = create_async_engine(async_url)
-    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
-
-    def get_session_override():
-        return session
-
-    async def get_async_session_override():
-        async with _AsyncSessionLocal() as async_session:
-            yield async_session
-
-    fastapi_app.dependency_overrides[deps.get_db] = get_session_override
-    fastapi_app.dependency_overrides[deps.get_async_db] = get_async_session_override
-    client = TestClient(fastapi_app)
-    yield client
-    fastapi_app.dependency_overrides.clear()
-    asyncio.run(_async_engine.dispose())
+def client_fixture(isolated_client):
+    return isolated_client
 
 
 @pytest.fixture(name="superuser_token_headers")

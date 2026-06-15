@@ -1,13 +1,14 @@
 # backend/tests/test_obs_api.py
 import asyncio
-import os
-import tempfile
 import pytest
 from unittest.mock import patch, AsyncMock
-from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel import Session
 from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi.testclient import TestClient
+
+import app.models.integration  # noqa
+import app.models.audit        # noqa
 
 from app.main import app
 from app.api import deps
@@ -15,35 +16,22 @@ from app.models.user import User
 from app.core import security
 
 
+# session: delegate to the shared temp-file fixture from conftest.py.
 @pytest.fixture(name="session")
-def session_fixture():
-    # Use a temp file so both sync and async engines share the same DB.
-    fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
-    import app.models.integration  # noqa
-    import app.models.audit        # noqa
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
-    try:
-        os.unlink(db_path)
-    except OSError:
-        pass
+def session_fixture(isolated_session):
+    return isolated_session
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session, monkeypatch):
-    db_url = str(session.bind.url)
+def client_fixture(isolated_session, monkeypatch):
+    """Client with get_db/get_async_db overrides + integrations_obs router patch."""
+    db_url = str(isolated_session.bind.url)
     async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    _async_engine = create_async_engine(async_url)
+    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
     def get_session_override():
-        return session
+        return isolated_session
 
     async def get_async_session_override():
         async with _AsyncSessionLocal() as async_session:

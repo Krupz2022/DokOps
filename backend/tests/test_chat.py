@@ -1,12 +1,9 @@
 # backend/tests/test_chat.py
 import asyncio
 import json
-import os
-import tempfile
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine, Session, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from unittest.mock import patch
@@ -18,32 +15,22 @@ from app.models.chat import ChatMessage
 from app.core import security
 
 
+# session: delegate to the shared temp-file fixture from conftest.py.
 @pytest.fixture(name="session")
-def session_fixture():
-    fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
-    try:
-        os.unlink(db_path)
-    except OSError:
-        pass
+def session_fixture(isolated_session):
+    return isolated_session
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session, monkeypatch):
-    db_url = str(session.bind.url)
+def client_fixture(isolated_session, monkeypatch):
+    """Client with get_db/get_async_db overrides + chat router AsyncSessionLocal patch."""
+    db_url = str(isolated_session.bind.url)
     async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
     def get_session_override():
-        return session
+        return isolated_session
 
     async def get_async_session_override():
         async with _AsyncSessionLocal() as async_session:

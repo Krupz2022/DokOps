@@ -50,9 +50,6 @@ def client_fixture(session: Session):
     _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
-    def get_session_override():
-        return session
-
     async def get_async_session_override():
         async with _AsyncSessionLocal() as async_session:
             yield async_session
@@ -79,7 +76,6 @@ def client_fixture(session: Session):
             is_active=True,
         )
 
-    app.dependency_overrides[deps.get_db] = get_session_override
     app.dependency_overrides[deps.get_async_db] = get_async_session_override
     app.dependency_overrides[deps.get_current_user] = user_override
     app.dependency_overrides[deps.require_god_mode] = god_override

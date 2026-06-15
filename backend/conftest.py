@@ -58,7 +58,7 @@ def pytest_sessionfinish(session, exitstatus):
 # Many test files repeat the same pattern:
 #   1. session_fixture  — sync engine on a fresh temp-file SQLite DB
 #   2. client_fixture   — async engine sharing the same file + FastAPI TestClient
-#                         with get_db / get_async_db overrides
+#                         with get_async_db override
 #
 # Provide them here so individual test files can drop their local copies.
 # Files with extra monkeypatches (e.g. patching a router's AsyncSessionLocal)
@@ -98,7 +98,7 @@ def isolated_session_fixture():
 
 @pytest.fixture(name="isolated_client")
 def isolated_client_fixture(isolated_session):
-    """Shared client fixture: TestClient with get_db / get_async_db overrides.
+    """Shared client fixture: TestClient with get_async_db override.
 
     Uses the same temp-file DB as isolated_session so sync and async paths
     share data.  Does NOT apply any additional monkeypatches — files that need
@@ -119,14 +119,10 @@ def isolated_client_fixture(isolated_session):
     _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
     _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
 
-    def _get_db_override():
-        return isolated_session
-
     async def _get_async_db_override():
         async with _AsyncSessionLocal() as sess:
             yield sess
 
-    _app.dependency_overrides[_deps.get_db] = _get_db_override
     _app.dependency_overrides[_deps.get_async_db] = _get_async_db_override
 
     client = TestClient(_app)

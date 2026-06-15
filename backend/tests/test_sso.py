@@ -377,7 +377,6 @@ def client_fixture(session: Session):
         async with _AsyncSessionLocal() as async_session:
             yield async_session
 
-    app.dependency_overrides[deps.get_db] = lambda: session
     app.dependency_overrides[deps.get_async_db] = get_async_session_override
     client = TestClient(app, follow_redirects=False)
     yield client

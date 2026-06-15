@@ -44,7 +44,13 @@ class IntegrationManager:
         return registry
 
     def _build_active_tool_registry(self) -> Dict[str, Any]:
-        """Query DB for active integrations and return merged TOOL_REGISTRY-compatible dict."""
+        """Query DB for active integrations and return merged TOOL_REGISTRY-compatible dict.
+
+        Synchronous read against sync_engine, reached only on a cache miss in
+        get_active_tool_registry (TTL-cached). Like settings_cache this is an
+        accepted Recipe R8 tradeoff: the hit rate is ~100% after warmup, and a
+        miss blocks the loop for a single short query rather than every call.
+        """
         merged: Dict[str, Any] = {}
         try:
             with Session(sync_engine) as session:

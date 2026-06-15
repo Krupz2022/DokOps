@@ -54,6 +54,88 @@ def pytest_sessionfinish(session, exitstatus):
                 pass  # best-effort; ignore locked files on Windows
 
 
+# ── Shared dual-engine fixtures ───────────────────────────────────────────────
+# Many test files repeat the same pattern:
+#   1. session_fixture  — sync engine on a fresh temp-file SQLite DB
+#   2. client_fixture   — async engine sharing the same file + FastAPI TestClient
+#                         with get_db / get_async_db overrides
+#
+# Provide them here so individual test files can drop their local copies.
+# Files with extra monkeypatches (e.g. patching a router's AsyncSessionLocal)
+# or non-standard dependency overrides keep their own fixtures.
+
+def _make_isolated_session():
+    """Create a fresh temp-file SQLite sync engine and open a Session on it.
+
+    Caller is responsible for teardown.  Returns (engine, session, db_path).
+    """
+    import asyncio as _asyncio
+    import os as _os
+    import tempfile as _tempfile
+    from sqlmodel import SQLModel, create_engine, Session
+
+    fd, db_path = _tempfile.mkstemp(suffix=".db")
+    _os.close(fd)
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    session = Session(engine)
+    return engine, session, db_path
+
+
+@pytest.fixture(name="isolated_session")
+def isolated_session_fixture():
+    """Shared session fixture: sync SQLite temp-file DB with all tables created."""
+    import os as _os
+    engine, session, db_path = _make_isolated_session()
+    with session:
+        yield session
+    engine.dispose()
+    try:
+        _os.unlink(db_path)
+    except OSError:
+        pass
+
+
+@pytest.fixture(name="isolated_client")
+def isolated_client_fixture(isolated_session):
+    """Shared client fixture: TestClient with get_db / get_async_db overrides.
+
+    Uses the same temp-file DB as isolated_session so sync and async paths
+    share data.  Does NOT apply any additional monkeypatches — files that need
+    extra patches (e.g. patching a router's own AsyncSessionLocal) should keep
+    their own client fixture.
+    """
+    import asyncio as _asyncio
+    from fastapi.testclient import TestClient
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
+    # Lazy imports so app modules are not pulled in at module-level of conftest.
+    from app.main import app as _app
+    from app.api import deps as _deps
+
+    db_url = str(isolated_session.bind.url)
+    async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    _async_engine = create_async_engine(async_url, connect_args={"check_same_thread": False})
+    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+    def _get_db_override():
+        return isolated_session
+
+    async def _get_async_db_override():
+        async with _AsyncSessionLocal() as sess:
+            yield sess
+
+    _app.dependency_overrides[_deps.get_db] = _get_db_override
+    _app.dependency_overrides[_deps.get_async_db] = _get_async_db_override
+
+    client = TestClient(_app)
+    yield client
+
+    _app.dependency_overrides.clear()
+    _asyncio.run(_async_engine.dispose())
+
+
 @pytest.fixture(autouse=True)
 def _reset_module_caches():
     """Clear process-wide caches before each test so DB swaps take effect."""

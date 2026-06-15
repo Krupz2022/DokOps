@@ -1,60 +1,24 @@
-import asyncio
 import hashlib
-import os
-import tempfile
 import pytest
 from datetime import datetime as dt
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine, Session, select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import Session, select
 from unittest.mock import patch
 
-from app.main import app
-from app.api import deps
 from app.models.user import User
 from app.models.setting import SystemSetting
 from app.core import security
 
 
+# Delegate to the shared dual-engine fixtures defined in conftest.py.
 @pytest.fixture(name="session")
-def session_fixture():
-    # Use a temp file so both sync and async engines share the same DB.
-    fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
-    try:
-        os.unlink(db_path)
-    except OSError:
-        pass
+def session_fixture(isolated_session):
+    return isolated_session
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session):
-    db_url = str(session.bind.url)
-    async_url = db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    _async_engine = create_async_engine(async_url)
-    _AsyncSessionLocal = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
-
-    def get_session_override():
-        return session
-
-    async def get_async_session_override():
-        async with _AsyncSessionLocal() as async_session:
-            yield async_session
-
-    app.dependency_overrides[deps.get_db] = get_session_override
-    app.dependency_overrides[deps.get_async_db] = get_async_session_override
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
-    asyncio.run(_async_engine.dispose())
+def client_fixture(isolated_client):
+    return isolated_client
 
 
 @pytest.fixture(name="auth_headers")

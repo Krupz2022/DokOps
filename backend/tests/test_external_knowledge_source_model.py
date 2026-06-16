@@ -27,6 +27,19 @@ def test_model_fields_and_defaults():
     assert isinstance(source.created_at, datetime)
 
 
+def test_pk_default_factory():
+    """Constructing without an explicit id should auto-generate a non-empty UUID string."""
+    from app.models.external_knowledge_source import ExternalKnowledgeSource
+    source = ExternalKnowledgeSource(
+        name="Auto ID Source",
+        provider="azure_ai_search",
+        config="encrypted",
+    )
+    assert source.id is not None
+    assert isinstance(source.id, str)
+    assert len(source.id) > 0
+
+
 def test_model_roundtrips_in_sqlite():
     from app.models.external_knowledge_source import ExternalKnowledgeSource
     engine = _make_engine()

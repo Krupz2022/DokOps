@@ -1,6 +1,5 @@
-import { ThemeToggle } from "../ui/ThemeToggle";
 import { Button } from "../ui/Button";
-import { Shield, ShieldAlert, LogOut, MessageSquare } from "lucide-react";
+import { Shield, ShieldAlert, MessageSquare } from "lucide-react";
 import { ClusterContextSelector } from "./ClusterContextSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { cn } from "../../lib/utils";
@@ -10,13 +9,12 @@ interface HeaderProps {
   godModeActive: boolean;
   toggleGodMode: () => void;
   isSuperuser?: boolean;
-  handleLogout: () => void;
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (v: boolean) => void;
 }
 
 export function Header({
-  godModeActive, toggleGodMode, isSuperuser = false, handleLogout,
+  godModeActive, toggleGodMode, isSuperuser = false,
   sidebarCollapsed, setSidebarCollapsed,
 }: HeaderProps) {
   const isGod = godModeActive;
@@ -105,15 +103,6 @@ export function Header({
         </Button>
       )}
 
-      <ThemeToggle />
-
-      <button
-        onClick={handleLogout}
-        title="Logout"
-        className="h-8 w-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-      >
-        <LogOut className="w-3.5 h-3.5" />
-      </button>
     </div>
   );
 }

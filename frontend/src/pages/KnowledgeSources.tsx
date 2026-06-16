@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { Card, CardContent } from "../components/ui/Card";
 import { Database, Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Pencil } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -80,10 +81,10 @@ export default function KnowledgeSources() {
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-foreground flex items-center gap-2">
             <Database size={22} /> Knowledge Sources
           </h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <p className="text-sm text-slate-500 dark:text-muted-foreground mt-1">
             Connect company-owned knowledge bases. DokOps retrieves context from these automatically — no indexing required.
           </p>
         </div>
@@ -91,54 +92,67 @@ export default function KnowledgeSources() {
           <Button variant="ghost" onClick={load} disabled={loading}>
             <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
           </Button>
-          <Button onClick={openAdd}>
+          <Button onClick={openAdd} className="whitespace-nowrap">
             <Plus size={15} className="mr-1" /> Add Source
           </Button>
         </div>
       </div>
 
       {sources.length === 0 && !loading && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-10 text-center text-zinc-400">
-          <Database size={36} className="mx-auto mb-3 opacity-30" />
-          <p className="font-medium text-zinc-300">No external knowledge sources configured</p>
-          <p className="text-sm mt-1">Add a source to let DokOps query your company's knowledge base during incident analysis.</p>
+        <div className="rounded-xl border border-border bg-card p-10 text-center">
+          <Database size={36} className="mx-auto mb-3 text-slate-300 dark:text-muted-foreground opacity-50" />
+          <p className="font-medium text-slate-700 dark:text-foreground">No external knowledge sources configured</p>
+          <p className="text-sm mt-1 text-slate-500 dark:text-muted-foreground">
+            Add a source to let DokOps query your company's knowledge base during incident analysis.
+          </p>
         </div>
       )}
 
       <div className="space-y-3">
         {sources.map((source) => (
-          <div
-            key={source.id}
-            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-5 py-4"
-          >
-            <div className="flex items-center gap-3">
-              <Database size={18} className="text-blue-400 shrink-0" />
-              <div>
-                <p className="font-medium text-white">{source.name}</p>
-                <p className="text-xs text-zinc-500">
-                  Azure AI Search · {source.config.endpoint} · index: {source.config.index_name}
-                </p>
+          <Card key={source.id}>
+            <CardContent className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Database size={18} className="text-blue-500 dark:text-blue-400 shrink-0" />
+                <div>
+                  <p className="font-medium text-slate-900 dark:text-foreground">{source.name}</p>
+                  <p className="text-xs text-slate-500 dark:text-muted-foreground">
+                    Azure AI Search · {source.config.endpoint} · index: {source.config.index_name}
+                  </p>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${source.enabled ? "bg-emerald-500/15 text-emerald-400" : "bg-zinc-700 text-zinc-400"}`}>
-                {source.enabled ? "Enabled" : "Disabled"}
-              </span>
-              <button
-                onClick={() => handleToggle(source)}
-                className="text-zinc-400 hover:text-white transition-colors"
-                title={source.enabled ? "Disable" : "Enable"}
-              >
-                {source.enabled ? <ToggleRight size={20} className="text-emerald-400" /> : <ToggleLeft size={20} />}
-              </button>
-              <button onClick={() => openEdit(source)} className="text-zinc-400 hover:text-white transition-colors">
-                <Pencil size={15} />
-              </button>
-              <button onClick={() => handleDelete(source)} className="text-zinc-400 hover:text-red-400 transition-colors">
-                <Trash2 size={15} />
-              </button>
-            </div>
-          </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  source.enabled
+                    ? "bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                    : "bg-slate-100 dark:bg-secondary text-slate-500 dark:text-muted-foreground"
+                }`}>
+                  {source.enabled ? "Enabled" : "Disabled"}
+                </span>
+                <button
+                  onClick={() => handleToggle(source)}
+                  className="text-slate-400 dark:text-muted-foreground hover:text-slate-700 dark:hover:text-foreground transition-colors"
+                  title={source.enabled ? "Disable" : "Enable"}
+                >
+                  {source.enabled
+                    ? <ToggleRight size={20} className="text-emerald-500 dark:text-emerald-400" />
+                    : <ToggleLeft size={20} />}
+                </button>
+                <button
+                  onClick={() => openEdit(source)}
+                  className="text-slate-400 dark:text-muted-foreground hover:text-slate-700 dark:hover:text-foreground transition-colors"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  onClick={() => handleDelete(source)}
+                  className="text-slate-400 dark:text-muted-foreground hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 

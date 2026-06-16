@@ -4,8 +4,9 @@ import {
   LayoutDashboard, Box, Wrench, FileText, Settings, BookOpen,
   ShieldAlert, MessageSquare, Database, Plug, Network, Orbit, GitBranch, Workflow, Server,
   Building2, ShieldCheck, ArrowRightCircle, Clock, BellDot, Vault, LogOut, BarChart2,
-  ExternalLink,
+  ExternalLink, Sun, Moon,
 } from "lucide-react";
+import { useTheme } from "../ui/ThemeProvider";
 import { cn } from "../../lib/utils";
 import api from "../../lib/api";
 import { useAppContext } from "../../context/AppContext";
@@ -69,9 +70,12 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { isSuperuser } = useAppContext();
+  const { theme, setTheme } = useTheme();
   const [ragEnabled, setRagEnabled] = useState(false);
   const [popupOpen, setPopupOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+
+  const toggleTheme = () => setTheme(theme === "dark" ? "light" : "dark");
 
   useEffect(() => {
     api.get("/ai/config")
@@ -221,9 +225,20 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
               collapsed ? "left-1/2 -translate-x-1/2 w-44" : "left-3 right-3"
             )}>
               {/* User info header */}
-              <div className="px-3.5 py-2.5 border-b border-border/60">
-                <p className="text-xs font-semibold text-foreground truncate">{user?.username ?? "User"}</p>
-                <p className="text-[10px] text-muted-foreground font-mono truncate opacity-60">{user?.role ?? "user"}</p>
+              <div className="px-3.5 py-2.5 border-b border-border/60 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate">{user?.username ?? "User"}</p>
+                  <p className="text-[10px] text-muted-foreground font-mono truncate opacity-60">{user?.role ?? "user"}</p>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
+                  className="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                  title="Toggle theme"
+                >
+                  {theme === "dark"
+                    ? <Sun className="w-3.5 h-3.5" />
+                    : <Moon className="w-3.5 h-3.5" />}
+                </button>
               </div>
 
               {/* Menu items */}

@@ -30,12 +30,6 @@ export function AppLayout({ children }: AppLayoutProps) {
     await toggleGodMode();
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("user");
-    window.location.href = "/login";
-  };
-
   return (
     <div className="h-screen overflow-hidden bg-background flex">
       <Sidebar collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
@@ -55,7 +49,6 @@ export function AppLayout({ children }: AppLayoutProps) {
             godModeActive={godModeActive}
             toggleGodMode={handleToggleMode}
             isSuperuser={isSuperuser}
-            handleLogout={handleLogout}
             sidebarCollapsed={sidebarCollapsed}
             setSidebarCollapsed={setSidebarCollapsed}
           />

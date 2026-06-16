@@ -46,18 +46,20 @@ async def test_gate_honours_runtime_limit_change():
     gate = DynamicGate(lambda: current["limit"])
     active = 0
     peak = 0
+    first_in = asyncio.Event()
 
     async def worker():
         nonlocal active, peak
         async with gate:
             active += 1
             peak = max(peak, active)
+            first_in.set()          # signal: a worker now holds the only slot
             await asyncio.sleep(0.05)
             active -= 1
 
     tasks = [asyncio.create_task(worker()) for _ in range(6)]
-    await asyncio.sleep(0.01)   # let one worker grab the only slot
-    current["limit"] = 4        # widen the gate at runtime
+    await first_in.wait()           # deterministic: wait until the slot is held
+    current["limit"] = 4            # widen the gate at runtime
     await asyncio.gather(*tasks)
     assert peak <= 4
-    assert peak >= 2            # proves the runtime widening took effect
+    assert peak >= 2                # proves the runtime widening took effect

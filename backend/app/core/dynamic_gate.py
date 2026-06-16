@@ -26,6 +26,10 @@ class DynamicGate:
             self._active += 1
 
     async def release(self) -> None:
+        # release is async because acquiring the Condition lock requires awaiting it.
+        # The only intended caller is __aexit__, which awaits correctly.
+        # notify_all (not notify) is intentional: a runtime limit increase can open
+        # several slots at once, so every waiter must re-check its predicate.
         async with self._cond:
             if self._active > 0:
                 self._active -= 1

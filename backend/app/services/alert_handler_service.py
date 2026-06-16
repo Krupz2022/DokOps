@@ -35,6 +35,17 @@ def _get_max_concurrent_rca() -> int:
 # Module-level gate: bounds concurrent RCA pipelines across the whole process.
 _rca_gate = DynamicGate(_get_max_concurrent_rca)
 
+# Captured at import time — before the app serves any request. The sweep only
+# recovers incidents that existed before this process booted, so it never grabs
+# brand-new incidents created by alerts arriving after startup.
+_PROCESS_START = datetime.now(timezone.utc)
+
+# Per-process guard: incident IDs already recovered this lifetime are never
+# re-recovered (poison-pill protection without a schema column).
+_recovered_ids: set[int] = set()
+
+_RECOVERABLE_STATUSES = ("pending", "collecting", "rca_running")
+
 
 def build_jira_body(incident: AlertIncident) -> str:
     lines = [
@@ -571,6 +582,74 @@ class AlertHandlerService:
                 await self._maybe_remediate(incident)
             except Exception as e:
                 logger.warning(f"Remediation step error (continuing): {e}")
+
+    def _alert_from_incident(self, incident: AlertIncident) -> NormalizedAlert:
+        """Reconstruct a minimal NormalizedAlert from a persisted incident.
+
+        Used by recovery: the raw alert payload is not stored, but the fields the
+        downstream pipeline needs (cluster context already set, workflow matching by
+        alert_name) are all present on the incident row.
+        """
+        return NormalizedAlert(
+            fingerprint=incident.fingerprint,
+            source=incident.source,
+            severity=incident.severity,
+            alert_name=incident.alert_name,
+            description="",
+            namespace=incident.namespace,
+            pod_name=incident.pod_name,
+            labels={},
+            raw_payload={},
+            received_at=incident.created_at,
+        )
+
+    async def handle_recovery(self, incident_id: int) -> None:
+        """Re-run the pipeline for an incident interrupted by a previous process.
+
+        Operates on the EXISTING incident row (no new row, no dedup check) so the
+        re-run is side-effect-safe — only pre-`notify` statuses are ever recovered.
+        """
+        async with AsyncSessionLocal() as db:
+            incident = await db.get(AlertIncident, incident_id)
+        if incident is None:
+            return
+
+        from app.services.k8s_service import active_cluster_ctx
+        ctx_token = active_cluster_ctx.set(incident.cluster_name) if incident.cluster_name else None
+        try:
+            alert = self._alert_from_incident(incident)
+            await self._run_pipeline(incident, alert)
+        finally:
+            if ctx_token is not None:
+                active_cluster_ctx.reset(ctx_token)
+
+    async def recover_interrupted(self) -> None:
+        """Startup sweep: re-run incidents left stuck by a previous process.
+
+        Scheduled once at app startup. Marks each stuck incident 'interrupted',
+        then re-enqueues it through the same gated pipeline via asyncio.create_task.
+        """
+        import asyncio
+
+        async with AsyncSessionLocal() as db:
+            rows = (await db.exec(
+                select(AlertIncident).where(
+                    AlertIncident.status.in_(_RECOVERABLE_STATUSES),
+                    AlertIncident.created_at < _PROCESS_START,
+                )
+            )).all()
+
+        recovered = 0
+        for incident in rows:
+            if incident.id in _recovered_ids:
+                continue
+            _recovered_ids.add(incident.id)
+            await self._update_status(incident.id, "interrupted")
+            asyncio.create_task(self.handle_recovery(incident.id))
+            recovered += 1
+
+        if recovered:
+            logger.info("Recovery sweep re-enqueued %d interrupted incident(s)", recovered)
 
 
 alert_handler_service = AlertHandlerService()

@@ -267,7 +267,7 @@ async def test_create_jira_ticket_skips_when_already_ticketed(async_session_fact
 
 
 @pytest.mark.asyncio
-async def test_notify_skips_when_already_sent(async_session_factory):
+async def test_notify_skips_when_already_sent():
     svc = AlertHandlerService()
     incident = AlertIncident(
         id=1, fingerprint="fp1", source="alertmanager", alert_name="X",
@@ -275,6 +275,8 @@ async def test_notify_skips_when_already_sent(async_session_factory):
         notification_sent_at=datetime.now(timezone.utc),
         created_at=datetime.now(timezone.utc),
     )
-    with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
-        # Should return early without touching SystemSetting / connectors.
+    # Guard must short-circuit BEFORE any DB session is opened. If _notify opens
+    # AsyncSessionLocal, this side-effect raises and the test fails.
+    mock_session_factory = MagicMock(side_effect=AssertionError("DB must not be opened on early return"))
+    with patch("app.services.alert_handler_service.AsyncSessionLocal", mock_session_factory):
         await svc._notify(incident)   # must not raise

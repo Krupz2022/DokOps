@@ -44,6 +44,13 @@ _PROCESS_START = datetime.now(timezone.utc)
 # re-recovered (poison-pill protection without a schema column).
 _recovered_ids: set[int] = set()
 
+# _recovered_ids grows for the process lifetime; bounded in practice by incident
+# volume per run, so intentionally not capped.
+
+# Strong refs to in-flight recovery tasks so the event loop doesn't GC them
+# mid-flight (asyncio.create_task only keeps a weak reference).
+_recovery_tasks: set = set()
+
 _RECOVERABLE_STATUSES = ("pending", "collecting", "rca_running")
 
 
@@ -609,19 +616,22 @@ class AlertHandlerService:
         Operates on the EXISTING incident row (no new row, no dedup check) so the
         re-run is side-effect-safe — only pre-`notify` statuses are ever recovered.
         """
-        async with AsyncSessionLocal() as db:
-            incident = await db.get(AlertIncident, incident_id)
-        if incident is None:
-            return
-
-        from app.services.k8s_service import active_cluster_ctx
-        ctx_token = active_cluster_ctx.set(incident.cluster_name) if incident.cluster_name else None
         try:
-            alert = self._alert_from_incident(incident)
-            await self._run_pipeline(incident, alert)
-        finally:
-            if ctx_token is not None:
-                active_cluster_ctx.reset(ctx_token)
+            async with AsyncSessionLocal() as db:
+                incident = await db.get(AlertIncident, incident_id)
+            if incident is None:
+                return
+
+            from app.services.k8s_service import active_cluster_ctx
+            ctx_token = active_cluster_ctx.set(incident.cluster_name) if incident.cluster_name else None
+            try:
+                alert = self._alert_from_incident(incident)
+                await self._run_pipeline(incident, alert)
+            finally:
+                if ctx_token is not None:
+                    active_cluster_ctx.reset(ctx_token)
+        except Exception as e:
+            logger.error("Recovery of incident %s failed: %s", incident_id, e)
 
     async def recover_interrupted(self) -> None:
         """Startup sweep: re-run incidents left stuck by a previous process.
@@ -629,8 +639,6 @@ class AlertHandlerService:
         Scheduled once at app startup. Marks each stuck incident 'interrupted',
         then re-enqueues it through the same gated pipeline via asyncio.create_task.
         """
-        import asyncio
-
         async with AsyncSessionLocal() as db:
             rows = (await db.exec(
                 select(AlertIncident).where(
@@ -645,7 +653,9 @@ class AlertHandlerService:
                 continue
             _recovered_ids.add(incident.id)
             await self._update_status(incident.id, "interrupted")
-            asyncio.create_task(self.handle_recovery(incident.id))
+            task = asyncio.create_task(self.handle_recovery(incident.id))
+            _recovery_tasks.add(task)
+            task.add_done_callback(_recovery_tasks.discard)
             recovered += 1
 
         if recovered:

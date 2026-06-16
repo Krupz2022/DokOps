@@ -49,7 +49,7 @@ _recovered_ids: set[int] = set()
 
 # Strong refs to in-flight recovery tasks so the event loop doesn't GC them
 # mid-flight (asyncio.create_task only keeps a weak reference).
-_recovery_tasks: set = set()
+_recovery_tasks: set[asyncio.Task] = set()
 
 _RECOVERABLE_STATUSES = ("pending", "collecting", "rca_running")
 
@@ -319,6 +319,9 @@ class AlertHandlerService:
                 logger.warning(f"Workflow trigger failed for workflow {workflow.id}: {e}")
 
     async def _maybe_remediate(self, incident: AlertIncident) -> None:
+        # NOTE: not idempotent and intentionally NOT crash-recoverable. Remediation runs after the
+        # incident reaches 'notified', which is outside the recovery set, so a crash mid-remediation
+        # leaves the incident at 'notified' rather than risking a duplicate pod restart on restart.
         from app.services.k8s_service import k8s_service
 
         # Read remediation policy

@@ -12,10 +12,28 @@ from app.models.alert_incident import AlertIncident
 from app.models.audit import AuditLog
 from app.models.setting import SystemSetting  # ensures table is registered in metadata
 from app.services.alert_normalizers import NormalizedAlert
+from app.core.dynamic_gate import DynamicGate
+from app.core.settings_cache import get_setting
 
 logger = logging.getLogger(__name__)
 
 SUPPRESSION_WINDOW_MINUTES_DEFAULT = 5
+MAX_CONCURRENT_RCA_DEFAULT = 5
+MAX_CONCURRENT_RCA_KEY = "alert_max_concurrent_rca"
+
+
+def _get_max_concurrent_rca() -> int:
+    """Current RCA concurrency limit from SystemSetting; defaults/floors at sane values."""
+    raw = get_setting(MAX_CONCURRENT_RCA_KEY)
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return MAX_CONCURRENT_RCA_DEFAULT
+    return value if value > 0 else MAX_CONCURRENT_RCA_DEFAULT
+
+
+# Module-level gate: bounds concurrent RCA pipelines across the whole process.
+_rca_gate = DynamicGate(_get_max_concurrent_rca)
 
 
 def build_jira_body(incident: AlertIncident) -> str:

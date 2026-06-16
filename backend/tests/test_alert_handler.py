@@ -171,3 +171,29 @@ async def test_remediation_rate_limit_allows_under_threshold(async_session_facto
     with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
         result = await svc._check_remediation_rate_limit("CrashLoopBackOff", "restart_pod", 3)
     assert result is True
+
+
+# ── RCA concurrency limit provider ──────────────────────────────────────────────
+
+def test_get_max_concurrent_rca_default_when_unset(monkeypatch):
+    import app.services.alert_handler_service as ahs
+    monkeypatch.setattr(ahs, "get_setting", lambda key: None)
+    assert ahs._get_max_concurrent_rca() == 5
+
+
+def test_get_max_concurrent_rca_reads_setting(monkeypatch):
+    import app.services.alert_handler_service as ahs
+    monkeypatch.setattr(ahs, "get_setting", lambda key: "8")
+    assert ahs._get_max_concurrent_rca() == 8
+
+
+def test_get_max_concurrent_rca_falls_back_on_garbage(monkeypatch):
+    import app.services.alert_handler_service as ahs
+    monkeypatch.setattr(ahs, "get_setting", lambda key: "not-a-number")
+    assert ahs._get_max_concurrent_rca() == 5
+
+
+def test_get_max_concurrent_rca_floors_at_one(monkeypatch):
+    import app.services.alert_handler_service as ahs
+    monkeypatch.setattr(ahs, "get_setting", lambda key: "0")
+    assert ahs._get_max_concurrent_rca() == 5

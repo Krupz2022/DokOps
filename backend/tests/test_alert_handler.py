@@ -248,4 +248,4 @@ async def test_run_pipeline_acquires_gate(async_session_factory, sample_alert, m
         await asyncio.gather(*(svc._run_pipeline(inc, sample_alert) for inc in incidents))
 
     assert peak <= 2
-    assert peak >= 1
+    assert peak == 2          # gate allowed exactly the limit concurrently

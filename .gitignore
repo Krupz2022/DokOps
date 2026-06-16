@@ -143,3 +143,6 @@ clusters-page.png
 login.png
 modal-*.png
 readme-options.png
+
+# Local-only agent instructions — keep on disk, never track
+CLAUDE.md

@@ -164,6 +164,8 @@ class AlertHandlerService:
 
     async def _create_jira_ticket(self, incident: AlertIncident) -> Optional[str]:
         """Returns jira ticket key if created, else None."""
+        if incident.jira_ticket_key:
+            return incident.jira_ticket_key   # already ticketed — recovery-safe no-op
         async with AsyncSessionLocal() as db:
             row = await db.get(SystemSetting, "alert_jira_config")
             if not row or not row.value:
@@ -207,6 +209,8 @@ class AlertHandlerService:
         return ticket_key
 
     async def _notify(self, incident: AlertIncident) -> None:
+        if incident.notification_sent_at:
+            return   # already notified — recovery-safe no-op
         rca_summary = ""
         if incident.rca_report:
             try:

@@ -249,3 +249,32 @@ async def test_run_pipeline_acquires_gate(async_session_factory, sample_alert, m
 
     assert peak <= 2
     assert peak == 2          # gate allowed exactly the limit concurrently
+
+
+# ── Recovery-safety guards ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_jira_ticket_skips_when_already_ticketed(async_session_factory):
+    svc = AlertHandlerService()
+    incident = AlertIncident(
+        id=1, fingerprint="fp1", source="alertmanager", alert_name="X",
+        severity="critical", status="rca_running",
+        jira_ticket_key="DOK-123", created_at=datetime.now(timezone.utc),
+    )
+    with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
+        result = await svc._create_jira_ticket(incident)
+    assert result == "DOK-123"   # returns the existing key, creates nothing
+
+
+@pytest.mark.asyncio
+async def test_notify_skips_when_already_sent(async_session_factory):
+    svc = AlertHandlerService()
+    incident = AlertIncident(
+        id=1, fingerprint="fp1", source="alertmanager", alert_name="X",
+        severity="critical", status="rca_running",
+        notification_sent_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
+        # Should return early without touching SystemSetting / connectors.
+        await svc._notify(incident)   # must not raise

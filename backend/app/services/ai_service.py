@@ -1515,6 +1515,16 @@ When done, give a per-pod root cause analysis.
                 except Exception as _rag_err:
                     _agent_log.warning("[AGENT] RAG retrieval failed: %s", _rag_err)
 
+            # External knowledge sources — queried independently of internal RAG toggle
+            try:
+                from app.services.external_rag_service import external_rag_service
+                ext_hits = external_rag_service.retrieve_all(query)
+                if ext_hits:
+                    rag_section += f"\n\nEXTERNAL KNOWLEDGE SOURCE CONTEXT (retrieved from company knowledge base — treat as authoritative):\n{ext_hits}\n"
+                    _agent_log.info("[AGENT] External RAG injected %d chars", len(ext_hits))
+            except Exception as _ext_err:
+                _agent_log.warning("[AGENT] External RAG retrieval failed: %s", _ext_err)
+
             # Resolve cluster_id for $VAULT: token resolution in custom tool scripts.
             # DB clusters have UUID IDs; local kubeconfig-only clusters get synthetic
             # "local-<name>" IDs (see list_clusters) — fall back to that format.

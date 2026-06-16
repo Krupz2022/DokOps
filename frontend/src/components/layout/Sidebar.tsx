@@ -4,6 +4,7 @@ import {
   LayoutDashboard, Box, Wrench, FileText, Settings, BookOpen,
   ShieldAlert, MessageSquare, Database, Plug, Network, Orbit, GitBranch, Workflow, Server,
   Building2, ShieldCheck, ArrowRightCircle, Clock, BellDot, Vault, LogOut, BarChart2,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import api from "../../lib/api";
@@ -33,6 +34,7 @@ function useNavSections(ragEnabled: boolean): { label: string; items: NavItem[] 
         { name: "Workflows",    path: "/workflows",    icon: Workflow },
         { name: "Alert Incidents", path: "/alerts", icon: BellDot },
         ...(ragEnabled ? [{ name: "Knowledge Base", path: "/knowledge-base", icon: Database }] : []),
+        { name: "Knowledge Sources", path: "/knowledge-sources", icon: ExternalLink },
       ],
     },
     {

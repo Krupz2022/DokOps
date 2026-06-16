@@ -127,6 +127,9 @@ backend/bin/*.bin
 *.p12
 *.pfx
 acme.json
+
+# Local-only agent instructions — keep on disk, never track
+CLAUDE.md
 deployment/certs/
 
 # Root-level dev/scratch files

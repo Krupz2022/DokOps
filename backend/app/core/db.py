@@ -26,6 +26,7 @@ from app.models.service_diag import ServiceCredential, DiscoveredService  # noqa
 from app.models.alert_incident import AlertIncident  # noqa: F401
 from app.models.registry import RegistryConnection  # noqa: F401
 from app.models.analytics import AITokenUsage  # noqa: F401
+from app.models.external_knowledge_source import ExternalKnowledgeSource  # noqa: F401
 
 _log = _logging.getLogger(__name__)
 

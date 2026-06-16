@@ -394,3 +394,42 @@ def test_alert_from_incident_roundtrips_core_fields():
     assert alert.severity == "warning"
     assert alert.namespace == "prod"
     assert alert.pod_name == "api-1"
+
+
+@pytest.mark.asyncio
+async def test_handle_recovery_runs_pipeline_once_without_duplicate_sideeffects(
+    async_session_factory, monkeypatch
+):
+    import app.services.alert_handler_service as ahs
+    monkeypatch.setattr(ahs, "get_setting", lambda key: "5")
+    svc = ahs.AlertHandlerService()
+
+    jira = AsyncMock(return_value="DOK-1")
+    notify = AsyncMock(return_value=None)
+    monkeypatch.setattr(svc, "_collect_evidence", AsyncMock(return_value={"logs": "x"}))
+    monkeypatch.setattr(svc, "_run_rca", AsyncMock(return_value=[{"type": "result", "message": "ok"}]))
+    monkeypatch.setattr(svc, "_create_jira_ticket", jira)
+    monkeypatch.setattr(svc, "_notify", notify)
+    monkeypatch.setattr(svc, "_trigger_workflows", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_maybe_remediate", AsyncMock(return_value=None))
+
+    async with async_session_factory() as db:
+        inc = AlertIncident(
+            fingerprint="fp1", source="alertmanager", alert_name="X",
+            severity="critical", status="rca_running",
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(inc)
+        await db.commit()
+        await db.refresh(inc)
+        incident_id = inc.id
+
+    with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
+        await svc.handle_recovery(incident_id)
+
+    assert jira.await_count == 1
+    assert notify.await_count == 1
+    async with async_session_factory() as db:
+        fresh = await db.get(AlertIncident, incident_id)
+    assert fresh.rca_report is not None
+    assert fresh.status in ("notified", "remediated")

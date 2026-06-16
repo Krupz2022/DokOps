@@ -17,6 +17,7 @@ const Runbooks = lazy(() => import("./pages/Runbooks"));
 const Toolsets = lazy(() => import("./pages/Toolsets"));
 const AIChats = lazy(() => import("./pages/AIChats"));
 const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase"));
+const KnowledgeSources = lazy(() => import("./pages/KnowledgeSources"));
 const Integrations = lazy(() => import("./pages/Integrations"));
 const IntegrationAzure = lazy(() => import("./pages/IntegrationAzure"));
 const MCPServers = lazy(() => import("./pages/MCPServers"));
@@ -114,6 +115,7 @@ function App() {
                                             <Route path="/mcp-servers" element={<AppLayout><MCPServers /></AppLayout>} />
                                             <Route path="/ai-chats" element={<AppLayout><AIChats /></AppLayout>} />
                                             <Route path="/knowledge-base" element={<AppLayout><KnowledgeBase /></AppLayout>} />
+                                            <Route path="/knowledge-sources" element={<AppLayout><KnowledgeSources /></AppLayout>} />
                                             <Route path="/integrations" element={<AppLayout><Integrations /></AppLayout>} />
                                             <Route path="/integrations/azure" element={<AppLayout><IntegrationAzure /></AppLayout>} />
                                             <Route path="/workflows" element={<AppLayout><Workflows /></AppLayout>} />

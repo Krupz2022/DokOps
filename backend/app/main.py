@@ -161,6 +161,9 @@ async def lifespan(app: FastAPI):
     from app.services.topology_service import topology_service
     await topology_service.start()
 
+    from app.services.alert_handler_service import alert_handler_service
+    _alert_recovery_task = asyncio.create_task(alert_handler_service.recover_interrupted())
+
     from app.services.minion_service import mark_offline_loop
     _minion_offline_task = asyncio.create_task(mark_offline_loop())
 
@@ -195,6 +198,11 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     await topology_service.stop()
+    _alert_recovery_task.cancel()
+    try:
+        await _alert_recovery_task
+    except asyncio.CancelledError:
+        pass
     _minion_offline_task.cancel()
     try:
         await _minion_offline_task

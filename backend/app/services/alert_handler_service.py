@@ -12,10 +12,46 @@ from app.models.alert_incident import AlertIncident
 from app.models.audit import AuditLog
 from app.models.setting import SystemSetting  # ensures table is registered in metadata
 from app.services.alert_normalizers import NormalizedAlert
+from app.core.dynamic_gate import DynamicGate
+from app.core.settings_cache import get_setting
 
 logger = logging.getLogger(__name__)
 
 SUPPRESSION_WINDOW_MINUTES_DEFAULT = 5
+MAX_CONCURRENT_RCA_DEFAULT = 5
+MAX_CONCURRENT_RCA_KEY = "alert_max_concurrent_rca"
+
+
+def _get_max_concurrent_rca() -> int:
+    """Current RCA concurrency limit from SystemSetting; defaults/floors at sane values."""
+    raw = get_setting(MAX_CONCURRENT_RCA_KEY)
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return MAX_CONCURRENT_RCA_DEFAULT
+    return value if value > 0 else MAX_CONCURRENT_RCA_DEFAULT
+
+
+# Module-level gate: bounds concurrent RCA pipelines across the whole process.
+_rca_gate = DynamicGate(_get_max_concurrent_rca)
+
+# Captured at import time — before the app serves any request. The sweep only
+# recovers incidents that existed before this process booted, so it never grabs
+# brand-new incidents created by alerts arriving after startup.
+_PROCESS_START = datetime.now(timezone.utc)
+
+# Per-process guard: incident IDs already recovered this lifetime are never
+# re-recovered (poison-pill protection without a schema column).
+_recovered_ids: set[int] = set()
+
+# _recovered_ids grows for the process lifetime; bounded in practice by incident
+# volume per run, so intentionally not capped.
+
+# Strong refs to in-flight recovery tasks so the event loop doesn't GC them
+# mid-flight (asyncio.create_task only keeps a weak reference).
+_recovery_tasks: set[asyncio.Task] = set()
+
+_RECOVERABLE_STATUSES = ("pending", "collecting", "rca_running")
 
 
 def build_jira_body(incident: AlertIncident) -> str:
@@ -146,6 +182,8 @@ class AlertHandlerService:
 
     async def _create_jira_ticket(self, incident: AlertIncident) -> Optional[str]:
         """Returns jira ticket key if created, else None."""
+        if incident.jira_ticket_key:
+            return incident.jira_ticket_key   # already ticketed — recovery-safe no-op
         async with AsyncSessionLocal() as db:
             row = await db.get(SystemSetting, "alert_jira_config")
             if not row or not row.value:
@@ -189,6 +227,8 @@ class AlertHandlerService:
         return ticket_key
 
     async def _notify(self, incident: AlertIncident) -> None:
+        if incident.notification_sent_at:
+            return   # already notified — recovery-safe no-op
         rca_summary = ""
         if incident.rca_report:
             try:
@@ -279,6 +319,9 @@ class AlertHandlerService:
                 logger.warning(f"Workflow trigger failed for workflow {workflow.id}: {e}")
 
     async def _maybe_remediate(self, incident: AlertIncident) -> None:
+        # NOTE: not idempotent and intentionally NOT crash-recoverable. Remediation runs after the
+        # incident reaches 'notified', which is outside the recovery set, so a crash mid-remediation
+        # leaves the incident at 'notified' rather than risking a duplicate pod restart on restart.
         from app.services.k8s_service import k8s_service
 
         # Read remediation policy
@@ -446,11 +489,7 @@ class AlertHandlerService:
         return None
 
     async def handle(self, alert: NormalizedAlert) -> None:
-        """Full 7-step pipeline. Called as a FastAPI BackgroundTask.
-
-        Uses short-lived AsyncSession windows around each DB operation so the
-        session is never held open across long AI-RCA or HTTP awaits.
-        """
+        """Full pipeline for a freshly-received alert. Called as a FastAPI BackgroundTask."""
         logger.info(f"Alert received: {alert.source}/{alert.alert_name} fp={alert.fingerprint}")
 
         # Step 1: Deduplicate
@@ -465,89 +504,165 @@ class AlertHandlerService:
         logger.info("Alert cluster resolved: %s", cluster_name or "(default)")
 
         try:
-            await self._handle_pipeline(alert, cluster_name)
+            # Step 3: Persist incident as 'pending' BEFORE acquiring the gate, so a storm-queued
+            # alert is durable and recoverable even if we crash while it waits for a slot.
+            incident = AlertIncident(
+                fingerprint=alert.fingerprint,
+                source=alert.source,
+                alert_name=alert.alert_name,
+                severity=alert.severity,
+                namespace=alert.namespace,
+                pod_name=alert.pod_name,
+                cluster_name=cluster_name,
+                status="pending",
+            )
+            async with AsyncSessionLocal() as db:
+                db.add(incident)
+                await db.commit()
+                await db.refresh(incident)
+
+            await self._run_pipeline(incident, alert)
         finally:
             if ctx_token is not None:
                 active_cluster_ctx.reset(ctx_token)
 
-    async def _handle_pipeline(
-        self, alert: NormalizedAlert, cluster_name: Optional[str]
+    async def _run_pipeline(
+        self, incident: AlertIncident, alert: NormalizedAlert
     ) -> None:
-        """Inner pipeline — runs after cluster context is set on active_cluster_ctx."""
-        # Step 3: Persist incident (short session)
-        incident = AlertIncident(
-            fingerprint=alert.fingerprint,
-            source=alert.source,
-            alert_name=alert.alert_name,
-            severity=alert.severity,
-            namespace=alert.namespace,
-            pod_name=alert.pod_name,
-            cluster_name=cluster_name,
-            status="pending",
+        """Steps 4-8 against an already-persisted incident, bounded by the RCA gate.
+
+        Shared by the fresh-alert path (handle) and the recovery path (handle_recovery).
+        """
+        async with _rca_gate:
+            # Step 4: Collect evidence FIRST (long async I/O — no session held open)
+            await self._update_status(incident.id, "collecting")
+            evidence = {}
+            try:
+                evidence = await self._collect_evidence(incident)
+            except Exception as e:
+                logger.warning(f"Evidence collection error (continuing): {e}")
+
+            async with AsyncSessionLocal() as db:
+                fresh = await db.get(AlertIncident, incident.id)
+                if fresh:
+                    fresh.evidence = json.dumps(evidence)
+                    db.add(fresh)
+                    await db.commit()
+                    incident.evidence = fresh.evidence
+
+            # Step 5: AI RCA (long async — no session held open)
+            await self._update_status(incident.id, "rca_running")
+            rca_steps = []
+            try:
+                rca_steps = await self._run_rca(incident, evidence)
+            except Exception as e:
+                logger.warning(f"RCA error (continuing): {e}")
+                rca_steps = [{"type": "error", "message": str(e)}]
+
+            async with AsyncSessionLocal() as db:
+                fresh = await db.get(AlertIncident, incident.id)
+                if fresh:
+                    fresh.rca_report = json.dumps(rca_steps)
+                    db.add(fresh)
+                    await db.commit()
+                    incident.rca_report = fresh.rca_report
+
+            # Step 6a: Create Jira ticket (skipped if one already exists — recovery-safe)
+            try:
+                await self._create_jira_ticket(incident)
+            except Exception as e:
+                logger.warning(f"Jira step error (continuing): {e}")
+
+            # Step 6b: Notify channels (skipped if already notified — recovery-safe)
+            try:
+                await self._notify(incident)
+            except Exception as e:
+                logger.warning(f"Notify step error (continuing): {e}")
+            if incident.status != "remediated":
+                await self._update_status(incident.id, "notified")
+
+            # Step 7: Trigger matching workflows
+            try:
+                await self._trigger_workflows(incident, alert)
+            except Exception as e:
+                logger.warning(f"Workflow trigger error (continuing): {e}")
+
+            # Step 8: Check allowlist and maybe remediate
+            try:
+                await self._maybe_remediate(incident)
+            except Exception as e:
+                logger.warning(f"Remediation step error (continuing): {e}")
+
+    def _alert_from_incident(self, incident: AlertIncident) -> NormalizedAlert:
+        """Reconstruct a minimal NormalizedAlert from a persisted incident.
+
+        Used by recovery: the raw alert payload is not stored, but the fields the
+        downstream pipeline needs (cluster context already set, workflow matching by
+        alert_name) are all present on the incident row.
+        """
+        return NormalizedAlert(
+            fingerprint=incident.fingerprint,
+            source=incident.source,
+            severity=incident.severity,
+            alert_name=incident.alert_name,
+            description="",
+            namespace=incident.namespace,
+            pod_name=incident.pod_name,
+            labels={},
+            raw_payload={},
+            received_at=incident.created_at,
         )
+
+    async def handle_recovery(self, incident_id: int) -> None:
+        """Re-run the pipeline for an incident interrupted by a previous process.
+
+        Operates on the EXISTING incident row (no new row, no dedup check) so the
+        re-run is side-effect-safe — only pre-`notify` statuses are ever recovered.
+        """
+        try:
+            async with AsyncSessionLocal() as db:
+                incident = await db.get(AlertIncident, incident_id)
+            if incident is None:
+                return
+
+            from app.services.k8s_service import active_cluster_ctx
+            ctx_token = active_cluster_ctx.set(incident.cluster_name) if incident.cluster_name else None
+            try:
+                alert = self._alert_from_incident(incident)
+                await self._run_pipeline(incident, alert)
+            finally:
+                if ctx_token is not None:
+                    active_cluster_ctx.reset(ctx_token)
+        except Exception as e:
+            logger.error("Recovery of incident %s failed: %s", incident_id, e)
+
+    async def recover_interrupted(self) -> None:
+        """Startup sweep: re-run incidents left stuck by a previous process.
+
+        Scheduled once at app startup. Marks each stuck incident 'interrupted',
+        then re-enqueues it through the same gated pipeline via asyncio.create_task.
+        """
         async with AsyncSessionLocal() as db:
-            db.add(incident)
-            await db.commit()
-            await db.refresh(incident)
+            rows = (await db.exec(
+                select(AlertIncident).where(
+                    AlertIncident.status.in_(_RECOVERABLE_STATUSES),
+                    AlertIncident.created_at < _PROCESS_START,
+                )
+            )).all()
 
-        # Step 4: Collect evidence FIRST (long async I/O — no session held open)
-        await self._update_status(incident.id, "collecting")
-        evidence = {}
-        try:
-            evidence = await self._collect_evidence(incident)
-        except Exception as e:
-            logger.warning(f"Evidence collection error (continuing): {e}")
+        recovered = 0
+        for incident in rows:
+            if incident.id in _recovered_ids:
+                continue
+            _recovered_ids.add(incident.id)
+            await self._update_status(incident.id, "interrupted")
+            task = asyncio.create_task(self.handle_recovery(incident.id))
+            _recovery_tasks.add(task)
+            task.add_done_callback(_recovery_tasks.discard)
+            recovered += 1
 
-        async with AsyncSessionLocal() as db:
-            fresh = await db.get(AlertIncident, incident.id)
-            if fresh:
-                fresh.evidence = json.dumps(evidence)
-                db.add(fresh)
-                await db.commit()
-                incident.evidence = fresh.evidence
-
-        # Step 5: AI RCA (long async — no session held open)
-        await self._update_status(incident.id, "rca_running")
-        rca_steps = []
-        try:
-            rca_steps = await self._run_rca(incident, evidence)
-        except Exception as e:
-            logger.warning(f"RCA error (continuing): {e}")
-            rca_steps = [{"type": "error", "message": str(e)}]
-
-        async with AsyncSessionLocal() as db:
-            fresh = await db.get(AlertIncident, incident.id)
-            if fresh:
-                fresh.rca_report = json.dumps(rca_steps)
-                db.add(fresh)
-                await db.commit()
-                incident.rca_report = fresh.rca_report
-
-        # Step 6a: Create Jira ticket (async HTTP — no session held open)
-        try:
-            await self._create_jira_ticket(incident)
-        except Exception as e:
-            logger.warning(f"Jira step error (continuing): {e}")
-
-        # Step 6b: Notify channels (async HTTP — no session held open)
-        try:
-            await self._notify(incident)
-        except Exception as e:
-            logger.warning(f"Notify step error (continuing): {e}")
-        if incident.status != "remediated":
-            await self._update_status(incident.id, "notified")
-
-        # Step 7: Trigger matching workflows
-        try:
-            await self._trigger_workflows(incident, alert)
-        except Exception as e:
-            logger.warning(f"Workflow trigger error (continuing): {e}")
-
-        # Step 8: Check allowlist and maybe remediate
-        try:
-            await self._maybe_remediate(incident)
-        except Exception as e:
-            logger.warning(f"Remediation step error (continuing): {e}")
+        if recovered:
+            logger.info("Recovery sweep re-enqueued %d interrupted incident(s)", recovered)
 
 
 alert_handler_service = AlertHandlerService()

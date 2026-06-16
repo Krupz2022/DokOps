@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -175,6 +175,48 @@ async def update_webhook_config(
     await db.commit()
     _invalidate_settings_cache()
     return {"status": "saved"}
+
+
+class RcaConcurrencyConfig(BaseModel):
+    max_concurrent_rca: int = Field(gt=0)
+
+
+@router.get("/rca-concurrency")
+async def get_rca_concurrency(
+    db: AsyncSession = Depends(deps.get_async_db),
+    current_user: User = Depends(get_current_active_superuser),
+) -> Any:
+    from app.services.alert_handler_service import (
+        MAX_CONCURRENT_RCA_DEFAULT,
+        MAX_CONCURRENT_RCA_KEY,
+    )
+    row = await db.get(SystemSetting, MAX_CONCURRENT_RCA_KEY)
+    try:
+        value = int(row.value) if row and row.value else MAX_CONCURRENT_RCA_DEFAULT
+    except (TypeError, ValueError):
+        value = MAX_CONCURRENT_RCA_DEFAULT
+    if value <= 0:
+        value = MAX_CONCURRENT_RCA_DEFAULT
+    return {"max_concurrent_rca": value}
+
+
+@router.put("/rca-concurrency")
+async def update_rca_concurrency(
+    config: RcaConcurrencyConfig,
+    db: AsyncSession = Depends(deps.get_async_db),
+    current_user: User = Depends(get_current_active_superuser),
+) -> Any:
+    from app.services.alert_handler_service import MAX_CONCURRENT_RCA_KEY
+    row = await db.get(SystemSetting, MAX_CONCURRENT_RCA_KEY)
+    if not row:
+        row = SystemSetting(key=MAX_CONCURRENT_RCA_KEY, value=str(config.max_concurrent_rca))
+        db.add(row)
+    else:
+        row.value = str(config.max_concurrent_rca)
+        db.add(row)
+    await db.commit()
+    _invalidate_settings_cache()
+    return {"status": "saved", "max_concurrent_rca": config.max_concurrent_rca}
 
 
 # ── Jira Configuration ────────────────────────────────────────────────────────

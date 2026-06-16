@@ -197,3 +197,55 @@ def test_get_max_concurrent_rca_floors_at_one(monkeypatch):
     import app.services.alert_handler_service as ahs
     monkeypatch.setattr(ahs, "get_setting", lambda key: "0")
     assert ahs._get_max_concurrent_rca() == 5
+
+
+# ── Pipeline runs under the RCA gate ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_pipeline_acquires_gate(async_session_factory, sample_alert, monkeypatch):
+    """Peak concurrent _run_pipeline bodies must not exceed the configured limit."""
+    import app.services.alert_handler_service as ahs
+
+    monkeypatch.setattr(ahs, "get_setting", lambda key: "2")   # limit = 2
+
+    svc = ahs.AlertHandlerService()
+    active = 0
+    peak = 0
+
+    async def fake_collect(incident):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return {}
+
+    # Neutralise every step except the gate + the probe in _collect_evidence.
+    monkeypatch.setattr(svc, "_collect_evidence", fake_collect)
+    monkeypatch.setattr(svc, "_run_rca", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "_create_jira_ticket", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_notify", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_trigger_workflows", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_maybe_remediate", AsyncMock(return_value=None))
+
+    async def make_incident(i):
+        return AlertIncident(
+            id=None, fingerprint=f"fp{i}", source="alertmanager",
+            alert_name="X", severity="critical", status="pending",
+            created_at=datetime.now(timezone.utc),
+        )
+
+    with patch("app.services.alert_handler_service.AsyncSessionLocal", async_session_factory):
+        incidents = []
+        async with async_session_factory() as db:
+            for i in range(6):
+                inc = await make_incident(i)
+                db.add(inc)
+            await db.commit()
+            from sqlmodel import select as _select
+            incidents = (await db.exec(_select(AlertIncident))).all()
+
+        await asyncio.gather(*(svc._run_pipeline(inc, sample_alert) for inc in incidents))
+
+    assert peak <= 2
+    assert peak >= 1

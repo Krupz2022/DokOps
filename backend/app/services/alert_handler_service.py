@@ -464,11 +464,7 @@ class AlertHandlerService:
         return None
 
     async def handle(self, alert: NormalizedAlert) -> None:
-        """Full 7-step pipeline. Called as a FastAPI BackgroundTask.
-
-        Uses short-lived AsyncSession windows around each DB operation so the
-        session is never held open across long AI-RCA or HTTP awaits.
-        """
+        """Full pipeline for a freshly-received alert. Called as a FastAPI BackgroundTask."""
         logger.info(f"Alert received: {alert.source}/{alert.alert_name} fp={alert.fingerprint}")
 
         # Step 1: Deduplicate
@@ -483,89 +479,94 @@ class AlertHandlerService:
         logger.info("Alert cluster resolved: %s", cluster_name or "(default)")
 
         try:
-            await self._handle_pipeline(alert, cluster_name)
+            # Step 3: Persist incident as 'pending' BEFORE acquiring the gate, so a storm-queued
+            # alert is durable and recoverable even if we crash while it waits for a slot.
+            incident = AlertIncident(
+                fingerprint=alert.fingerprint,
+                source=alert.source,
+                alert_name=alert.alert_name,
+                severity=alert.severity,
+                namespace=alert.namespace,
+                pod_name=alert.pod_name,
+                cluster_name=cluster_name,
+                status="pending",
+            )
+            async with AsyncSessionLocal() as db:
+                db.add(incident)
+                await db.commit()
+                await db.refresh(incident)
+
+            await self._run_pipeline(incident, alert)
         finally:
             if ctx_token is not None:
                 active_cluster_ctx.reset(ctx_token)
 
-    async def _handle_pipeline(
-        self, alert: NormalizedAlert, cluster_name: Optional[str]
+    async def _run_pipeline(
+        self, incident: AlertIncident, alert: NormalizedAlert
     ) -> None:
-        """Inner pipeline — runs after cluster context is set on active_cluster_ctx."""
-        # Step 3: Persist incident (short session)
-        incident = AlertIncident(
-            fingerprint=alert.fingerprint,
-            source=alert.source,
-            alert_name=alert.alert_name,
-            severity=alert.severity,
-            namespace=alert.namespace,
-            pod_name=alert.pod_name,
-            cluster_name=cluster_name,
-            status="pending",
-        )
-        async with AsyncSessionLocal() as db:
-            db.add(incident)
-            await db.commit()
-            await db.refresh(incident)
+        """Steps 4-8 against an already-persisted incident, bounded by the RCA gate.
 
-        # Step 4: Collect evidence FIRST (long async I/O — no session held open)
-        await self._update_status(incident.id, "collecting")
-        evidence = {}
-        try:
-            evidence = await self._collect_evidence(incident)
-        except Exception as e:
-            logger.warning(f"Evidence collection error (continuing): {e}")
+        Shared by the fresh-alert path (handle) and the recovery path (handle_recovery).
+        """
+        async with _rca_gate:
+            # Step 4: Collect evidence FIRST (long async I/O — no session held open)
+            await self._update_status(incident.id, "collecting")
+            evidence = {}
+            try:
+                evidence = await self._collect_evidence(incident)
+            except Exception as e:
+                logger.warning(f"Evidence collection error (continuing): {e}")
 
-        async with AsyncSessionLocal() as db:
-            fresh = await db.get(AlertIncident, incident.id)
-            if fresh:
-                fresh.evidence = json.dumps(evidence)
-                db.add(fresh)
-                await db.commit()
-                incident.evidence = fresh.evidence
+            async with AsyncSessionLocal() as db:
+                fresh = await db.get(AlertIncident, incident.id)
+                if fresh:
+                    fresh.evidence = json.dumps(evidence)
+                    db.add(fresh)
+                    await db.commit()
+                    incident.evidence = fresh.evidence
 
-        # Step 5: AI RCA (long async — no session held open)
-        await self._update_status(incident.id, "rca_running")
-        rca_steps = []
-        try:
-            rca_steps = await self._run_rca(incident, evidence)
-        except Exception as e:
-            logger.warning(f"RCA error (continuing): {e}")
-            rca_steps = [{"type": "error", "message": str(e)}]
+            # Step 5: AI RCA (long async — no session held open)
+            await self._update_status(incident.id, "rca_running")
+            rca_steps = []
+            try:
+                rca_steps = await self._run_rca(incident, evidence)
+            except Exception as e:
+                logger.warning(f"RCA error (continuing): {e}")
+                rca_steps = [{"type": "error", "message": str(e)}]
 
-        async with AsyncSessionLocal() as db:
-            fresh = await db.get(AlertIncident, incident.id)
-            if fresh:
-                fresh.rca_report = json.dumps(rca_steps)
-                db.add(fresh)
-                await db.commit()
-                incident.rca_report = fresh.rca_report
+            async with AsyncSessionLocal() as db:
+                fresh = await db.get(AlertIncident, incident.id)
+                if fresh:
+                    fresh.rca_report = json.dumps(rca_steps)
+                    db.add(fresh)
+                    await db.commit()
+                    incident.rca_report = fresh.rca_report
 
-        # Step 6a: Create Jira ticket (async HTTP — no session held open)
-        try:
-            await self._create_jira_ticket(incident)
-        except Exception as e:
-            logger.warning(f"Jira step error (continuing): {e}")
+            # Step 6a: Create Jira ticket (skipped if one already exists — recovery-safe)
+            try:
+                await self._create_jira_ticket(incident)
+            except Exception as e:
+                logger.warning(f"Jira step error (continuing): {e}")
 
-        # Step 6b: Notify channels (async HTTP — no session held open)
-        try:
-            await self._notify(incident)
-        except Exception as e:
-            logger.warning(f"Notify step error (continuing): {e}")
-        if incident.status != "remediated":
-            await self._update_status(incident.id, "notified")
+            # Step 6b: Notify channels (skipped if already notified — recovery-safe)
+            try:
+                await self._notify(incident)
+            except Exception as e:
+                logger.warning(f"Notify step error (continuing): {e}")
+            if incident.status != "remediated":
+                await self._update_status(incident.id, "notified")
 
-        # Step 7: Trigger matching workflows
-        try:
-            await self._trigger_workflows(incident, alert)
-        except Exception as e:
-            logger.warning(f"Workflow trigger error (continuing): {e}")
+            # Step 7: Trigger matching workflows
+            try:
+                await self._trigger_workflows(incident, alert)
+            except Exception as e:
+                logger.warning(f"Workflow trigger error (continuing): {e}")
 
-        # Step 8: Check allowlist and maybe remediate
-        try:
-            await self._maybe_remediate(incident)
-        except Exception as e:
-            logger.warning(f"Remediation step error (continuing): {e}")
+            # Step 8: Check allowlist and maybe remediate
+            try:
+                await self._maybe_remediate(incident)
+            except Exception as e:
+                logger.warning(f"Remediation step error (continuing): {e}")
 
 
 alert_handler_service = AlertHandlerService()

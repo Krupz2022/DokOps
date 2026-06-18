@@ -934,13 +934,21 @@ Rules:
     }
 
     @staticmethod
+    def _score_tool(query_words: set[str], tool: dict) -> int:
+        """Relevance score = count of query words (len > 3) found in name+description."""
+        fn = tool["function"]
+        haystack = (fn["name"] + " " + fn.get("description", "")).lower()
+        return sum(1 for w in query_words if len(w) > 3 and w in haystack)
+
+    @staticmethod
     def _select_dynamic_tools(
         query: str,
         obs_tools_schema: list,
         full_k8s_schema: list,
         mcp_schema: list,
         custom_tools_schema: list,
-        max_total: int = 40,
+        max_total: int = 64,
+        min_score: int = 1,
         history: Optional[list] = None,
     ) -> list:
         q = query.lower()
@@ -1025,7 +1033,14 @@ Rules:
             if is_write:
                 selected.extend(k8s_write)
             if not is_obs:
-                selected.extend(k8s_rest[:15])
+                # Relevance-ranked rest: include every tool that matches the query,
+                # not an arbitrary first-15 slice.
+                qwords = set(q.split())
+                scored_rest = sorted(
+                    ((AIService._score_tool(qwords, t), t) for t in k8s_rest),
+                    key=lambda pair: pair[0], reverse=True,
+                )
+                selected.extend(t for score, t in scored_rest if score >= min_score)
         else:
             # Service query: still include core k8s for context but skip the long k8s_rest tail
             selected.extend(k8s_core)
@@ -1069,7 +1084,14 @@ Rules:
             len(obs_tools_schema) + len(full_k8s_schema) + len(mcp_schema) + len(custom_tools_schema),
         )
 
-        return deduped[:max_total]
+        if len(deduped) <= max_total:
+            return deduped
+        qwords = set(q.split())
+        # Keep core tools unconditionally; rank the remainder by relevance.
+        core = [t for t in deduped if t["function"]["name"] in AIService._CORE_K8S]
+        rest = [t for t in deduped if t["function"]["name"] not in AIService._CORE_K8S]
+        rest.sort(key=lambda t: AIService._score_tool(qwords, t), reverse=True)
+        return (core + rest)[:max_total]
 
     @staticmethod
     def _strip_tool_echo(text: str) -> str:

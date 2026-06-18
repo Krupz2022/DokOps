@@ -264,6 +264,8 @@ async def _build_kubeconfig_for_cluster(cluster_id: str) -> Optional[str]:
 
 
 class AIService:
+    STEP_BUDGETS: dict = {"simple": 8, "investigate": 25, "deep": 60}
+
     def _get_setting(self, key: str) -> str:
         from app.core.settings_cache import get_setting
         return get_setting(key)
@@ -670,6 +672,34 @@ Rules:
             return "INVESTIGATE" in (result or "").upper()
         except Exception:
             return False
+
+    async def classify_complexity(self, query: str, caching_client) -> str:
+        """Classify the effort a query needs. Returns 'simple' | 'investigate' | 'deep'.
+        Defaults to 'investigate' on any failure (safe middle ground)."""
+        prompt = [
+            {"role": "system", "content": (
+                "Classify the DevOps query effort. Reply with exactly one word:\n"
+                "SIMPLE: status checks, listing, scaling, restarting, single deploy.\n"
+                "INVESTIGATE: diagnosing one failure, root cause of one pod/service.\n"
+                "DEEP: multi-resource/cluster-wide RCA, several interacting systems, "
+                "'everything', 'all namespaces', cascading failures."
+            )},
+            {"role": "user", "content": query},
+        ]
+        try:
+            result, _ = await caching_client.complete(
+                prompt, [], tier="fast", disable_trimming=True
+            )
+            word = (result or "").strip().upper()
+            if "DEEP" in word:
+                return "deep"
+            if "SIMPLE" in word:
+                return "simple"
+            if "INVESTIGATE" in word:
+                return "investigate"
+            return "investigate"
+        except Exception:
+            return "investigate"
 
     async def _run_final_review(
         self,
@@ -1585,8 +1615,9 @@ When done, give a per-pod root cause analysis.
             yield {"type": "step", "message": "Thinking..."}
             _agent_log.info("[AGENT] loop start — model=%s query_preview=%.120s", caching_client.full_model, query)
 
-            investigation_mode = await self.classify_investigation(query, caching_client)
-            _agent_log.info("[AGENT] investigation_mode=%s", investigation_mode)
+            complexity = await self.classify_complexity(query, caching_client)
+            investigation_mode = complexity in ("investigate", "deep")
+            _agent_log.info("[AGENT] complexity=%s investigation_mode=%s", complexity, investigation_mode)
 
             _prereq_warnings, _unhealthy_int_names, _unavailability_block = await self._run_prerequisite_check()
             for _ev in _prereq_warnings:
@@ -1748,7 +1779,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                 messages.extend(history)
             messages.append({"role": "user", "content": query})
 
-            max_steps = 30 if investigation_mode else 15
+            max_steps = self.STEP_BUDGETS[complexity]
             current_step = 0
             use_react_fallback = False
             _agent_log.info("[AGENT] entering loop max_steps=%d messages=%d tools=%d", max_steps, len(messages), len(tools_schema))

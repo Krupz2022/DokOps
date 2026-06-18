@@ -159,7 +159,11 @@ from unittest.mock import patch, AsyncMock as _AsMock, MagicMock as _MM
 
 
 def _build_loop_patches(classify_result: bool, complete_response: str = "Done."):
-    """Returns a dict of mock objects for the loop's dependencies."""
+    """Returns a dict of mock objects for the loop's dependencies.
+
+    classify_result=True  → complexity "investigate" (investigation_mode=True)
+    classify_result=False → complexity "simple"      (investigation_mode=False)
+    """
     mock_caching = _MM()
     mock_caching.full_model = "gpt-4o"
     mock_caching.complete = _AsMock(return_value=(complete_response, None))
@@ -190,6 +194,8 @@ def _build_loop_patches(classify_result: bool, complete_response: str = "Done.")
     mock_k8s = _MM()
     mock_k8s.default_context = None
 
+    complexity = "investigate" if classify_result else "simple"
+
     return {
         "caching_client": mock_caching,
         "ctx_mgr": mock_ctx_mgr,
@@ -199,6 +205,7 @@ def _build_loop_patches(classify_result: bool, complete_response: str = "Done.")
         "topo": mock_topo,
         "k8s": mock_k8s,
         "classify_result": classify_result,
+        "complexity": complexity,
     }
 
 
@@ -213,7 +220,7 @@ _PATCH_K8S        = 'app.services.k8s_service.k8s_service'
 async def _run_loop(svc, query, patches):
     events = []
     with patch.object(svc, '_get_caching_client', return_value=patches["caching_client"]), \
-         patch.object(svc, 'classify_investigation', new=_AsMock(return_value=patches["classify_result"])), \
+         patch.object(svc, 'classify_complexity', new=_AsMock(return_value=patches["complexity"])), \
          patch.object(svc, '_get_setting', return_value=None), \
          patch.object(svc, '_get_custom_tools_definitions', return_value=[]), \
          patch(_PATCH_CTX_MGR, patches["ctx_mgr"]), \
@@ -277,12 +284,12 @@ class TestInvestigationModeHooks:
 
     @pytest.mark.asyncio
     async def test_classify_investigation_called_at_loop_start(self):
-        """classify_investigation must be called once per loop invocation."""
+        """classify_complexity must be called once per loop invocation."""
         patches = _build_loop_patches(classify_result=False)
-        classify_mock = _AsMock(return_value=False)
+        classify_mock = _AsMock(return_value="simple")
 
         with patch.object(self.svc, '_get_caching_client', return_value=patches["caching_client"]), \
-             patch.object(self.svc, 'classify_investigation', new=classify_mock), \
+             patch.object(self.svc, 'classify_complexity', new=classify_mock), \
              patch.object(self.svc, '_get_setting', return_value=None), \
              patch.object(self.svc, '_get_custom_tools_definitions', return_value=[]), \
              patch(_PATCH_CTX_MGR, patches["ctx_mgr"]), \
@@ -341,7 +348,7 @@ class TestFinalReviewHook:
         final_review_mock = _AsMock(return_value=review_output)
 
         with patch.object(self.svc, '_get_caching_client', return_value=patches["caching_client"]), \
-             patch.object(self.svc, 'classify_investigation', new=_AsMock(return_value=True)), \
+             patch.object(self.svc, 'classify_complexity', new=_AsMock(return_value="investigate")), \
              patch.object(self.svc, '_run_final_review', new=final_review_mock), \
              patch.object(self.svc, '_get_setting', return_value=None), \
              patch.object(self.svc, '_get_custom_tools_definitions', return_value=[]), \
@@ -379,7 +386,7 @@ class TestFinalReviewHook:
         final_review_mock = _AsMock(return_value={"answer": "x"})
 
         with patch.object(self.svc, '_get_caching_client', return_value=patches["caching_client"]), \
-             patch.object(self.svc, 'classify_investigation', new=_AsMock(return_value=False)), \
+             patch.object(self.svc, 'classify_complexity', new=_AsMock(return_value="simple")), \
              patch.object(self.svc, '_run_final_review', new=final_review_mock), \
              patch.object(self.svc, '_get_setting', return_value=None), \
              patch.object(self.svc, '_get_custom_tools_definitions', return_value=[]), \
@@ -404,7 +411,7 @@ class TestFinalReviewHook:
         final_review_mock = _AsMock(return_value={"answer": "x"})
 
         with patch.object(self.svc, '_get_caching_client', return_value=patches["caching_client"]), \
-             patch.object(self.svc, 'classify_investigation', new=_AsMock(return_value=True)), \
+             patch.object(self.svc, 'classify_complexity', new=_AsMock(return_value="investigate")), \
              patch.object(self.svc, '_run_final_review', new=final_review_mock), \
              patch.object(self.svc, '_get_setting', return_value=None), \
              patch.object(self.svc, '_get_custom_tools_definitions', return_value=[]), \

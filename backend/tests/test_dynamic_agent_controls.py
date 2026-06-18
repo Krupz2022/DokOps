@@ -1,3 +1,5 @@
+import pytest
+from unittest.mock import AsyncMock, MagicMock
 from app.services.ai_service import AIService
 
 
@@ -70,3 +72,36 @@ def test_discover_tools_survives_the_cap():
     names = [t["function"]["name"] for t in selected]
     assert "discover_tools" in names
     assert len(selected) <= 64
+
+
+def _mock_client(text: str):
+    m = MagicMock()
+    m.complete = AsyncMock(return_value=(text, None))
+    return m
+
+
+@pytest.mark.asyncio
+async def test_classify_complexity_simple():
+    out = await AIService().classify_complexity("get cluster health", _mock_client("SIMPLE"))
+    assert out == "simple"
+
+
+@pytest.mark.asyncio
+async def test_classify_complexity_deep():
+    out = await AIService().classify_complexity(
+        "full root cause analysis across all namespaces", _mock_client("DEEP")
+    )
+    assert out == "deep"
+
+
+@pytest.mark.asyncio
+async def test_classify_complexity_defaults_to_investigate_on_error():
+    broken = MagicMock()
+    broken.complete = AsyncMock(side_effect=Exception("boom"))
+    out = await AIService().classify_complexity("why failing", broken)
+    assert out == "investigate"
+
+
+def test_step_budgets_increase_with_complexity():
+    b = AIService.STEP_BUDGETS
+    assert b["simple"] < b["investigate"] < b["deep"]

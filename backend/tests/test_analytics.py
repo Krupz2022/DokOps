@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlmodel import SQLModel, create_engine, Session
 from fastapi.testclient import TestClient
 import pytest
@@ -7,6 +7,7 @@ import pytest
 from app.models.analytics import AITokenUsage
 from app.models.user import User  # noqa: F401 - Required for foreign key table creation
 from app.core.token_context import set_token_context, push_token_usage, _token_queue
+from app.core.datetimes import utcnow
 
 import app.models.analytics  # noqa
 import app.models.audit      # noqa
@@ -112,3 +113,14 @@ def test_summary_cached_tokens_aggregated_correctly(client, superuser_token_head
     summary = res.json()["summary"]
     assert "cached_tokens" in summary
     assert summary["cached_tokens"] == 350  # 200 + 150
+
+
+def test_bucket_for_span_thresholds():
+    from app.api.v1.analytics import _bucket_for_span
+    end = utcnow()
+    assert _bucket_for_span(end - timedelta(days=7), end) == "day"
+    assert _bucket_for_span(end - timedelta(days=31), end) == "day"
+    assert _bucket_for_span(end - timedelta(days=32), end) == "week"
+    assert _bucket_for_span(end - timedelta(days=180), end) == "week"
+    assert _bucket_for_span(end - timedelta(days=181), end) == "month"
+    assert _bucket_for_span(end - timedelta(days=365), end) == "month"

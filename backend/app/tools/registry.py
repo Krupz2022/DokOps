@@ -1765,7 +1765,7 @@ def build_openai_tools_schema(extra_tools: list | None = None) -> list:
             })
     return tools
 
-def schema_for_tools(names: list) -> list:
+def schema_for_tools(names: list[str]) -> list[dict]:
     """OpenAI-format schema for a specific subset of registry tools (used by discover_tools)."""
     full = {t["function"]["name"]: t for t in build_openai_tools_schema()}
     return [full[n] for n in names if n in full]

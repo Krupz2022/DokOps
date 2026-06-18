@@ -1,7 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 import uuid
+
+from app.core.datetimes import utc_field, utc_optional_field
 
 
 def _uuid() -> str:
@@ -19,8 +21,8 @@ class ClusterConnection(SQLModel, table=True):
     client_key_data: Optional[str] = None       # base64 PEM client key, Fernet-encrypted
     namespace: str = Field(default="default")
     added_by: Optional[str] = None              # username FK (soft reference)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_verified: Optional[datetime] = None
+    created_at: datetime = utc_field()
+    last_verified: Optional[datetime] = utc_optional_field()
 
 
 class CloudCredential(SQLModel, table=True):
@@ -28,4 +30,4 @@ class CloudCredential(SQLModel, table=True):
     provider: str                               # aks | eks | gke
     credential_blob: str                        # Fernet-encrypted JSON
     added_by: Optional[str] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = utc_field()

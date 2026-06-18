@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from app.core.datetimes import utcnow
+
 import httpx
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -30,7 +32,7 @@ async def activate_key(license_key: str, db: AsyncSession) -> dict:
     if not data.get("valid"):
         return {"success": False, "message": data.get("message", "Invalid license key")}
 
-    now = datetime.utcnow()
+    now = utcnow()
     if existing:
         existing.license_key = license_key
         existing.instance_id = instance_id
@@ -84,7 +86,7 @@ async def run_heartbeat() -> None:
         except Exception:
             pass  # network blip — keep current state, retry next cycle
 
-        row.last_heartbeat_at = datetime.utcnow()
+        row.last_heartbeat_at = utcnow()
         db.add(row)
         await db.commit()
 

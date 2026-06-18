@@ -2,9 +2,11 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 
+from app.core.datetimes import utc_field
+
 class AuditLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = utc_field()
     actor: str = Field(index=True)
     action: str
     resource: str

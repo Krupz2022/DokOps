@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 
+from app.core.datetimes import utc_field
+
 
 class AITokenUsage(SQLModel, table=True):
     __tablename__ = "ai_token_usage"
@@ -14,4 +16,4 @@ class AITokenUsage(SQLModel, table=True):
     input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
     cached_tokens: int = Field(default=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = utc_field(index=True)

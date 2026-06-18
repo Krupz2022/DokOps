@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 
+from app.core.datetimes import utc_field
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -21,8 +23,8 @@ class ServiceCredential(SQLModel, table=True):
     host: Optional[str] = None         # host/endpoint for the service
     instance_name: str = Field(default="")  # named instance, e.g. "cache", "sessions"; "" = default
     extra: str = Field(default="{}")         # JSON text — vhost, db index, etc.
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = utc_field()
+    updated_at: datetime = utc_field()
 
 
 class DiscoveredService(SQLModel, table=True):
@@ -33,5 +35,5 @@ class DiscoveredService(SQLModel, table=True):
     install_type: str                   # native | docker
     container_name: Optional[str] = None
     port: int
-    detected_at: datetime = Field(default_factory=datetime.utcnow)
+    detected_at: datetime = utc_field()
     overridden: bool = False

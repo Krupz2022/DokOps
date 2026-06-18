@@ -6,6 +6,8 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
 
+from app.core.datetimes import utcnow
+
 _log = logging.getLogger(__name__)
 
 ai_user_id: ContextVar[Optional[int]] = ContextVar("ai_user_id", default=None)
@@ -31,7 +33,7 @@ async def push_token_usage(model: str, input_tokens: int, output_tokens: int, ca
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
-            "created_at": datetime.utcnow(),
+            "created_at": utcnow(),
         })
     except asyncio.QueueFull:
         _log.warning("token_context: queue full, dropping token record")

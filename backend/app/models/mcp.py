@@ -1,7 +1,9 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
+
+from app.core.datetimes import utc_field, utc_optional_field
 
 
 class MCPServer(SQLModel, table=True):
@@ -15,8 +17,8 @@ class MCPServer(SQLModel, table=True):
     auth_type: str = "none"              # "none" | "bearer" | "api_key" | "basic"
     auth_value: Optional[str] = None     # Fernet-encrypted
     is_connected: bool = False
-    last_connected_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_connected_at: Optional[datetime] = utc_optional_field()
+    created_at: datetime = utc_field()
 
 
 class MCPTool(SQLModel, table=True):
@@ -26,4 +28,4 @@ class MCPTool(SQLModel, table=True):
     description: str = ""
     input_schema: str                    # JSON string of MCP inputSchema
     confirmation_override: Optional[bool] = None   # None=heuristic, True=always, False=never
-    last_synced_at: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = utc_optional_field()

@@ -8,6 +8,7 @@ from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_async_db, get_current_active_superuser
+from app.core.datetimes import utcnow
 from app.models.analytics import AITokenUsage
 from app.models.user import User
 
@@ -16,7 +17,7 @@ router = APIRouter()
 
 def _cutoff(range_str: str) -> datetime:
     days = {"7d": 7, "30d": 30, "90d": 90}
-    return datetime.utcnow() - timedelta(days=days[range_str])
+    return utcnow() - timedelta(days=days[range_str])
 
 
 @router.get("/tokens")

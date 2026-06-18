@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from app.core.datetimes import utcnow
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import select
@@ -627,7 +629,7 @@ async def retry_failed_minions(
     else:
         promo.status = "failed"
         promo.failed_minions = json.dumps(still_failed)
-    promo.completed_at = datetime.utcnow()
+    promo.completed_at = utcnow()
     db.add(promo)
     await db.commit()
 
@@ -661,7 +663,7 @@ async def exclude_minion(
         "id": minion_id,
         "reason": body.reason.strip(),
         "excluded_by": current_user.username,
-        "at": datetime.utcnow().isoformat(),
+        "at": utcnow().isoformat(),
     })
     failed_ids.remove(minion_id)
 
@@ -669,7 +671,7 @@ async def exclude_minion(
     promo.failed_minions = json.dumps(failed_ids) if failed_ids else None
     if not failed_ids:
         promo.status = "done"
-        promo.completed_at = datetime.utcnow()
+        promo.completed_at = utcnow()
 
     db.add(promo)
     await db.commit()
@@ -701,7 +703,7 @@ async def acknowledge_alert(
         raise HTTPException(status_code=404, detail="Alert not found")
     alert.acknowledged = True
     alert.acknowledged_by = current_user.username
-    alert.acknowledged_at = datetime.utcnow()
+    alert.acknowledged_at = utcnow()
     db.add(alert)
     await db.commit()
     return alert

@@ -32,7 +32,8 @@ def test_selection_keeps_relevant_rest_tools_over_irrelevant():
 
 def test_selection_never_exceeds_safety_ceiling():
     full_k8s = [_tool(f"tool_{i}", f"desc {i}") for i in range(200)]
+    # min_score=0 forces all tools through so the cap-truncation branch actually fires
     selected = AIService._select_dynamic_tools(
-        "investigate everything", [], full_k8s, [], [], max_total=64,
+        "investigate everything", [], full_k8s, [], [], max_total=64, min_score=0,
     )
-    assert len(selected) <= 64
+    assert len(selected) == 64

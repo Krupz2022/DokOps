@@ -1518,7 +1518,7 @@ When done, give a per-pod root cause analysis.
             # External knowledge sources — queried independently of internal RAG toggle
             try:
                 from app.services.external_rag_service import external_rag_service
-                ext_hits = external_rag_service.retrieve_all(query)
+                ext_hits = await external_rag_service.retrieve_all(query)
                 if ext_hits:
                     rag_section += f"\n\nEXTERNAL KNOWLEDGE SOURCE CONTEXT (retrieved from company knowledge base — treat as authoritative):\n{ext_hits}\n"
                     _agent_log.info("[AGENT] External RAG injected %d chars", len(ext_hits))

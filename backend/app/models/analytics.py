@@ -13,4 +13,5 @@ class AITokenUsage(SQLModel, table=True):
     model: str = Field(default="")
     input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
+    cached_tokens: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)

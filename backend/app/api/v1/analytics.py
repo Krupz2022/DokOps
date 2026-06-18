@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func as sa_func
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -16,7 +17,7 @@ from app.models.user import User
 router = APIRouter()
 
 
-def _bucket_for_span(start: datetime, end: datetime) -> str:
+def _bucket_for_span(start: datetime, end: datetime) -> Literal["day", "week", "month"]:
     """Choose chart granularity from the range length.
 
     <= 31 days -> day, 32-180 -> week, > 180 -> month.
@@ -41,22 +42,25 @@ def _resolve_range(start: datetime, end: datetime) -> tuple[datetime, datetime, 
     return start, end, _bucket_for_span(start, end)
 
 
-def _bucket_expr(granularity: str, dialect: str):
-    """A dialect-aware expression that buckets created_at into a string label.
+def _bucket_expr(granularity: str, dialect: str) -> ColumnElement[str]:
+    """Dialect-aware expression bucketing created_at into a string label "date".
 
-    Returns a column expression labeled "date". SQLite uses strftime; everything
-    else (PostgreSQL) uses date_trunc + to_char so the output is always a string.
+    Weeks are anchored to their Monday DATE (YYYY-MM-DD) on BOTH dialects so the
+    chart label is identical in dev (SQLite) and prod (PostgreSQL).
     """
     col = AITokenUsage.created_at
     if dialect == "sqlite":
-        fmt = {"day": "%Y-%m-%d", "week": "%Y-%W", "month": "%Y-%m"}[granularity]
+        if granularity == "week":
+            # Monday of the ISO week containing col, correct for every weekday
+            # incl. Sunday: jump to the week's Sunday ("weekday 0"), back up 6 days.
+            return sa_func.strftime("%Y-%m-%d", col, "weekday 0", "-6 days").label("date")
+        fmt = {"day": "%Y-%m-%d", "month": "%Y-%m"}[granularity]
         return sa_func.strftime(fmt, col).label("date")
-    # PostgreSQL (and other date_trunc-capable engines)
+    # PostgreSQL (date_trunc('week') returns Monday)
     if granularity == "day":
         return sa_func.to_char(sa_func.date_trunc("day", col), "YYYY-MM-DD").label("date")
     if granularity == "week":
-        # ISO year-week, Monday-anchored, e.g. "2026-24"
-        return sa_func.to_char(col, "IYYY-IW").label("date")
+        return sa_func.to_char(sa_func.date_trunc("week", col), "YYYY-MM-DD").label("date")
     return sa_func.to_char(sa_func.date_trunc("month", col), "YYYY-MM").label("date")
 
 

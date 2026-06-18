@@ -210,3 +210,25 @@ def test_tokens_endpoint_buckets_long_range_by_month(
     assert data["granularity"] == "month"
     # two rows in distinct months -> two month buckets
     assert len(data["daily"]) == 2
+
+
+def test_tokens_endpoint_week_bucket_groups_by_monday(client, superuser_token_headers, session):
+    now = utcnow()
+    anchor = now - timedelta(days=40)  # 60-day span -> week granularity
+    # two rows in the same Mon-Sun week (hours apart) + one exactly two weeks earlier
+    session.add(AITokenUsage(source="agent", model="gpt-4o", input_tokens=1, output_tokens=0, created_at=anchor))
+    session.add(AITokenUsage(source="agent", model="gpt-4o", input_tokens=1, output_tokens=0, created_at=anchor + timedelta(hours=2)))
+    session.add(AITokenUsage(source="agent", model="gpt-4o", input_tokens=1, output_tokens=0, created_at=anchor - timedelta(days=14)))
+    session.commit()
+    res = client.get(
+        "/api/v1/analytics/tokens",
+        params={"start": (now - timedelta(days=60)).isoformat(), "end": (now + timedelta(seconds=1)).isoformat()},
+        headers=superuser_token_headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["granularity"] == "week"
+    # same-week pair collapses to one Monday bucket; the -14d row is a second bucket
+    assert len(data["daily"]) == 2
+    for row in data["daily"]:
+        assert len(row["date"]) == 10 and row["date"].count("-") == 2  # YYYY-MM-DD

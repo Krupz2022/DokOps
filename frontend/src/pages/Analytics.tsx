@@ -210,6 +210,7 @@ function RangePicker({
 
   function choose(v: RangeValue) {
     onApply(v);
+    setDraft(undefined);
     setOpen(false);
   }
 
@@ -357,7 +358,16 @@ export default function Analytics() {
           year: "numeric",
         });
       }
-      if (g === "week") return `W${v.split("-")[1]}`;
+      if (g === "week") {
+        const [y, m, d] = v.split("-");
+        return (
+          "Wk of " +
+          new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+          })
+        );
+      }
       return v;
     };
   }, [data?.granularity]);

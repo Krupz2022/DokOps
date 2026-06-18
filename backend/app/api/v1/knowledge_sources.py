@@ -1,5 +1,5 @@
 """
-External Knowledge Sources — retrieve-only external RAG connections (e.g. Azure AI Search).
+External Knowledge Sources — retrieve-only external RAG connections.
 """
 import json
 from typing import Any
@@ -9,10 +9,12 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.models.user import User
-from app.services.external_rag_service import external_rag_service
+from app.services.external_rag_service import external_rag_service, _VALID_PROVIDERS
 from app.core.encryption import decrypt
 
 router = APIRouter()
+
+_SECRET_FIELDS = {"api_key", "password", "api_token"}
 
 
 class SourceIn(BaseModel):
@@ -21,12 +23,9 @@ class SourceIn(BaseModel):
     config: dict
 
 
-class ConfigIn(BaseModel):
-    endpoint: str
-    api_key: str
-    index_name: str
-    top_k: int = 3
-    semantic_config: str = ""
+class TestConfigIn(BaseModel):
+    provider: str
+    config: dict
 
 
 class ToggleIn(BaseModel):
@@ -34,7 +33,6 @@ class ToggleIn(BaseModel):
 
 
 def _require_superuser(current_user: User = Depends(deps.get_current_user)) -> User:
-    """Dependency that enforces superuser access and returns 403 (not 400) on failure."""
     if not current_user.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -45,8 +43,9 @@ def _require_superuser(current_user: User = Depends(deps.get_current_user)) -> U
 
 def _mask_config(config_dict: dict) -> dict:
     masked = dict(config_dict)
-    if masked.get("api_key"):
-        masked["api_key"] = "••••••"
+    for field in _SECRET_FIELDS:
+        if masked.get(field):
+            masked[field] = "••••••"
     return masked
 
 
@@ -65,6 +64,14 @@ def _source_response(source) -> dict:
     }
 
 
+def _validate_provider(provider: str) -> None:
+    if provider not in _VALID_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid provider '{provider}'. Valid providers: {sorted(_VALID_PROVIDERS)}",
+        )
+
+
 @router.get("")
 def list_sources(current_user: User = Depends(deps.get_current_user)) -> Any:
     return [_source_response(s) for s in external_rag_service.list_sources()]
@@ -75,6 +82,7 @@ def create_source(
     body: SourceIn,
     current_user: User = Depends(_require_superuser),
 ) -> Any:
+    _validate_provider(body.provider)
     source = external_rag_service.create_source(body.name, body.provider, body.config)
     return _source_response(source)
 
@@ -85,6 +93,7 @@ def update_source(
     body: SourceIn,
     current_user: User = Depends(_require_superuser),
 ) -> Any:
+    _validate_provider(body.provider)
     source = external_rag_service.update_source(
         source_id, name=body.name, config_dict=body.config
     )
@@ -106,24 +115,25 @@ def delete_source(
 # IMPORTANT: /test-config must be declared BEFORE /{source_id}/test to avoid
 # FastAPI matching "test-config" as a source_id path parameter.
 @router.post("/test-config")
-def test_config(
-    body: ConfigIn,
+async def test_config(
+    body: TestConfigIn,
     current_user: User = Depends(_require_superuser),
 ) -> Any:
+    _validate_provider(body.provider)
     try:
-        external_rag_service.test_config(body.model_dump())
+        await external_rag_service.test_config(body.provider, body.config)
         return {"status": "connected"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
 
 @router.post("/{source_id}/test")
-def test_source(
+async def test_source(
     source_id: str,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     try:
-        external_rag_service.test_source(source_id)
+        await external_rag_service.test_source(source_id)
         return {"status": "connected"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))

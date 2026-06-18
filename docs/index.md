@@ -22,6 +22,7 @@ DokOps is a production-grade Kubernetes DevOps platform that combines an AI-powe
 | [Cluster Topology](features/topology.md) | Interactive dependency graph visualization |
 | [Diagnostics & Runbooks](features/diagnostics-runbooks.md) | Automated health checks and triage guides |
 | [Knowledge Base (RAG)](features/knowledge-base.md) | Upload docs to give AI context |
+| [Knowledge Sources](features/knowledge-sources.md) | Connect existing external stores (Azure AI Search, Qdrant, Pinecone, Weaviate, OpenSearch, Chroma) |
 | [Observability & Alert Response](features/observability.md) | Prometheus, Grafana, Elastic, Loki, Datadog + autonomous alert ingestion |
 | [Azure Integration](features/azure-integration.md) | Cost management, resource discovery, anomaly detection |
 | [MCP Servers](features/mcp-servers.md) | Connect external MCP tool servers |

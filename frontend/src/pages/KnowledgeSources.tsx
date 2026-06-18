@@ -7,22 +7,23 @@ import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import AddKnowledgeSourceModal from "../components/AddKnowledgeSourceModal";
 
-interface AzureConfig {
-  endpoint: string;
-  api_key: string;
-  index_name: string;
-  top_k: number;
-  semantic_config: string;
-}
-
 interface ExternalKnowledgeSource {
   id: string;
   name: string;
   provider: string;
   enabled: boolean;
-  config: AzureConfig;
+  config: Record<string, string | number>;
   created_at: string;
 }
+
+const PROVIDER_LABELS: Record<string, string> = {
+  azure_ai_search: "Azure AI Search",
+  qdrant: "Qdrant",
+  pinecone: "Pinecone",
+  weaviate: "Weaviate",
+  opensearch: "OpenSearch",
+  chroma: "Chroma",
+};
 
 export default function KnowledgeSources() {
   const { toast } = useToast();
@@ -85,7 +86,7 @@ export default function KnowledgeSources() {
             <Database size={22} /> Knowledge Sources
           </h1>
           <p className="text-sm text-slate-500 dark:text-muted-foreground mt-1">
-            Connect company-owned knowledge bases. DokOps retrieves context from these automatically — no indexing required.
+            Your team's knowledge, available to the AI automatically.
           </p>
         </div>
         <div className="flex gap-2">
@@ -103,7 +104,7 @@ export default function KnowledgeSources() {
           <Database size={36} className="mx-auto mb-3 text-slate-300 dark:text-muted-foreground opacity-50" />
           <p className="font-medium text-slate-700 dark:text-foreground">No external knowledge sources configured</p>
           <p className="text-sm mt-1 text-slate-500 dark:text-muted-foreground">
-            Add a source to let DokOps query your company's knowledge base during incident analysis.
+            Add a source to let DokOps query your knowledge base during incident analysis.
           </p>
         </div>
       )}
@@ -117,7 +118,11 @@ export default function KnowledgeSources() {
                 <div>
                   <p className="font-medium text-slate-900 dark:text-foreground">{source.name}</p>
                   <p className="text-xs text-slate-500 dark:text-muted-foreground">
-                    Azure AI Search · {source.config.endpoint} · index: {source.config.index_name}
+                    {PROVIDER_LABELS[source.provider] ?? source.provider}
+                    {source.config.endpoint ? ` · ${source.config.endpoint}` : ""}
+                    {source.config.index_name ? ` · index: ${source.config.index_name}` : ""}
+                    {source.config.collection_name ? ` · collection: ${source.config.collection_name}` : ""}
+                    {source.config.index_host ? ` · ${source.config.index_host}` : ""}
                   </p>
                 </div>
               </div>

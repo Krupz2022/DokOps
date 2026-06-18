@@ -1,7 +1,7 @@
 import json
 import uuid
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from sqlmodel import SQLModel, Session, create_engine
 from sqlalchemy.pool import StaticPool
 
@@ -52,8 +52,9 @@ def test_create_source_encrypts_api_key(mock_engine):
         assert stored["api_key"] == "secret"
 
 
-@patch("app.services.connectors.azure_ai_search_connector.retrieve")
-def test_retrieve_all_returns_xml_chunks(mock_retrieve):
+@patch("app.services.connectors.azure_ai_search_connector.retrieve", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_retrieve_all_returns_xml_chunks(mock_retrieve):
     mock_retrieve.return_value = ["chunk A", "chunk B"]
 
     from app.services.external_rag_service import ExternalRAGService
@@ -67,15 +68,16 @@ def test_retrieve_all_returns_xml_chunks(mock_retrieve):
         config=encrypt(json.dumps(config))
     )
     with patch.object(svc, "list_sources", return_value=[source]):
-        result = svc.retrieve_all("pod crash")
+        result = await svc.retrieve_all("pod crash")
 
     assert '<retrieved_document' in result
     assert 'chunk A' in result
-    assert 'Wiki (Azure AI Search)' in result
+    assert 'Wiki (azure_ai_search)' in result
 
 
-@patch("app.services.connectors.azure_ai_search_connector.retrieve")
-def test_retrieve_all_skips_disabled_sources(mock_retrieve):
+@patch("app.services.connectors.azure_ai_search_connector.retrieve", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_retrieve_all_skips_disabled_sources(mock_retrieve):
     mock_retrieve.return_value = ["chunk"]
 
     from app.services.external_rag_service import ExternalRAGService
@@ -89,14 +91,15 @@ def test_retrieve_all_skips_disabled_sources(mock_retrieve):
         config=encrypt(json.dumps(config))
     )
     with patch.object(svc, "list_sources", return_value=[disabled]):
-        result = svc.retrieve_all("query")
+        result = await svc.retrieve_all("query")
 
     assert result == ""
     mock_retrieve.assert_not_called()
 
 
-@patch("app.services.connectors.azure_ai_search_connector.retrieve")
-def test_retrieve_all_catches_connector_exception(mock_retrieve):
+@patch("app.services.connectors.azure_ai_search_connector.retrieve", new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_retrieve_all_catches_connector_exception(mock_retrieve):
     mock_retrieve.side_effect = Exception("network error")
 
     from app.services.external_rag_service import ExternalRAGService
@@ -110,13 +113,14 @@ def test_retrieve_all_catches_connector_exception(mock_retrieve):
         config=encrypt(json.dumps(config))
     )
     with patch.object(svc, "list_sources", return_value=[source]):
-        result = svc.retrieve_all("query")  # must not raise
+        result = await svc.retrieve_all("query")  # must not raise
 
     assert result == ""
 
 
-def test_retrieve_all_no_sources_returns_empty():
+@pytest.mark.asyncio
+async def test_retrieve_all_no_sources_returns_empty():
     from app.services.external_rag_service import ExternalRAGService
     svc = ExternalRAGService()
     with patch.object(svc, "list_sources", return_value=[]):
-        assert svc.retrieve_all("query") == ""
+        assert await svc.retrieve_all("query") == ""

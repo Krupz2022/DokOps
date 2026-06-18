@@ -2,6 +2,8 @@
 
 The Knowledge Base allows you to give the AI long-term memory by ingesting documents into a **ChromaDB vector store**. The AI automatically retrieves relevant documents as context before answering your questions — this is called Retrieval-Augmented Generation (RAG).
 
+> If you already have an existing knowledge store (Azure AI Search, Qdrant, OpenSearch, etc.), see [Knowledge Sources](knowledge-sources.md) instead — it connects to external stores without any ingestion or indexing.
+
 ---
 
 ## What to Store in the Knowledge Base

@@ -1765,6 +1765,24 @@ def build_openai_tools_schema(extra_tools: list | None = None) -> list:
             })
     return tools
 
+def schema_for_tools(names: list) -> list:
+    """OpenAI-format schema for a specific subset of registry tools (used by discover_tools)."""
+    full = {t["function"]["name"]: t for t in build_openai_tools_schema()}
+    return [full[n] for n in names if n in full]
+
+
+def discover_tools(intent: str) -> Dict[str, Any]:
+    """Meta-tool: return registry tools whose name/description match the intent.
+    Lets the agent pull in tools that relevance-selection didn't pre-load — no dead ends."""
+    words = [w for w in (intent or "").lower().split() if len(w) > 3]
+    matches = []
+    for name, info in TOOL_REGISTRY.items():
+        hay = (name + " " + info.get("description", "")).lower()
+        if any(w in hay for w in words):
+            matches.append({"name": name, "description": info.get("description", "")})
+    return {"success": True, "data": {"tools": matches[:40]}, "error": None, "source": "system"}
+
+
 def build_gemini_tools_schema(extra_tools: list | None = None) -> list:
     """Convert TOOL_REGISTRY into Gemini function_declarations format."""
     declarations = []

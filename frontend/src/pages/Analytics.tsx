@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   LineChart,
   Line,
@@ -8,9 +8,18 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import { BarChart2, Users, Zap } from "lucide-react";
+import { BarChart2, ChevronDown, Users, Zap } from "lucide-react";
+import { DayPicker, type DateRange } from "react-day-picker";
+import "react-day-picker/style.css";
 import api from "../lib/api";
 import { cn } from "../lib/utils";
+import {
+  RELATIVE_PRESETS,
+  CALENDAR_PRESETS,
+  DEFAULT_PRESET_KEY,
+  presetByKey,
+  type RangeValue,
+} from "../lib/dateRanges";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -50,17 +59,13 @@ interface ByUser {
 }
 
 interface AnalyticsData {
+  granularity: "day" | "week" | "month";
   summary: TokenSummary;
   daily: DailyPoint[];
   by_source: BySource[];
   by_model: ByModel[];
   by_user: ByUser[];
 }
-
-// ── Range options ──────────────────────────────────────────────────────────────
-
-type Range = "7d" | "30d" | "90d";
-const RANGES: Range[] = ["7d", "30d", "90d"];
 
 // ── Skeleton helpers ───────────────────────────────────────────────────────────
 
@@ -179,18 +184,144 @@ function Card({
   );
 }
 
+// ── Range picker ───────────────────────────────────────────────────────────────
+
+function RangePicker({
+  selection,
+  open,
+  setOpen,
+  onApply,
+}: {
+  selection: RangeValue;
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  onApply: (v: RangeValue) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState<DateRange | undefined>();
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open, setOpen]);
+
+  function choose(v: RangeValue) {
+    onApply(v);
+    setDraft(undefined);
+    setOpen(false);
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono font-medium bg-secondary/40 border border-border/60 text-foreground hover:bg-secondary/60 transition-colors"
+      >
+        {selection.label}
+        <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 z-50 mt-2 w-[320px] bg-card border border-border rounded-xl shadow-xl p-3 space-y-3">
+          <div>
+            <p className="text-[9px] font-mono font-semibold text-muted-foreground/50 uppercase tracking-[0.18em] mb-1.5">
+              Relative
+            </p>
+            <div className="grid grid-cols-2 gap-1">
+              {RELATIVE_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => choose(p.compute())}
+                  className={cn(
+                    "px-2 py-1.5 rounded-md text-[11px] font-mono text-left transition-colors",
+                    selection.label === p.label
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[9px] font-mono font-semibold text-muted-foreground/50 uppercase tracking-[0.18em] mb-1.5">
+              Calendar
+            </p>
+            <div className="grid grid-cols-2 gap-1">
+              {CALENDAR_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => choose(p.compute())}
+                  className={cn(
+                    "px-2 py-1.5 rounded-md text-[11px] font-mono text-left transition-colors",
+                    selection.label === p.label
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-border/60 pt-2">
+            <p className="text-[9px] font-mono font-semibold text-muted-foreground/50 uppercase tracking-[0.18em] mb-1.5">
+              Custom
+            </p>
+            <DayPicker
+              mode="range"
+              selected={draft}
+              onSelect={setDraft}
+              className="rdp-dokops text-xs"
+            />
+            <button
+              disabled={!draft?.from || !draft?.to}
+              onClick={() => {
+                if (draft?.from && draft?.to) {
+                  const end = new Date(draft.to);
+                  end.setHours(23, 59, 59, 999);
+                  choose({
+                    start: draft.from,
+                    end,
+                    label: `${draft.from.toLocaleDateString()} – ${draft.to.toLocaleDateString()}`,
+                  });
+                }
+              }}
+              className="mt-2 w-full px-3 py-1.5 rounded-md text-xs font-mono font-medium bg-primary text-primary-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            >
+              Apply custom range
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Analytics() {
-  const [range, setRange] = useState<Range>("7d");
+  const [selection, setSelection] = useState<RangeValue>(
+    () => presetByKey(DEFAULT_PRESET_KEY)!.compute()
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    const qs =
+      `?start=${encodeURIComponent(selection.start.toISOString())}` +
+      `&end=${encodeURIComponent(selection.end.toISOString())}`;
     api
-      .get<AnalyticsData>("/analytics/tokens?range=" + range)
+      .get<AnalyticsData>("/analytics/tokens" + qs)
       .then((res) => {
         if (!cancelled) setData(res.data);
       })
@@ -203,7 +334,7 @@ export default function Analytics() {
     return () => {
       cancelled = true;
     };
-  }, [range]);
+  }, [selection]);
 
   // Empty state check
   const isEmpty =
@@ -216,6 +347,30 @@ export default function Analytics() {
     data.by_user.length === 0;
 
   const summary = data?.summary;
+
+  const fmtBucket = useMemo(() => {
+    const g = data?.granularity;
+    return (v: string) => {
+      if (g === "month") {
+        const [y, m] = v.split("-");
+        return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString(undefined, {
+          month: "short",
+          year: "numeric",
+        });
+      }
+      if (g === "week") {
+        const [y, m, d] = v.split("-");
+        return (
+          "Wk of " +
+          new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+          })
+        );
+      }
+      return v;
+    };
+  }, [data?.granularity]);
 
   return (
     <div className="flex flex-col h-full">
@@ -237,23 +392,13 @@ export default function Analytics() {
           )}
         </div>
 
-        {/* Range buttons */}
-        <div className="flex items-center gap-1 p-1 bg-secondary/40 border border-border/60 rounded-lg">
-          {RANGES.map((r) => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={cn(
-                "px-3 py-1.5 rounded-md text-xs font-mono font-medium transition-colors",
-                range === r
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
+        {/* Range picker */}
+        <RangePicker
+          selection={selection}
+          open={pickerOpen}
+          setOpen={setPickerOpen}
+          onApply={setSelection}
+        />
       </div>
 
       {/* ── Body ── */}
@@ -352,6 +497,7 @@ export default function Analytics() {
                       />
                       <XAxis
                         dataKey="date"
+                        tickFormatter={fmtBucket}
                         tick={{
                           fontSize: 10,
                           fontFamily: "monospace",

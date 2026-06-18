@@ -147,12 +147,17 @@ class CachingAIClient:
                 from datetime import datetime as _dt
                 _usage = getattr(response, "usage", None)
                 if _usage and (_usage.prompt_tokens or _usage.completion_tokens):
+                    _cached = 0
+                    _details = getattr(_usage, "prompt_tokens_details", None)
+                    if _details is not None:
+                        _cached = getattr(_details, "cached_tokens", 0) or 0
                     _token_queue.put_nowait({
                         "user_id": ai_user_id.get(),
                         "source": ai_source.get(),
                         "model": model,
                         "input_tokens": _usage.prompt_tokens,
                         "output_tokens": _usage.completion_tokens,
+                        "cached_tokens": _cached,
                         "created_at": _dt.utcnow(),
                     })
             except Exception:
@@ -179,12 +184,17 @@ class CachingAIClient:
                     from datetime import datetime as _dt
                     _usage = getattr(response, "usage", None)
                     if _usage and (_usage.prompt_tokens or _usage.completion_tokens):
+                        _cached = 0
+                        _details = getattr(_usage, "prompt_tokens_details", None)
+                        if _details is not None:
+                            _cached = getattr(_details, "cached_tokens", 0) or 0
                         _token_queue.put_nowait({
                             "user_id": ai_user_id.get(),
                             "source": ai_source.get(),
                             "model": model,
                             "input_tokens": _usage.prompt_tokens,
                             "output_tokens": _usage.completion_tokens,
+                            "cached_tokens": _cached,
                             "created_at": _dt.utcnow(),
                         })
                 except Exception:

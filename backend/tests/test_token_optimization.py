@@ -182,6 +182,70 @@ def test_caching_client_calls_trim_messages_by_default():
 
 from unittest.mock import patch, MagicMock
 
+from app.services.ai_service import (
+    build_agent_system_prompt,
+    _AGENT_CORE_SYSTEM,
+    _GLOBAL_AGENT_STATIC_SYSTEM,
+    _FRAG_SERVICE_TOOLS,
+    _FRAG_MINION,
+    _FRAG_IMAGE_PULL,
+    _INVESTIGATION_PROTOCOL,
+)
+
+
+def _otool(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "description": "",
+            "parameters": {"type": "object", "properties": {}, "required": []}}}
+
+
+def test_core_prompt_is_smaller_than_full():
+    assert len(_AGENT_CORE_SYSTEM) < len(_GLOBAL_AGENT_STATIC_SYSTEM)
+
+
+def test_image_pull_protocol_is_always_on_in_core():
+    # Discovery-triggered (ImagePullBackOff appears in tool results, not the query),
+    # so it must live in core and never be gated out.
+    assert _FRAG_IMAGE_PULL in _AGENT_CORE_SYSTEM
+
+
+def test_k8s_only_query_omits_service_and_minion_fragments():
+    tools = [_otool("get_cluster_health"), _otool("search_pods")]
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=tools)
+    assert _FRAG_SERVICE_TOOLS not in prompt
+    assert _FRAG_MINION not in prompt
+    assert _INVESTIGATION_PROTOCOL not in prompt
+    assert prompt.startswith(_AGENT_CORE_SYSTEM)
+
+
+def test_service_tools_selected_includes_service_fragment():
+    tools = [_otool("get_cluster_health"), _otool("rabbitmq_list_queues")]
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=tools)
+    assert _FRAG_SERVICE_TOOLS in prompt
+
+
+def test_minion_tools_selected_includes_minion_fragment():
+    tools = [_otool("minion_list"), _otool("minion_exec_read")]
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=tools)
+    assert _FRAG_MINION in prompt
+
+
+def test_investigation_flag_appends_protocol():
+    prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
+    assert _INVESTIGATION_PROTOCOL in prompt
+
+
+def test_gemini_schema_shape_is_supported():
+    gem = [{"function_declarations": [{"name": "redis_info"}]}]
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=gem)
+    assert _FRAG_SERVICE_TOOLS in prompt
+
+
+def test_full_constant_still_contains_all_fragments():
+    # Backward-compat: pod/batch loops rely on the full constant
+    assert _FRAG_SERVICE_TOOLS in _GLOBAL_AGENT_STATIC_SYSTEM
+    assert _FRAG_MINION in _GLOBAL_AGENT_STATIC_SYSTEM
+    assert _FRAG_IMAGE_PULL in _GLOBAL_AGENT_STATIC_SYSTEM
+
 
 def test_detect_intent_uses_fast_model_when_tiering_enabled(monkeypatch):
     """detect_intent should call the fast model when AI_TIERING_ENABLED=True."""

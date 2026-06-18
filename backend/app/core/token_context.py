@@ -19,7 +19,7 @@ def set_token_context(user_id: Optional[int], source: str) -> None:
     ai_source.set(source)
 
 
-async def push_token_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+async def push_token_usage(model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> None:
     """Non-blocking enqueue. Drops the record if the queue is full rather than blocking."""
     if input_tokens == 0 and output_tokens == 0:
         return
@@ -30,6 +30,7 @@ async def push_token_usage(model: str, input_tokens: int, output_tokens: int) ->
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
             "created_at": datetime.utcnow(),
         })
     except asyncio.QueueFull:

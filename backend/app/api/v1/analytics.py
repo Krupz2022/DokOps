@@ -34,6 +34,7 @@ async def get_token_analytics(
             func.coalesce(func.sum(AITokenUsage.output_tokens), 0),
             func.count(AITokenUsage.id),
             func.count(func.distinct(AITokenUsage.user_id)),
+            func.coalesce(func.sum(AITokenUsage.cached_tokens), 0),
         ).where(AITokenUsage.created_at >= since)
     )).one()
 
@@ -42,6 +43,7 @@ async def get_token_analytics(
     total_tokens = total_input + total_output
     total_calls = int(summary_row[2])
     unique_users = int(summary_row[3])
+    total_cached = int(summary_row[4])
 
     summary = {
         "total_tokens": total_tokens,
@@ -49,6 +51,7 @@ async def get_token_analytics(
         "output_tokens": total_output,
         "total_calls": total_calls,
         "unique_users": unique_users,
+        "cached_tokens": total_cached,
     }
 
     # ── Daily breakdown ───────────────────────────────────────────────────────

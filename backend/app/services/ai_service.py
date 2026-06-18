@@ -884,6 +884,23 @@ Rules:
         "delete_pod", "get_pod_details", "get_ingresses",
     }
 
+    _DISCOVER_TOOL_SCHEMA = {
+        "type": "function",
+        "function": {
+            "name": "discover_tools",
+            "description": (
+                "Find additional tools by intent when the tool you need is not in your "
+                "current tool list. Returns matching tool names/descriptions; after calling "
+                "this, the matched tools become callable on your next step."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"intent": {"type": "string", "description": "what you need to do"}},
+                "required": ["intent"],
+            },
+        },
+    }
+
     _OBS_KEYWORDS = {
         "elastic", "elasticsearch", "kibana", "index", "indices", "logstash",
         "prometheus", "grafana", "loki", "datadog", "metric", "metrics",
@@ -1083,6 +1100,9 @@ Rules:
             len(deduped),
             len(obs_tools_schema) + len(full_k8s_schema) + len(mcp_schema) + len(custom_tools_schema),
         )
+
+        if not any(t["function"]["name"] == "discover_tools" for t in deduped):
+            deduped.append(AIService._DISCOVER_TOOL_SCHEMA)
 
         if len(deduped) <= max_total:
             return deduped
@@ -1936,6 +1956,23 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             except Exception as _obs_err:
                                 observation = f"Observability tool error: {_obs_err}"
                             _obs_log.debug("[OBS] observation sent to AI (first 500 chars): %s", observation[:500])
+                        elif tool_name == "discover_tools":
+                            _disc = _registry.discover_tools(tool_inputs.get("intent", ""))
+                            _names = [t["name"] for t in _disc["data"]["tools"]]
+                            _existing = {t["function"]["name"] for t in tools_schema}
+                            _new = [s for s in _registry.schema_for_tools(_names)
+                                    if s["function"]["name"] not in _existing]
+                            tools_schema.extend(_new)
+                            observation = (
+                                "Discovered tools now available: "
+                                + ", ".join(_names) if _names else "No matching tools found."
+                            )
+                            yield {"type": "step", "message": f"discover_tools done ({len(_new)} added)."}
+                            observation = await _ctx_mgr.trim_tool_result(
+                                tool_name, observation, provider, caching_client
+                            )
+                            messages.append({"role": "tool", "tool_call_id": tc.id, "content": observation})
+                            continue
                         elif tool_name in _registry.TOOL_REGISTRY:
                             exec_res = await _registry.execute_tool_async(tool_name, tool_inputs)
                             if isinstance(exec_res, dict) and exec_res.get("requires_confirmation"):

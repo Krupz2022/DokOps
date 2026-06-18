@@ -37,3 +37,25 @@ def test_selection_never_exceeds_safety_ceiling():
         "investigate everything", [], full_k8s, [], [], max_total=64, min_score=0,
     )
     assert len(selected) == 64
+
+
+def test_schema_for_tools_returns_named_only():
+    from app.tools import registry
+    schema = registry.schema_for_tools(["get_cluster_health"])
+    names = [t["function"]["name"] for t in schema]
+    assert names == ["get_cluster_health"]
+
+
+def test_discover_tools_matches_by_intent():
+    from app.tools import registry
+    res = registry.discover_tools("cluster health")
+    assert res["success"] is True
+    found = [t["name"] for t in res["data"]["tools"]]
+    assert "get_cluster_health" in found
+
+
+def test_selection_always_includes_discover_tools():
+    from app.services.ai_service import AIService
+    selected = AIService._select_dynamic_tools("anything", [], [], [], [])
+    names = [t["function"]["name"] for t in selected]
+    assert "discover_tools" in names

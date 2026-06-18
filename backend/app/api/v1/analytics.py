@@ -15,6 +15,19 @@ from app.models.user import User
 router = APIRouter()
 
 
+def _bucket_for_span(start: datetime, end: datetime) -> str:
+    """Choose chart granularity from the range length.
+
+    <= 31 days -> day, 32-180 -> week, > 180 -> month.
+    """
+    span_days = (end - start).days
+    if span_days <= 31:
+        return "day"
+    if span_days <= 180:
+        return "week"
+    return "month"
+
+
 def _cutoff(range_str: str) -> datetime:
     days = {"7d": 7, "30d": 30, "90d": 90}
     return utcnow() - timedelta(days=days[range_str])

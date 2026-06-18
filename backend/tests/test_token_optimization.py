@@ -1,5 +1,17 @@
 import pytest
+import asyncio
+from unittest.mock import MagicMock, patch
 from app.services.cached_ai_client import trim_messages
+from app.services.ai_service import (
+    build_agent_system_prompt,
+    _AGENT_CORE_SYSTEM,
+    _GLOBAL_AGENT_STATIC_SYSTEM,
+    _FRAG_SERVICE_TOOLS,
+    _FRAG_MINION,
+    _FRAG_IMAGE_PULL,
+    _FRAG_DEPLOY,
+    _INVESTIGATION_PROTOCOL,
+)
 
 
 def _make_messages():
@@ -74,8 +86,6 @@ def test_trim_does_not_modify_original_list():
     assert result[5]["content"].startswith("[trimmed]")
 
 
-import asyncio
-from unittest.mock import MagicMock
 from app.services.cached_ai_client import CachingAIClient
 
 
@@ -180,19 +190,6 @@ def test_caching_client_calls_trim_messages_by_default():
     assert sent[1]["content"].startswith("[trimmed]") or sent[1]["content"] == "[dropped]"
 
 
-from unittest.mock import patch, MagicMock
-
-from app.services.ai_service import (
-    build_agent_system_prompt,
-    _AGENT_CORE_SYSTEM,
-    _GLOBAL_AGENT_STATIC_SYSTEM,
-    _FRAG_SERVICE_TOOLS,
-    _FRAG_MINION,
-    _FRAG_IMAGE_PULL,
-    _INVESTIGATION_PROTOCOL,
-)
-
-
 def _otool(name: str) -> dict:
     return {"type": "function", "function": {"name": name, "description": "",
             "parameters": {"type": "object", "properties": {}, "required": []}}}
@@ -223,6 +220,12 @@ def test_service_tools_selected_includes_service_fragment():
     assert _FRAG_SERVICE_TOOLS in prompt
 
 
+def test_registry_tools_selected_includes_service_fragment():
+    tools = [_otool("get_cluster_health"), _otool("registry_list_tags")]
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=tools)
+    assert _FRAG_SERVICE_TOOLS in prompt
+
+
 def test_minion_tools_selected_includes_minion_fragment():
     tools = [_otool("minion_list"), _otool("minion_exec_read")]
     prompt = build_agent_system_prompt(investigation=False, selected_tools=tools)
@@ -245,6 +248,7 @@ def test_full_constant_still_contains_all_fragments():
     assert _FRAG_SERVICE_TOOLS in _GLOBAL_AGENT_STATIC_SYSTEM
     assert _FRAG_MINION in _GLOBAL_AGENT_STATIC_SYSTEM
     assert _FRAG_IMAGE_PULL in _GLOBAL_AGENT_STATIC_SYSTEM
+    assert _FRAG_DEPLOY in _GLOBAL_AGENT_STATIC_SYSTEM
 
 
 def test_detect_intent_uses_fast_model_when_tiering_enabled(monkeypatch):

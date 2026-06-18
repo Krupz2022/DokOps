@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func as sa_func
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -28,18 +29,47 @@ def _bucket_for_span(start: datetime, end: datetime) -> str:
     return "month"
 
 
-def _cutoff(range_str: str) -> datetime:
-    days = {"7d": 7, "30d": 30, "90d": 90}
-    return utcnow() - timedelta(days=days[range_str])
+_MAX_SPAN = timedelta(days=366)
+
+
+def _resolve_range(start: datetime, end: datetime) -> tuple[datetime, datetime, str]:
+    """Validate, clamp, and classify a requested range."""
+    if start >= end:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    if end - start > _MAX_SPAN:
+        start = end - _MAX_SPAN
+    return start, end, _bucket_for_span(start, end)
+
+
+def _bucket_expr(granularity: str, dialect: str):
+    """A dialect-aware expression that buckets created_at into a string label.
+
+    Returns a column expression labeled "date". SQLite uses strftime; everything
+    else (PostgreSQL) uses date_trunc + to_char so the output is always a string.
+    """
+    col = AITokenUsage.created_at
+    if dialect == "sqlite":
+        fmt = {"day": "%Y-%m-%d", "week": "%Y-%W", "month": "%Y-%m"}[granularity]
+        return sa_func.strftime(fmt, col).label("date")
+    # PostgreSQL (and other date_trunc-capable engines)
+    if granularity == "day":
+        return sa_func.to_char(sa_func.date_trunc("day", col), "YYYY-MM-DD").label("date")
+    if granularity == "week":
+        # ISO year-week, Monday-anchored, e.g. "2026-24"
+        return sa_func.to_char(col, "IYYY-IW").label("date")
+    return sa_func.to_char(sa_func.date_trunc("month", col), "YYYY-MM").label("date")
 
 
 @router.get("/tokens")
 async def get_token_analytics(
-    range: str = Query("7d", pattern="^(7d|30d|90d)$"),
+    start: datetime = Query(..., description="ISO start (inclusive)"),
+    end: datetime = Query(..., description="ISO end (exclusive)"),
     session: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_active_superuser),
 ) -> Dict[str, Any]:
-    since = _cutoff(range)
+    start, end, granularity = _resolve_range(start, end)
+    dialect = session.bind.dialect.name
+    bucket = _bucket_expr(granularity, dialect)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     summary_row = (await session.exec(
@@ -49,7 +79,7 @@ async def get_token_analytics(
             func.count(AITokenUsage.id),
             func.count(func.distinct(AITokenUsage.user_id)),
             func.coalesce(func.sum(AITokenUsage.cached_tokens), 0),
-        ).where(AITokenUsage.created_at >= since)
+        ).where(AITokenUsage.created_at >= start, AITokenUsage.created_at < end)
     )).one()
 
     total_input = int(summary_row[0])
@@ -71,13 +101,13 @@ async def get_token_analytics(
     # ── Daily breakdown ───────────────────────────────────────────────────────
     daily_rows = (await session.exec(
         select(
-            func.date(AITokenUsage.created_at).label("date"),
+            bucket,
             func.sum(AITokenUsage.input_tokens + AITokenUsage.output_tokens).label("tokens"),
             func.count(AITokenUsage.id).label("calls"),
         )
-        .where(AITokenUsage.created_at >= since)
-        .group_by(func.date(AITokenUsage.created_at))
-        .order_by(func.date(AITokenUsage.created_at))
+        .where(AITokenUsage.created_at >= start, AITokenUsage.created_at < end)
+        .group_by(bucket)
+        .order_by(bucket)
     )).all()
 
     daily: List[Dict[str, Any]] = [
@@ -92,7 +122,7 @@ async def get_token_analytics(
             func.sum(AITokenUsage.input_tokens + AITokenUsage.output_tokens).label("tokens"),
             func.count(AITokenUsage.id).label("calls"),
         )
-        .where(AITokenUsage.created_at >= since)
+        .where(AITokenUsage.created_at >= start, AITokenUsage.created_at < end)
         .group_by(AITokenUsage.source)
     )).all()
 
@@ -113,7 +143,7 @@ async def get_token_analytics(
             func.sum(AITokenUsage.input_tokens + AITokenUsage.output_tokens).label("tokens"),
             func.count(AITokenUsage.id).label("calls"),
         )
-        .where(AITokenUsage.created_at >= since)
+        .where(AITokenUsage.created_at >= start, AITokenUsage.created_at < end)
         .group_by(AITokenUsage.model)
     )).all()
 
@@ -134,7 +164,7 @@ async def get_token_analytics(
             func.sum(AITokenUsage.input_tokens + AITokenUsage.output_tokens).label("tokens"),
             func.count(AITokenUsage.id).label("calls"),
         )
-        .where(AITokenUsage.created_at >= since)
+        .where(AITokenUsage.created_at >= start, AITokenUsage.created_at < end)
         .group_by(AITokenUsage.user_id)
     )).all()
 
@@ -156,6 +186,7 @@ async def get_token_analytics(
     ]
 
     return {
+        "granularity": granularity,
         "summary": summary,
         "daily": daily,
         "by_source": by_source,

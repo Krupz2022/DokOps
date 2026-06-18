@@ -264,7 +264,7 @@ async def _build_kubeconfig_for_cluster(cluster_id: str) -> Optional[str]:
 
 
 class AIService:
-    STEP_BUDGETS: dict = {"simple": 8, "investigate": 25, "deep": 60}
+    STEP_BUDGETS: dict[str, int] = {"simple": 8, "investigate": 25, "deep": 60}
 
     def _get_setting(self, key: str) -> str:
         from app.core.settings_cache import get_setting
@@ -1709,6 +1709,8 @@ When done, give a per-pod root cause analysis.
             _obs_prompt = _int_mgr.get_tools_description_for_prompt(registry=_obs_registry)
             _agent_log.info("[AGENT] obs tools loaded: %d", len(_obs_registry))
 
+            # NOTE: Gemini loads the full tool schema and skips _select_dynamic_tools,
+            # so relevance ranking + discover_tools (OpenAI/Azure paths) do not apply here.
             if provider == "GEMINI":
                 tools_schema = _registry.build_gemini_tools_schema(extra_tools=(custom_tools or []) + _obs_extra)
                 mcp_declarations = await _mcp_svc.build_gemini_tools_schema()

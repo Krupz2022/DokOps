@@ -251,6 +251,23 @@ def test_full_constant_still_contains_all_fragments():
     assert _FRAG_DEPLOY in _GLOBAL_AGENT_STATIC_SYSTEM
 
 
+def test_token_usage_model_has_cached_tokens():
+    from app.models.analytics import AITokenUsage
+    row = AITokenUsage(source="agent", input_tokens=100, output_tokens=10, cached_tokens=80)
+    assert row.cached_tokens == 80
+
+
+def test_static_prompt_is_its_own_message():
+    # _AGENT_CORE_SYSTEM must be free of per-query injected content so it forms a
+    # stable cacheable prefix when placed in message[0].
+    # "CLUSTER TOPOLOGY SNAPSHOT:" (with colon) is the dynamic injection header;
+    # the static text only references the label without the trailing colon.
+    assert "CLUSTER TOPOLOGY SNAPSHOT:\n" not in _AGENT_CORE_SYSTEM
+    assert "User Query:" not in _AGENT_CORE_SYSTEM
+    assert "KNOWLEDGE BASE CONTEXT" not in _AGENT_CORE_SYSTEM
+    assert "EXTERNAL KNOWLEDGE SOURCE CONTEXT" not in _AGENT_CORE_SYSTEM
+
+
 def test_detect_intent_uses_fast_model_when_tiering_enabled(monkeypatch):
     """detect_intent should call the fast model when AI_TIERING_ENABLED=True."""
     from app.services.ai_service import AIService

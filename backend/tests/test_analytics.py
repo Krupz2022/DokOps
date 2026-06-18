@@ -86,3 +86,29 @@ def test_get_token_analytics_returns_structure(client, superuser_token_headers):
     assert "by_source" in data
     assert "by_model" in data
     assert "by_user" in data
+
+
+def test_summary_includes_cached_tokens_field():
+    """AITokenUsage model must have a cached_tokens field."""
+    from app.models.analytics import AITokenUsage
+    assert "cached_tokens" in AITokenUsage.model_fields
+
+
+def test_summary_cached_tokens_aggregated_correctly(client, superuser_token_headers, session):
+    """Insert rows with cached_tokens, call the analytics endpoint, verify the total is returned."""
+    # Insert two rows with known cached_tokens values
+    session.add(AITokenUsage(
+        source="agent", model="gpt-4o",
+        input_tokens=500, output_tokens=100, cached_tokens=200,
+    ))
+    session.add(AITokenUsage(
+        source="chat", model="gpt-4o",
+        input_tokens=300, output_tokens=50, cached_tokens=150,
+    ))
+    session.commit()
+
+    res = client.get("/api/v1/analytics/tokens?range=7d", headers=superuser_token_headers)
+    assert res.status_code == 200
+    summary = res.json()["summary"]
+    assert "cached_tokens" in summary
+    assert summary["cached_tokens"] == 350  # 200 + 150

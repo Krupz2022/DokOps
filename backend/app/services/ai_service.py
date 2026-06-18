@@ -409,12 +409,17 @@ class AIService:
             from datetime import datetime as _dt
             _usage = getattr(response, "usage", None)
             if _usage and (_usage.prompt_tokens or _usage.completion_tokens):
+                _cached = 0
+                _details = getattr(_usage, "prompt_tokens_details", None)
+                if _details is not None:
+                    _cached = getattr(_details, "cached_tokens", 0) or 0
                 _token_queue.put_nowait({
                     "user_id": ai_user_id.get(),
                     "source": ai_source.get(),
                     "model": model,
                     "input_tokens": _usage.prompt_tokens,
                     "output_tokens": _usage.completion_tokens,
+                    "cached_tokens": _cached,
                     "created_at": _dt.utcnow(),
                 })
         except Exception:
@@ -1783,7 +1788,7 @@ ELASTICSEARCH QUERY RULES:
 """
 
             _core_prompt = build_agent_system_prompt(investigation=investigation_mode, selected_tools=tools_schema)
-            dynamic_context = f"""{_core_prompt}{_unavailability_block}
+            _dynamic_context = f"""{_unavailability_block}
 
 CLUSTER TOPOLOGY SNAPSHOT:
 {_topo_overview}
@@ -1791,7 +1796,10 @@ CLUSTER TOPOLOGY SNAPSHOT:
 {obs_section}{mcp_section}User Query: {query}
 {runbook_instruction}{evidence_section}{rag_section}"""
 
-            messages: list = [{"role": "system", "content": dynamic_context}]
+            messages: list = [
+                {"role": "system", "content": _core_prompt},      # stable → cacheable prefix
+                {"role": "system", "content": _dynamic_context},  # per-query content
+            ]
             if history:
                 messages.extend(history)
             messages.append({"role": "user", "content": query})

@@ -105,3 +105,34 @@ async def test_classify_complexity_defaults_to_investigate_on_error():
 def test_step_budgets_increase_with_complexity():
     b = AIService.STEP_BUDGETS
     assert b["simple"] < b["investigate"] < b["deep"]
+
+
+def _assistant_call(name, args):
+    return {"role": "assistant", "content": None,
+            "tool_calls": [{"id": "x", "type": "function",
+                            "function": {"name": name, "arguments": args}}]}
+
+
+def test_detect_stall_true_on_repeated_identical_call():
+    msgs = [
+        _assistant_call("get_pod_logs", '{"pod":"a"}'),
+        {"role": "tool", "tool_call_id": "x", "content": "..."},
+        _assistant_call("get_pod_logs", '{"pod":"a"}'),
+        {"role": "tool", "tool_call_id": "x", "content": "..."},
+    ]
+    assert AIService._detect_stall(msgs, window=2) is True
+
+
+def test_detect_stall_false_on_distinct_calls():
+    msgs = [
+        _assistant_call("get_pod_logs", '{"pod":"a"}'),
+        {"role": "tool", "tool_call_id": "x", "content": "..."},
+        _assistant_call("get_pod_events", '{"pod":"a"}'),
+        {"role": "tool", "tool_call_id": "x", "content": "..."},
+    ]
+    assert AIService._detect_stall(msgs, window=2) is False
+
+
+def test_detect_stall_false_when_too_few_turns():
+    msgs = [_assistant_call("get_pod_logs", '{"pod":"a"}')]
+    assert AIService._detect_stall(msgs, window=2) is False

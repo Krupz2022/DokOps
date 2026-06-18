@@ -59,3 +59,14 @@ def test_selection_always_includes_discover_tools():
     selected = AIService._select_dynamic_tools("anything", [], [], [], [])
     names = [t["function"]["name"] for t in selected]
     assert "discover_tools" in names
+
+
+def test_discover_tools_survives_the_cap():
+    # Many non-matching tools force the cap; discover_tools must still be present.
+    full_k8s = [_tool(f"tool_{i}", f"desc {i}") for i in range(200)]
+    selected = AIService._select_dynamic_tools(
+        "investigate everything", [], full_k8s, [], [], max_total=64, min_score=0,
+    )
+    names = [t["function"]["name"] for t in selected]
+    assert "discover_tools" in names
+    assert len(selected) <= 64

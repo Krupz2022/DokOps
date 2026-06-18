@@ -1111,7 +1111,12 @@ Rules:
         core = [t for t in deduped if t["function"]["name"] in AIService._CORE_K8S]
         rest = [t for t in deduped if t["function"]["name"] not in AIService._CORE_K8S]
         rest.sort(key=lambda t: AIService._score_tool(qwords, t), reverse=True)
-        return (core + rest)[:max_total]
+        result = (core + rest)[:max_total]
+        # Guarantee the discover_tools escape hatch survives the cap — drop the
+        # lowest-ranked tool to make room rather than lose the ability to load more.
+        if not any(t["function"]["name"] == "discover_tools" for t in result):
+            result = result[:max_total - 1] + [AIService._DISCOVER_TOOL_SCHEMA]
+        return result
 
     @staticmethod
     def _strip_tool_echo(text: str) -> str:
@@ -1964,8 +1969,9 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     if s["function"]["name"] not in _existing]
                             tools_schema.extend(_new)
                             observation = (
-                                "Discovered tools now available: "
-                                + ", ".join(_names) if _names else "No matching tools found."
+                                ("Discovered tools now available: " + ", ".join(_names))
+                                if _names
+                                else "No matching tools found."
                             )
                             yield {"type": "step", "message": f"discover_tools done ({len(_new)} added)."}
                             observation = await _ctx_mgr.trim_tool_result(

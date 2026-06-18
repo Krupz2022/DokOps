@@ -1,7 +1,9 @@
 # backend/app/models/alert_incident.py
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
+
+from app.core.datetimes import utc_field, utc_optional_field
 
 
 class AlertIncident(SQLModel, table=True):
@@ -20,9 +22,9 @@ class AlertIncident(SQLModel, table=True):
     rca_report: Optional[str] = None        # JSON blob: agentic loop output
     jira_ticket_key: Optional[str] = None
     jira_ticket_url: Optional[str] = None
-    notification_sent_at: Optional[datetime] = None
+    notification_sent_at: Optional[datetime] = utc_optional_field()
     remediation_action: Optional[str] = None
     remediation_outcome: Optional[str] = None
     workflow_run_id: Optional[int] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    resolved_at: Optional[datetime] = None
+    created_at: datetime = utc_field()
+    resolved_at: Optional[datetime] = utc_optional_field()

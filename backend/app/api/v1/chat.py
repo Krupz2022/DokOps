@@ -3,6 +3,8 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.core.datetimes import utcnow
+
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import select
@@ -109,7 +111,7 @@ async def rename_conversation(
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.title = title
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = utcnow()
     db.add(conv)
     await db.commit()
     await db.refresh(conv)
@@ -207,7 +209,7 @@ async def _maybe_compact(conversation_id: str) -> None:
         after_tokens = context_manager.count_tokens(summary + kept_content, provider)
         conv.summary = summary
         conv.is_compacted = True
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = utcnow()
         db.add(conv)
 
         for m in to_compact:
@@ -338,7 +340,7 @@ async def _stream_and_save(
 
                 conv = await db.get(ChatConversation, conversation_id)
                 if conv:
-                    conv.updated_at = datetime.utcnow()
+                    conv.updated_at = utcnow()
                     db.add(conv)
                 await db.commit()
 
@@ -387,7 +389,7 @@ async def send_message(
     # Auto-title from first user message
     if conv.title == "New Chat":
         conv.title = content[:60]
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = utcnow()
         db.add(conv)
 
     # Save user message

@@ -242,6 +242,53 @@ async def _migrate_schema() -> None:
         _col("servicecredential", "instance_name", "TEXT DEFAULT ''"),
         _col("user", "god_mode_active", "INTEGER DEFAULT 0"),
     ]
+
+    # All timestamp columns are timezone-aware UTC (see app.core.datetimes).
+    # On PostgreSQL, convert any pre-existing naive `TIMESTAMP WITHOUT TIME ZONE`
+    # columns to `timestamptz`, interpreting stored values as UTC. Idempotent:
+    # re-running on an already-converted column is a no-op. SQLite has no real
+    # timestamptz type and stores ISO strings, so this is skipped there.
+    if is_postgres:
+        tz_columns: dict[str, list[str]] = {
+            "workflows": ["created_at", "updated_at"],
+            "workflow_runs": ["started_at", "completed_at"],
+            "servicecredential": ["created_at", "updated_at"],
+            "discoveredservice": ["detected_at"],
+            "registryconnection": ["created_at"],
+            "external_knowledge_sources": ["created_at"],
+            "ragdocument": ["indexed_at"],
+            "organisation": ["created_at"],
+            "miniongroup": ["created_at"],
+            "minionpatch": ["scanned_at"],
+            "patchpipeline": ["created_at"],
+            "patchpromotion": ["triggered_at", "completed_at"],
+            "patchschedule": ["next_run_at"],
+            "patchalertevent": ["fired_at", "acknowledged_at"],
+            "patchpromotionresult": ["created_at"],
+            "clusterconnection": ["created_at", "last_verified"],
+            "cloudcredential": ["created_at"],
+            "oauthstate": ["created_at"],
+            "chatconversation": ["created_at", "updated_at"],
+            "chatmessage": ["created_at"],
+            "minion": ["last_seen", "last_patch_scan", "created_at"],
+            "minionjob": ["created_at", "completed_at"],
+            "alert_incidents": ["notification_sent_at", "created_at", "resolved_at"],
+            "activation": ["activated_at", "last_heartbeat_at"],
+            "ai_token_usage": ["created_at"],
+            "mcpserver": ["last_connected_at", "created_at"],
+            "mcptool": ["last_synced_at"],
+            "auditlog": ["timestamp"],
+            "azureconnection": ["connected_at"],
+            "azurefeatureconfig": ["last_synced_at"],
+            "integrationsettings": ["connected_at", "last_checked_at"],
+        }
+        for table, cols in tz_columns.items():
+            for col in cols:
+                migrations.append(
+                    f"ALTER TABLE {table} ALTER COLUMN {col} "
+                    f"TYPE TIMESTAMP WITH TIME ZONE USING {col} AT TIME ZONE 'UTC'"
+                )
+
     async with async_engine.connect() as conn:
         for stmt in migrations:
             try:

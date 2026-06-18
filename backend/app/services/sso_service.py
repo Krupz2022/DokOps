@@ -2,6 +2,8 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
+from app.core.datetimes import utcnow
+
 from fastapi import HTTPException, status
 from jose import jwt, JWTError
 from sqlmodel import Session, select
@@ -91,7 +93,7 @@ async def begin_sso_flow(provider: OIDCProvider, db: AsyncSession) -> str:
 
 
 async def _purge_old_states(db: AsyncSession) -> None:
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    cutoff = utcnow() - timedelta(minutes=10)
     old = (await db.exec(select(OAuthState).where(OAuthState.created_at < cutoff))).all()
     for s in old:
         await db.delete(s)

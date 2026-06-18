@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from app.core.datetimes import utcnow
+
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlmodel import select
@@ -295,7 +297,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
 
         if not m:
             m = Minion(id=minion_id, hostname=minion_id, status="pending")
-        m.last_seen = datetime.utcnow()
+        m.last_seen = utcnow()
 
         # Auto-accept if the global auto-accept key matched
         if key_hash and verify_token(token, key_hash):
@@ -322,7 +324,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                     if m:
                         m.hostname = grains_data.get("hostname", m.hostname)
                         m.grains = json.dumps(grains_data)
-                        m.last_seen = datetime.utcnow()
+                        m.last_seen = utcnow()
                         db.add(m)
                         await db.commit()
                 org_name = grains_data.get("org", "").strip()
@@ -337,7 +339,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 async with AsyncSessionLocal() as db:
                     m = await db.get(Minion, minion_id)
                     if m:
-                        m.last_seen = datetime.utcnow()
+                        m.last_seen = utcnow()
                         if m.status == "offline":
                             m.status = "active"
                         # Merge live metrics into grains so the UI can display them
@@ -375,7 +377,7 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 async with AsyncSessionLocal() as db:
                     m = await db.get(Minion, minion_id)
                     if m:
-                        m.last_seen = datetime.utcnow()
+                        m.last_seen = utcnow()
                         db.add(m)
                         await db.commit()
 

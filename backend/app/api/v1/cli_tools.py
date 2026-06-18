@@ -5,6 +5,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from datetime import datetime
 
 from app.api.deps import get_current_active_superuser, get_async_db, require_god_mode
+from app.core.datetimes import utcnow
 from app.models.user import User
 from app.models.audit import AuditLog
 from app.services.cli_tool_service import cli_tool_service
@@ -14,7 +15,7 @@ router = APIRouter()
 
 async def _write_audit(db: AsyncSession, actor: str, action: str, resource: str, result: str, mode: str, details: Optional[str] = None):
     log = AuditLog(
-        timestamp=datetime.utcnow(),
+        timestamp=utcnow(),
         actor=actor,
         action=action,
         resource=resource,

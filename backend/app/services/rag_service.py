@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
+from app.core.datetimes import utcnow
+
 # Safety caps — prevent single large pages from saturating RAM/CPU
 _MAX_URL_CHARS = 40_000   # ~10k tokens after HTML strip
 _MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB upload cap
@@ -212,7 +214,7 @@ class RAGService:
                 metadatas.append({
                     "conversation_id": source_ref,
                     "conversation_title": title,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": utcnow().isoformat(),
                 })
             else:
                 metadatas.append({
@@ -243,7 +245,7 @@ class RAGService:
                         pass
                 existing.chroma_ids = json.dumps(chroma_ids)
                 existing.chunk_count = len(chunks)
-                existing.indexed_at = datetime.utcnow()
+                existing.indexed_at = utcnow()
                 existing.status = "indexed"
                 session.add(existing)
                 await session.commit()
@@ -257,7 +259,7 @@ class RAGService:
                     source_ref=source_ref,
                     chroma_ids=json.dumps(chroma_ids),
                     chunk_count=len(chunks),
-                    indexed_at=datetime.utcnow(),
+                    indexed_at=utcnow(),
                     status="indexed",
                 )
                 session.add(doc)

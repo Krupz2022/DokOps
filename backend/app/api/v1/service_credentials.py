@@ -1,6 +1,8 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
+
+from app.core.datetimes import utcnow
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select
@@ -170,7 +172,7 @@ async def update_credential(
     cred.port = body.port
     cred.host = body.host
     cred.extra = body.extra or "{}"
-    cred.updated_at = datetime.utcnow()
+    cred.updated_at = utcnow()
     db.add(cred)
     await db.commit()
     await db.refresh(cred)

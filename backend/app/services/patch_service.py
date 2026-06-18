@@ -7,6 +7,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from app.core.datetimes import utcnow
+
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -106,7 +108,7 @@ async def find_or_create_membership(minion_id: str, org_name: str, env_name: str
 
 async def ingest_scan(minion_id: str, packages: list[dict], scanned_at: Optional[datetime]) -> None:
     """Replace all MinionPatch rows for *minion_id* with fresh scan data."""
-    ts = scanned_at or datetime.utcnow()
+    ts = scanned_at or utcnow()
     async with AsyncSessionLocal() as db:
         # Delete stale rows
         old = (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all()
@@ -393,7 +395,7 @@ async def apply_patches(
             promo = await db.get(PatchPromotion, promotion_id)
             if promo:
                 promo.status = final_status
-                promo.completed_at = datetime.utcnow()
+                promo.completed_at = utcnow()
                 if failed_ids:
                     promo.failed_minions = json.dumps(failed_ids)
                 if reboot_ids:

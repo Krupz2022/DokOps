@@ -1,6 +1,8 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from sqlmodel import Field, SQLModel
+
+from app.core.datetimes import utc_field
 
 
 class ExternalKnowledgeSource(SQLModel, table=True):
@@ -11,4 +13,4 @@ class ExternalKnowledgeSource(SQLModel, table=True):
     provider: str  # "azure_ai_search"
     enabled: bool = True
     config: str   # Fernet-encrypted JSON blob
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = utc_field()

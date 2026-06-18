@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 import uuid
 
 from sqlmodel import Field, SQLModel
+
+from app.core.datetimes import utc_field
 
 
 def _uuid() -> str:
@@ -17,6 +19,4 @@ class RegistryConnection(SQLModel, table=True):
     username: Optional[str] = None
     password: Optional[str] = None   # Fernet-encrypted at rest
     added_by: Optional[str] = None
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = utc_field()

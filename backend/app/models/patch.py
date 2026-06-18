@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
+from app.core.datetimes import utc_field, utc_optional_field
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -15,7 +17,7 @@ class Organisation(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     name: str
     slug: str = Field(unique=True, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = utc_field()
 
 
 class MinionGroup(SQLModel, table=True):
@@ -24,7 +26,7 @@ class MinionGroup(SQLModel, table=True):
     org_id: str = Field(foreign_key="organisation.id", index=True)
     name: str
     description: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = utc_field()
 
 
 class MinionGroupMember(SQLModel, table=True):
@@ -44,7 +46,7 @@ class MinionPatch(SQLModel, table=True):
     advisory_type: str = "enhancement"   # security / bugfix / enhancement
     severity: str = "none"               # critical / high / medium / low / none
     cve_ids: str = Field(default="[]")   # JSON text e.g. '["CVE-2023-1234"]'
-    scanned_at: datetime = Field(default_factory=datetime.utcnow)
+    scanned_at: datetime = utc_field()
 
 
 class PatchPipeline(SQLModel, table=True):
@@ -53,7 +55,7 @@ class PatchPipeline(SQLModel, table=True):
     org_id: str = Field(foreign_key="organisation.id", index=True)
     name: str
     auto_promote: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = utc_field()
 
 
 class PipelineStage(SQLModel, table=True):
@@ -74,9 +76,9 @@ class PatchPromotion(SQLModel, table=True):
     patch_scope: str                          # security / all / custom
     custom_packages: Optional[str] = None     # JSON text ["nginx", "openssl"]
     triggered_by: str
-    triggered_at: datetime = Field(default_factory=datetime.utcnow)
+    triggered_at: datetime = utc_field()
     status: str = "pending"                   # pending / running / done / partial / failed
-    completed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = utc_optional_field()
     failed_minions: Optional[str] = None      # JSON text ["minion-id-1", "minion-id-2"]
     reboot_minions: Optional[str] = None      # JSON text ["minion-id-1"] — need reboot after patching
     excluded_minions: Optional[str] = None    # JSON text [{"id":..,"reason":..,"excluded_by":..,"at":..}]
@@ -99,7 +101,7 @@ class PatchSchedule(SQLModel, table=True):
     notifications: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     ai_beautify: bool = False
     created_by: str
-    next_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = utc_optional_field()
 
 
 class PatchAlertEvent(SQLModel, table=True):
@@ -109,10 +111,10 @@ class PatchAlertEvent(SQLModel, table=True):
     stage_id: str = Field(foreign_key="pipelinestage.id")
     # prior_stage_not_complete / prior_stage_failed / prior_stage_partial / no_prior_run
     reason: str
-    fired_at: datetime = Field(default_factory=datetime.utcnow)
+    fired_at: datetime = utc_field()
     acknowledged: bool = False
     acknowledged_by: Optional[str] = None
-    acknowledged_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = utc_optional_field()
 
 
 class PatchPromotionResult(SQLModel, table=True):
@@ -125,4 +127,4 @@ class PatchPromotionResult(SQLModel, table=True):
     stdout: Optional[str] = None                   # truncated to 4096 chars
     applied_advisories: str = Field(default="[]")  # JSON list of {advisory_id, package_name, severity, from_version, to_version}
     packages_count: int = 0                        # len(applied_advisories) for quick reads
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = utc_field()

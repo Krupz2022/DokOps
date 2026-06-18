@@ -1,7 +1,9 @@
 from typing import Optional, Any, Dict, List
-from datetime import datetime, timezone
+from datetime import datetime
 import uuid
 from sqlmodel import Field, SQLModel, Column, JSON
+
+from app.core.datetimes import utc_field, utc_optional_field
 
 
 class Workflow(SQLModel, table=True):
@@ -19,8 +21,8 @@ class Workflow(SQLModel, table=True):
     input_schema: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     steps: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     created_by: str = Field(default="")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = utc_field()
+    updated_at: datetime = utc_field()
 
     # Agent fields (null/empty for scripted workflows)
     workflow_type: str = Field(default="scripted")  # scripted|agent
@@ -53,7 +55,7 @@ class WorkflowRun(SQLModel, table=True):
     triggered_by_user_id: Optional[int] = Field(default=None)
     trigger_input: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = Field(default="pending")  # pending|running|completed|failed|awaiting_approval
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    completed_at: Optional[datetime] = Field(default=None)
+    started_at: datetime = utc_field()
+    completed_at: Optional[datetime] = utc_optional_field()
     step_results: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     ai_summary: Optional[str] = Field(default=None)

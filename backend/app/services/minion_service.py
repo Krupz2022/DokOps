@@ -8,6 +8,8 @@ import hashlib
 import logging
 import re as _re
 from datetime import datetime, timedelta
+
+from app.core.datetimes import utcnow
 from typing import Optional
 from uuid import uuid4
 
@@ -104,7 +106,7 @@ class MinionConnectionManager:
             if job:
                 job.status = "done" if exit_code == 0 else "failed"
                 job.exit_code = exit_code
-                job.completed_at = datetime.utcnow()
+                job.completed_at = utcnow()
                 db.add(job)
                 await db.commit()
         # Resolve future only if caller is still waiting
@@ -176,7 +178,7 @@ class MinionConnectionManager:
                 if job:
                     job.status = "failed"
                     job.stderr = "timeout"
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = utcnow()
                     db.add(job)
                     await db.commit()
             raise
@@ -263,7 +265,7 @@ async def mark_offline_loop() -> None:
     """
     while True:
         await asyncio.sleep(30)
-        threshold = datetime.utcnow() - timedelta(seconds=90)
+        threshold = utcnow() - timedelta(seconds=90)
         async with AsyncSessionLocal() as db:
             stale = (await db.exec(
                 select(Minion).where(

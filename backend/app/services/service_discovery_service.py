@@ -2,6 +2,8 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+
+from app.core.datetimes import utcnow
 from typing import List
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -164,7 +166,7 @@ async def persist_discovery(minion_id: str, services: List[DiscoveredService], d
     for row in existing:
         await db.delete(row)
 
-    now = datetime.utcnow()
+    now = utcnow()
     for svc in services:
         svc.detected_at = now
         db.add(svc)

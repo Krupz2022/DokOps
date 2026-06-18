@@ -1149,6 +1149,23 @@ Rules:
         return result
 
     @staticmethod
+    def _detect_stall(messages: list, window: int = 2) -> bool:
+        """True when the last `window` assistant tool-call turns are byte-identical
+        (same tool name + arguments) — the model is spinning, not progressing."""
+        sigs: list[tuple] = []
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                turn_sig = tuple(
+                    (tc["function"]["name"], tc["function"].get("arguments", ""))
+                    for tc in m["tool_calls"]
+                )
+                sigs.append(turn_sig)
+        if len(sigs) < window:
+            return False
+        recent = sigs[-window:]
+        return all(s == recent[0] for s in recent)
+
+    @staticmethod
     def _strip_tool_echo(text: str) -> str:
         """Remove 'to=toolname <garbage>' prefixes some non-standard models emit."""
         if not text or "to=" not in text:
@@ -1787,6 +1804,13 @@ CLUSTER TOPOLOGY SNAPSHOT:
             while current_step < max_steps:
                 current_step += 1
                 _agent_log.info("[AGENT] step %d/%d — calling AI...", current_step, max_steps)
+
+                if self._detect_stall(messages, window=2):
+                    _agent_log.info("[AGENT] stall detected at step %d — finalizing early", current_step)
+                    messages.append({"role": "user", "content": (
+                        "You are repeating the same tool call without progress. Stop calling tools "
+                        "and give your best final answer now from the evidence you already have."
+                    )})
 
                 # Budget check — compact if approaching context limit
                 _used, _limit, _pct = _ctx_mgr.check_budget(messages, provider)

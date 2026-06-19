@@ -31,3 +31,14 @@ def test_extract_function_calls_normalizes():
     assert calls[0].function.name == "get_logs"
     assert json.loads(calls[0].function.arguments) == {"namespace": "default"}
     assert calls[0].id == "gemini_get_logs"
+
+
+def test_registry_schema_converts_without_error():
+    from app.tools.registry import build_gemini_tools_schema
+    schema = build_gemini_tools_schema()
+    tools = gemini_compat.to_gemini_tools(schema)
+    assert isinstance(tools, list)
+    # Every declaration must carry a name.
+    for tool in tools:
+        for decl in tool.function_declarations:
+            assert decl.name

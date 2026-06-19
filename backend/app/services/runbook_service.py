@@ -108,7 +108,9 @@ Be conservative — only match if the trigger clearly fits.
         model = ai_service._get_setting("ai_model") or "gpt-3.5-turbo"
 
         if provider == "GEMINI":
-            resp = client.generate_content(system_prompt)
+            from app.services import gemini_compat
+            gem_model = gemini_compat.resolve_model(ai_service._get_setting("ai_model"))
+            resp = gemini_compat.generate(client, gem_model, system_prompt)
             text = resp.text
         else:
             resp = client.chat.completions.create(

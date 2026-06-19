@@ -344,7 +344,9 @@ class AIService:
             model = get_val("ai_model") or "gpt-3.5-turbo"
 
             if provider == "GEMINI":
-                response = client.generate_content("Hello")
+                from app.services import gemini_compat
+                gem_model = gemini_compat.resolve_model(get_val("ai_model"))
+                gemini_compat.generate(client, gem_model, "Hello")
                 return True
             else:
                 # OpenAI / Azure / Custom
@@ -384,7 +386,8 @@ class AIService:
             else _full_model
         )
         if provider == "GEMINI":
-            response = client.generate_content(prompt)
+            from app.services import gemini_compat
+            response = gemini_compat.generate(client, gemini_compat.resolve_model(model), prompt)
             return response.text
         messages = [{"role": "user", "content": prompt}]
         try:
@@ -444,7 +447,9 @@ class AIService:
             """
 
             if provider == "GEMINI":
-                response = await asyncio.to_thread(client.generate_content, prompt)
+                from app.services import gemini_compat
+                gem_model = gemini_compat.resolve_model(self._get_setting("ai_model"))
+                response = await asyncio.to_thread(gemini_compat.generate, client, gem_model, prompt)
                 return response.text
             else:
                 response = await asyncio.to_thread(client.chat.completions.create,
@@ -474,7 +479,9 @@ class AIService:
 
             # 2. Call AI
             if provider == "GEMINI":
-                response = await asyncio.to_thread(client.generate_content, full_logs)
+                from app.services import gemini_compat
+                gem_model = gemini_compat.resolve_model(self._get_setting("ai_model"))
+                response = await asyncio.to_thread(gemini_compat.generate, client, gem_model, full_logs)
                 return response.text
             else:
                 response = await asyncio.to_thread(client.chat.completions.create,
@@ -529,7 +536,9 @@ Rules:
 """
 
             if provider == "GEMINI":
-                response = await asyncio.to_thread(client.generate_content, prompt)
+                from app.services import gemini_compat
+                gem_model = gemini_compat.resolve_model(self._get_setting("ai_model"))
+                response = await asyncio.to_thread(gemini_compat.generate, client, gem_model, prompt)
                 raw = response.text
             else:
                 response = await asyncio.to_thread(client.chat.completions.create,
@@ -625,7 +634,9 @@ Rules:
             user_prompt = f"User Query: {query}"
 
             if provider == "GEMINI":
-                response = client.generate_content(system_prompt + "\n" + user_prompt)
+                from app.services import gemini_compat
+                gem_model = gemini_compat.resolve_model(self._get_setting("ai_model"))
+                response = gemini_compat.generate(client, gem_model, system_prompt + "\n" + user_prompt)
                 text = response.text
             else:
                 response = client.chat.completions.create(

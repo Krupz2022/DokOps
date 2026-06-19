@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import google.generativeai as genai
+from app.services import gemini_compat
 from openai import OpenAI, AzureOpenAI
 from sqlmodel import select
 from app.models.setting import SystemSetting
@@ -293,8 +293,7 @@ class AIService:
                 azure_endpoint=base_url
             )
         elif provider == "GEMINI":
-            genai.configure(api_key=api_key)
-            return genai.GenerativeModel("gemini-pro")
+            return gemini_compat.make_client(api_key)
         else:
              # Custom/Ollama often uses OpenAI compatible client
             return OpenAI(api_key=api_key or "dummy", base_url=base_url)

@@ -41,7 +41,14 @@ def _chunk_text(text: str, chunk_size: int = 2000, overlap: int = 200) -> List[s
                     end = idx + len(sep)
                     break
         chunks.append(text[start:end].strip())
-        start = end - overlap
+        # Advance with overlap, but guarantee forward progress. When the chosen
+        # break sits within `overlap` chars of `start` (e.g. a long run with no
+        # whitespace, as in big PDFs), `end - overlap` would stall or move back,
+        # looping forever and exhausting memory — so never let `start` regress.
+        next_start = end - overlap
+        if next_start <= start:
+            next_start = end
+        start = next_start
         if start >= len(text):
             break
     return [c for c in chunks if c]

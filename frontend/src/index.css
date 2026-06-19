@@ -382,3 +382,45 @@
     animation: sidebar-text-in 0.2s cubic-bezier(0.4, 0, 0.2, 1) 0.08s both;
   }
 }
+
+/* react-day-picker theming — map library vars to DokOps theme tokens.
+   Scoped to .rdp-dokops (the calendar's className in Analytics.tsx). The
+   extra .rdp-root qualifier outranks the library's own :root-level vars
+   regardless of stylesheet import order. */
+.rdp-dokops.rdp-root {
+  --rdp-accent-color: hsl(var(--primary));
+  --rdp-accent-background-color: hsl(var(--primary) / 0.15);
+  --rdp-today-color: hsl(var(--primary));
+  --rdp-range_middle-background-color: hsl(var(--primary) / 0.15);
+  --rdp-range_middle-color: hsl(var(--foreground));
+  --rdp-selected-border: 2px solid hsl(var(--primary));
+  --rdp-day_button-border-radius: 9999px;
+  color: hsl(var(--foreground));
+}
+
+.rdp-dokops .rdp-caption_label,
+.rdp-dokops .rdp-day_button {
+  color: hsl(var(--foreground));
+}
+
+.rdp-dokops .rdp-weekday {
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+.rdp-dokops .rdp-day_button:hover {
+  background-color: hsl(var(--secondary));
+}
+
+.rdp-dokops .rdp-chevron {
+  fill: hsl(var(--muted-foreground));
+}
+
+.rdp-dokops .rdp-button_previous:hover .rdp-chevron,
+.rdp-dokops .rdp-button_next:hover .rdp-chevron {
+  fill: hsl(var(--primary));
+}
+
+.rdp-dokops .rdp-outside {
+  opacity: 0.4;
+}

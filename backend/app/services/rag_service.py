@@ -1,6 +1,7 @@
 """
 RAG Service — embed, ingest, and retrieve documents via ChromaDB.
 """
+import asyncio
 import json
 import re
 import uuid
@@ -196,7 +197,8 @@ class RAGService:
         doc_id = doc_id or str(uuid.uuid4())
         embedder = await self._get_embedding_provider()
         client = await self._get_chroma_client()
-        collection = client.get_or_create_collection(collection_name)
+        # Opening the collection is a synchronous Chroma HTTP call; keep it off the loop.
+        collection = await asyncio.to_thread(client.get_or_create_collection, collection_name)
 
         chunks = _chunk_text(text)
         chroma_ids: List[str] = []
@@ -204,7 +206,9 @@ class RAGService:
         embeddings: List[List[float]] = []
         metadatas: List[dict] = []
 
-        all_embeddings = embedder.embed_batch(chunks)
+        # Offload the CPU-bound embedding call to a worker thread so it never
+        # pins the event loop (a large doc otherwise freezes /health → SIGKILL).
+        all_embeddings = await asyncio.to_thread(embedder.embed_batch, chunks)
         for i, (chunk, embedding) in enumerate(zip(chunks, all_embeddings)):
             chunk_id = f"{doc_id}_{i}"
             chroma_ids.append(chunk_id)
@@ -224,8 +228,10 @@ class RAGService:
                     "chunk_index": i,
                 })
 
-        # Upsert idempotently
-        collection.upsert(
+        # Upsert idempotently. This is a synchronous Chroma HTTP call, so run it
+        # off the event loop to keep the loop responsive on large documents.
+        await asyncio.to_thread(
+            collection.upsert,
             ids=chroma_ids,
             documents=documents,
             embeddings=embeddings,
@@ -240,7 +246,8 @@ class RAGService:
                 old_ids = json.loads(existing.chroma_ids or "[]")
                 if old_ids:
                     try:
-                        collection.delete(ids=old_ids)
+                        # Synchronous Chroma HTTP call — run off the loop.
+                        await asyncio.to_thread(collection.delete, ids=old_ids)
                     except Exception:
                         pass
                 existing.chroma_ids = json.dumps(chroma_ids)
@@ -291,7 +298,8 @@ class RAGService:
         )
 
     async def ingest_file(self, filename: str, content: bytes) -> RagDocument:
-        text = _extract_file_text(filename, content)
+        # PDF parsing (pypdf) is CPU-bound; run it off the event loop.
+        text = await asyncio.to_thread(_extract_file_text, filename, content)
         return await self.ingest_text(
             text=text,
             title=filename,

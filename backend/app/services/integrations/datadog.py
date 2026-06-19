@@ -105,7 +105,8 @@ class DatadogService(BaseIntegrationService):
                 "description": (
                     "Search Datadog logs. "
                     "query: Datadog log search syntax e.g. 'service:payments status:error'. "
-                    "from_ts/to_ts: Unix timestamps as strings (default: last 1 hour). limit: max results."
+                    "from_ts/to_ts: ISO 8601 timestamps as strings e.g. '2026-06-18T10:00:00+00:00' "
+                    "(default: last 1 hour). limit: max results."
                 ),
                 "inputs": ["query", "from_ts", "to_ts", "limit"],
                 "operation_type": "read",

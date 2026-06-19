@@ -225,7 +225,7 @@ function RangePicker({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-[320px] bg-card border border-border rounded-xl shadow-xl p-3 space-y-3">
+        <div className="absolute right-0 z-50 mt-2 w-[272px] bg-card border border-border rounded-xl shadow-xl p-2.5 space-y-2.5">
           <div>
             <p className="text-[9px] font-mono font-semibold text-muted-foreground/50 uppercase tracking-[0.18em] mb-1.5">
               Relative

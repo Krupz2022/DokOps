@@ -117,7 +117,7 @@ class CachingAIClient:
 
     async def _dispatch(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
         if self._provider == "GEMINI":
-            return await self._complete_gemini(messages, tools, client)
+            return await self._complete_gemini(messages, tools, client, model)
         return await self._complete_openai(messages, tools, client, model)
 
     async def _complete_openai(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
@@ -202,9 +202,8 @@ class CachingAIClient:
                 return self._strip_tool_echo(response.choices[0].message.content or ""), None
             raise
 
-    async def _complete_gemini(self, messages: list[dict[str, Any]], tools: list, client) -> tuple:
-        import json
-        from types import SimpleNamespace
+    async def _complete_gemini(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
+        from app.services import gemini_compat
         from app.tools.registry import build_gemini_tools_schema
 
         gemini_tools = build_gemini_tools_schema()
@@ -214,24 +213,16 @@ class CachingAIClient:
             if m.get("content")
         )
         try:
-            response = await asyncio.to_thread(client.generate_content, text_prompt, tools=gemini_tools)
-            normalized = []
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
-                    normalized.append(SimpleNamespace(
-                        id=f"gemini_{fc.name}",
-                        function=SimpleNamespace(
-                            name=fc.name,
-                            arguments=json.dumps(dict(fc.args)),
-                        ),
-                    ))
+            response = await asyncio.to_thread(
+                gemini_compat.generate, client, model, text_prompt, gemini_tools
+            )
+            normalized = gemini_compat.extract_function_calls(response)
             if normalized:
                 return None, normalized
             return response.text, None
         except Exception as _gemini_exc:
             _log.warning("Gemini tool-calling failed (%s) — falling back to text-only", _gemini_exc)
-            response = await asyncio.to_thread(client.generate_content, text_prompt)
+            response = await asyncio.to_thread(gemini_compat.generate, client, model, text_prompt)
             return response.text, None
 
     @staticmethod

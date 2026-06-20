@@ -9,8 +9,8 @@ def _kql_escape(value: str) -> str:
     """Escape single quotes for safe interpolation into KQL string literals."""
     return value.replace("'", "''")
 
-from azure.identity import ClientSecretCredential
-from azure.mgmt.resource import ResourceManagementClient
+from azure.identity.aio import ClientSecretCredential
+from azure.mgmt.resource.resources.aio import ResourceManagementClient
 from cryptography.fernet import Fernet
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -82,40 +82,37 @@ async def connect(
         client_secret=client_secret,
     )
     try:
-        rm_client = ResourceManagementClient(credential, subscription_id)
-        if resource_group:
-            rm_client.resource_groups.get(resource_group)
-        else:
-            # No RG — validate credentials by listing resource groups (just first page)
-            next(iter(rm_client.resource_groups.list()), None)
+        async with credential, ResourceManagementClient(credential, subscription_id) as rm_client:
+            if resource_group:
+                await rm_client.resource_groups.get(resource_group)
+            else:
+                # No RG — validate credentials by listing resource groups (just first page)
+                async for _rg in rm_client.resource_groups.list():
+                    break
     except Exception as e:
         raise ValueError(f"Azure connection failed: {e}")
 
     encrypted = encrypt_secret(client_secret)
-    conn = AzureConnection(
-        id=1,
-        tenant_id=tenant_id,
-        subscription_id=subscription_id,
-        client_id=client_id,
-        client_secret=encrypted,
-        resource_group=resource_group,
-        aks_cluster_name=aks_cluster_name,
-        is_connected=True,
-        connected_at=datetime.now(timezone.utc),
-    )
     async with AsyncSessionLocal() as session:
-        existing = await session.get(AzureConnection, 1)
-        if existing:
-            await session.delete(existing)
-            await session.commit()
-        session.add(conn)
-        await session.commit()
-        await session.refresh(conn)
+        # Upsert the single (id=1) connection row in place.
+        conn = await session.get(AzureConnection, 1)
+        if conn is None:
+            conn = AzureConnection(id=1)
+            session.add(conn)
+        conn.tenant_id = tenant_id
+        conn.subscription_id = subscription_id
+        conn.client_id = client_id
+        conn.client_secret = encrypted
+        conn.resource_group = resource_group
+        conn.aks_cluster_name = aks_cluster_name
+        conn.is_connected = True
+        conn.connected_at = datetime.now(timezone.utc)
         # Seed default feature configs if they don't exist
         for key in VALID_FEATURE_KEYS:
             if not await session.get(AzureFeatureConfig, key):
                 session.add(AzureFeatureConfig(feature_key=key))
         await session.commit()
+        await session.refresh(conn)
     return conn
 
 
@@ -126,8 +123,8 @@ async def test_connection() -> bool:
         return False
     try:
         credential = _build_credential(conn)
-        rm_client = ResourceManagementClient(credential, conn.subscription_id)
-        rm_client.resource_groups.get(conn.resource_group)
+        async with credential, ResourceManagementClient(credential, conn.subscription_id) as rm_client:
+            await rm_client.resource_groups.get(conn.resource_group)
         async with AsyncSessionLocal() as session:
             stored = await session.get(AzureConnection, 1)
             if stored:
@@ -234,7 +231,7 @@ async def get_cost_data() -> Dict[str, Any]:
     Pull 30-day cost breakdown for all resources in the target resource group.
     Requires feature 'cost_optimization' to be enabled.
     """
-    from azure.mgmt.costmanagement import CostManagementClient
+    from azure.mgmt.costmanagement.aio import CostManagementClient
     from azure.mgmt.costmanagement.models import (
         QueryDefinition, QueryTimePeriod, QueryDataset,
         QueryAggregation, QueryGrouping, TimeframeType,
@@ -242,7 +239,6 @@ async def get_cost_data() -> Dict[str, Any]:
 
     conn = await _require_connection_and_feature("cost_optimization")
     credential = _build_credential(conn)
-    client = CostManagementClient(credential)
 
     scope = _build_scope(conn)
     query = QueryDefinition(
@@ -255,7 +251,8 @@ async def get_cost_data() -> Dict[str, Any]:
         ),
     )
     try:
-        result = client.query.usage(scope, query, api_version="2023-11-01")
+        async with credential, CostManagementClient(credential) as client:
+            result = await client.query.usage(scope, query, api_version="2023-11-01")
     except Exception as e:
         err_str = str(e)
         if "not supported" in err_str.lower() or "BillingAccount" in err_str or "offer" in err_str.lower():
@@ -281,40 +278,39 @@ async def get_rg_resources() -> Dict[str, Any]:
     names partially match the RG name (fuzzy-linked resources via Resource Graph).
     Requires feature 'resource_discovery' to be enabled.
     """
-    from azure.mgmt.resource import ResourceManagementClient as RmClient
-    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from azure.mgmt.resource.resources.aio import ResourceManagementClient as RmClient
+    from azure.mgmt.resourcegraph.aio import ResourceGraphClient
     from azure.mgmt.resourcegraph.models import QueryRequest
 
     conn = await _require_connection_and_feature("resource_discovery")
     credential = _build_credential(conn)
 
-    rm_client = RmClient(credential, conn.subscription_id)
-    graph_client = ResourceGraphClient(credential)
+    async with credential, RmClient(credential, conn.subscription_id) as rm_client, \
+            ResourceGraphClient(credential) as graph_client:
+        if conn.resource_group:
+            # RG-scoped: list direct resources + fuzzy-linked across subscription
+            direct = [
+                {"id": r.id, "name": r.name, "type": r.type, "location": r.location, "linked": False}
+                async for r in rm_client.resources.list_by_resource_group(conn.resource_group)
+            ]
+            rg_prefix = _kql_escape(conn.resource_group.split("-")[0])
+            safe_rg = _kql_escape(conn.resource_group)
+            graph_query = (
+                f"Resources "
+                f"| where name contains '{rg_prefix}' "
+                f"| where resourceGroup != '{safe_rg}' "
+                f"| project id, name, type, location, resourceGroup | limit 50"
+            )
+        else:
+            # Subscription-wide: list all resources via Resource Graph
+            direct = []
+            graph_query = (
+                "Resources | project id, name, type, location, resourceGroup | limit 200"
+            )
 
-    if conn.resource_group:
-        # RG-scoped: list direct resources + fuzzy-linked across subscription
-        direct = [
-            {"id": r.id, "name": r.name, "type": r.type, "location": r.location, "linked": False}
-            for r in rm_client.resources.list_by_resource_group(conn.resource_group)
-        ]
-        rg_prefix = _kql_escape(conn.resource_group.split("-")[0])
-        safe_rg = _kql_escape(conn.resource_group)
-        graph_query = (
-            f"Resources "
-            f"| where name contains '{rg_prefix}' "
-            f"| where resourceGroup != '{safe_rg}' "
-            f"| project id, name, type, location, resourceGroup | limit 50"
+        graph_result = await graph_client.resources(
+            QueryRequest(subscriptions=[conn.subscription_id], query=graph_query)
         )
-    else:
-        # Subscription-wide: list all resources via Resource Graph
-        direct = []
-        graph_query = (
-            "Resources | project id, name, type, location, resourceGroup | limit 200"
-        )
-
-    graph_result = graph_client.resources(
-        QueryRequest(subscriptions=[conn.subscription_id], query=graph_query)
-    )
     fuzzy = [
         {
             "id": r.get("id"),
@@ -343,7 +339,10 @@ async def get_monitor_metrics() -> Dict[str, Any]:
     Requires feature 'azure_monitor' enabled and aks_cluster_name set on the connection.
     """
     from datetime import timedelta
-    from azure.monitor.query import MetricsQueryClient
+    from azure.monitor.querymetrics.aio import MetricsClient
+    from azure.monitor.querymetrics import MetricAggregationType
+    from azure.mgmt.resourcegraph.aio import ResourceGraphClient
+    from azure.mgmt.resourcegraph.models import QueryRequest
     from azure.core.exceptions import HttpResponseError
 
     conn = await _require_connection_and_feature("azure_monitor")
@@ -354,7 +353,6 @@ async def get_monitor_metrics() -> Dict[str, Any]:
         )
 
     credential = _build_credential(conn)
-    client = MetricsQueryClient(credential)
 
     resource_uri = (
         f"/subscriptions/{conn.subscription_id}"
@@ -366,23 +364,43 @@ async def get_monitor_metrics() -> Dict[str, Any]:
     start_time = end_time - timedelta(hours=1)
 
     try:
-        response = client.query_resource(
-            resource_uri,
-            metric_names=["node_cpu_usage_percentage", "node_memory_rss_percentage"],
-            timespan=(start_time, end_time),
-        )
+        async with credential:
+            # MetricsClient needs a region-scoped endpoint; the cluster's region
+            # isn't stored on the connection, so resolve it via Resource Graph.
+            async with ResourceGraphClient(credential) as graph_client:
+                region_result = await graph_client.resources(QueryRequest(
+                    subscriptions=[conn.subscription_id],
+                    query=(
+                        f"Resources | where id =~ '{_kql_escape(resource_uri)}' "
+                        f"| project location | limit 1"
+                    ),
+                ))
+            if not region_result.data:
+                raise ValueError(f"AKS cluster '{conn.aks_cluster_name}' not found in subscription.")
+            region = region_result.data[0]["location"]
+
+            endpoint = f"https://{region}.metrics.monitor.azure.com"
+            async with MetricsClient(endpoint, credential) as client:
+                results = await client.query_resources(
+                    resource_ids=[resource_uri],
+                    metric_namespace="Microsoft.ContainerService/managedClusters",
+                    metric_names=["node_cpu_usage_percentage", "node_memory_rss_percentage"],
+                    timespan=(start_time, end_time),
+                    aggregations=[MetricAggregationType.AVERAGE],
+                )
     except HttpResponseError as e:
         raise ValueError(f"Azure Monitor query failed: {e.message}")
 
     metrics = []
-    for metric in response.metrics:
-        for ts in metric.timeseries:
-            for dp in ts.data:
-                metrics.append({
-                    "metric": metric.name,
-                    "timestamp": dp.timestamp.isoformat() if dp.timestamp else None,
-                    "average": dp.average,
-                })
+    for result in results:
+        for metric in result.metrics:
+            for ts in metric.timeseries:
+                for dp in ts.data:
+                    metrics.append({
+                        "metric": metric.name,
+                        "timestamp": dp.timestamp.isoformat() if dp.timestamp else None,
+                        "average": dp.average,
+                    })
 
     await _update_last_synced("azure_monitor")
     return {"resource_uri": resource_uri, "metrics": metrics}
@@ -393,31 +411,32 @@ async def get_cost_anomalies() -> Dict[str, Any]:
     Retrieve cost anomaly alerts for the target resource group from Azure Cost Management.
     Requires feature 'cost_anomaly_alerting' enabled.
     """
-    from azure.mgmt.costmanagement import CostManagementClient
+    from azure.mgmt.costmanagement.aio import CostManagementClient
+    from azure.core.exceptions import HttpResponseError
 
     conn = await _require_connection_and_feature("cost_anomaly_alerting")
     credential = _build_credential(conn)
-    client = CostManagementClient(credential)
 
     scope = _build_scope(conn)
 
     anomalies = []
     try:
-        alerts = client.alerts.list(scope, api_version="2023-11-01")
-        for alert in alerts:
-            if alert.properties and alert.properties.definition:
-                anomalies.append({
-                    "id": alert.id,
-                    "name": alert.name,
-                    "status": str(alert.properties.status) if alert.properties.status else None,
-                    "time_created": (
-                        alert.properties.time_created.isoformat()
-                        if alert.properties.time_created else None
-                    ),
-                    "details": str(alert.properties.details) if alert.properties.details else None,
-                })
-    except Exception as e:
-        logger.warning(f"Cost anomaly fetch failed: {e}")
+        async with credential, CostManagementClient(credential) as client:
+            alerts_result = await client.alerts.list(scope, api_version="2023-11-01")
+            for alert in (alerts_result.value or []):
+                if alert.properties and alert.properties.definition:
+                    anomalies.append({
+                        "id": alert.id,
+                        "name": alert.name,
+                        "status": str(alert.properties.status) if alert.properties.status else None,
+                        "time_created": (
+                            alert.properties.time_created.isoformat()
+                            if alert.properties.time_created else None
+                        ),
+                        "details": str(alert.properties.details) if alert.properties.details else None,
+                    })
+    except HttpResponseError as e:
+        raise ValueError(f"Cost anomaly fetch failed: {e.message}")
 
     await _update_last_synced("cost_anomaly_alerting")
     return {"scope": scope, "anomalies": anomalies, "count": len(anomalies)}
@@ -428,28 +447,29 @@ async def get_advisor_recommendations() -> Dict[str, Any]:
     Fetch Azure Advisor Cost category recommendations for the subscription.
     Requires feature 'ai_cost_recommendations' enabled.
     """
-    from azure.mgmt.advisor import AdvisorManagementClient
+    from azure.mgmt.advisor.aio import AdvisorManagementClient
+    from azure.core.exceptions import HttpResponseError
 
     conn = await _require_connection_and_feature("ai_cost_recommendations")
     credential = _build_credential(conn)
-    client = AdvisorManagementClient(credential, conn.subscription_id)
 
     recommendations = []
     try:
-        for rec in client.recommendations.list():
-            if rec.category and str(rec.category).lower() == "cost":
-                recommendations.append({
-                    "id": rec.id,
-                    "name": rec.name,
-                    "category": str(rec.category),
-                    "impact": str(rec.impact) if rec.impact else None,
-                    "short_description": (
-                        rec.short_description.problem if rec.short_description else None
-                    ),
-                    "extended_properties": rec.extended_properties or {},
-                })
-    except Exception as e:
-        logger.warning(f"Advisor recommendations fetch failed: {e}")
+        async with credential, AdvisorManagementClient(credential, conn.subscription_id) as client:
+            async for rec in client.recommendations.list():
+                if rec.category and str(rec.category).lower() == "cost":
+                    recommendations.append({
+                        "id": rec.id,
+                        "name": rec.name,
+                        "category": str(rec.category),
+                        "impact": str(rec.impact) if rec.impact else None,
+                        "short_description": (
+                            rec.short_description.problem if rec.short_description else None
+                        ),
+                        "extended_properties": rec.extended_properties or {},
+                    })
+    except HttpResponseError as e:
+        raise ValueError(f"Advisor recommendations fetch failed: {e.message}")
 
     await _update_last_synced("ai_cost_recommendations")
     return {

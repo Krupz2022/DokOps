@@ -75,3 +75,173 @@ def handle_cmd(state: dict, sources: dict, test: bool) -> dict:
     if rc == 0:
         return {"result": True, "changes": {"executed": name}, "comment": out[:500]}
     return {"result": False, "changes": {}, "comment": f"exit {rc}: {out[:500]}"}
+
+
+import shutil
+
+
+# ── package helpers (split out so tests can monkeypatch) ──────────────────────
+def _pkg_manager() -> str:
+    if IS_WINDOWS:
+        return "winget" if shutil.which("winget") else ("choco" if shutil.which("choco") else "none")
+    if shutil.which("apt-get"):
+        return "dpkg"
+    if shutil.which("dnf") or shutil.which("yum"):
+        return "rpm"
+    return "none"
+
+
+def _pkg_installed(name: str) -> bool:
+    mgr = _pkg_manager()
+    if mgr == "dpkg":
+        rc, _ = _run(["dpkg", "-s", name])
+    elif mgr == "rpm":
+        rc, _ = _run(["rpm", "-q", name])
+    elif mgr == "winget":
+        rc, out = _run(["winget", "list", "--id", name, "--exact"])
+        return rc == 0 and name.lower() in out.lower()
+    elif mgr == "choco":
+        rc, out = _run(["choco", "list", "--local-only", name])
+        return rc == 0 and name.lower() in out.lower()
+    else:
+        return False
+    return rc == 0
+
+
+def _pkg_install(name: str) -> tuple[int, str]:
+    mgr = _pkg_manager()
+    cmds = {
+        "dpkg": ["apt-get", "install", "-y", name],
+        "rpm": [("dnf" if shutil.which("dnf") else "yum"), "install", "-y", name],
+        "winget": ["winget", "install", "--id", name, "--exact", "--silent",
+                   "--accept-package-agreements", "--accept-source-agreements"],
+        "choco": ["choco", "install", name, "-y"],
+    }
+    return _run(cmds.get(mgr, ["false"]))
+
+
+def _pkg_remove(name: str) -> tuple[int, str]:
+    mgr = _pkg_manager()
+    cmds = {
+        "dpkg": ["apt-get", "remove", "-y", name],
+        "rpm": [("dnf" if shutil.which("dnf") else "yum"), "remove", "-y", name],
+        "winget": ["winget", "uninstall", "--id", name, "--exact", "--silent"],
+        "choco": ["choco", "uninstall", name, "-y"],
+    }
+    return _run(cmds.get(mgr, ["false"]))
+
+
+def handle_pkg(state: dict, sources: dict, test: bool) -> dict:
+    name = state["name"]
+    ensure = state.get("ensure", "present")
+    installed = _pkg_installed(name)
+
+    if ensure in ("present", "latest"):
+        if installed and ensure == "present":
+            return {"result": True, "changes": {}, "comment": "already installed"}
+        if test:
+            return {"result": None, "changes": {"old": "absent" if not installed else "old", "new": "installed"},
+                    "comment": "would install"}
+        rc, out = _pkg_install(name)
+        if rc == 0:
+            return {"result": True, "changes": {"old": "absent", "new": "installed"}, "comment": "installed"}
+        return {"result": False, "changes": {}, "comment": f"install failed: {out[:300]}"}
+
+    if ensure == "absent":
+        if not installed:
+            return {"result": True, "changes": {}, "comment": "already absent"}
+        if test:
+            return {"result": None, "changes": {"old": "installed", "new": "absent"}, "comment": "would remove"}
+        rc, out = _pkg_remove(name)
+        if rc == 0:
+            return {"result": True, "changes": {"old": "installed", "new": "absent"}, "comment": "removed"}
+        return {"result": False, "changes": {}, "comment": f"remove failed: {out[:300]}"}
+
+    return {"result": False, "changes": {}, "comment": f"unknown ensure '{ensure}'"}
+
+
+# ── service helpers ───────────────────────────────────────────────────────────
+def _svc_is_active(name: str) -> bool:
+    if IS_WINDOWS:
+        rc, out = _run(["powershell", "-NonInteractive", "-Command",
+                        f"(Get-Service -Name '{name}').Status"])
+        return rc == 0 and "running" in out.lower()
+    rc, out = _run(["systemctl", "is-active", name])
+    return out.strip() == "active"
+
+
+def _svc_is_enabled(name: str) -> bool:
+    if IS_WINDOWS:
+        rc, out = _run(["powershell", "-NonInteractive", "-Command",
+                        f"(Get-Service -Name '{name}').StartType"])
+        return rc == 0 and "automatic" in out.lower()
+    rc, out = _run(["systemctl", "is-enabled", name])
+    return out.strip() == "enabled"
+
+
+def _svc_start(name: str) -> tuple[int, str]:
+    return _run(["powershell", "-NonInteractive", "-Command", f"Start-Service '{name}'"]) if IS_WINDOWS \
+        else _run(["systemctl", "start", name])
+
+
+def _svc_stop(name: str) -> tuple[int, str]:
+    return _run(["powershell", "-NonInteractive", "-Command", f"Stop-Service '{name}'"]) if IS_WINDOWS \
+        else _run(["systemctl", "stop", name])
+
+
+def _svc_set_enabled(name: str, enabled: bool) -> tuple[int, str]:
+    if IS_WINDOWS:
+        kind = "Automatic" if enabled else "Manual"
+        return _run(["powershell", "-NonInteractive", "-Command",
+                     f"Set-Service -Name '{name}' -StartupType {kind}"])
+    return _run(["systemctl", "enable" if enabled else "disable", name])
+
+
+def _svc_restart(name: str) -> tuple[int, str]:
+    return _run(["powershell", "-NonInteractive", "-Command", f"Restart-Service '{name}'"]) if IS_WINDOWS \
+        else _run(["systemctl", "restart", name])
+
+
+def handle_service(state: dict, sources: dict, test: bool) -> dict:
+    name = state["name"]
+    ensure = state.get("ensure", "running")
+    want_active = ensure == "running"
+    changes: dict = {}
+
+    is_active = _svc_is_active(name)
+    if is_active != want_active:
+        if test:
+            changes["active"] = {"old": is_active, "new": want_active}
+        else:
+            rc, out = (_svc_start(name) if want_active else _svc_stop(name))
+            if rc != 0:
+                return {"result": False, "changes": {}, "comment": f"service change failed: {out[:300]}"}
+            changes["active"] = {"old": is_active, "new": want_active}
+
+    if "enabled" in state:
+        want_enabled = bool(state["enabled"])
+        is_enabled = _svc_is_enabled(name)
+        if is_enabled != want_enabled:
+            if test:
+                changes["enabled"] = {"old": is_enabled, "new": want_enabled}
+            else:
+                rc, out = _svc_set_enabled(name, want_enabled)
+                if rc != 0:
+                    return {"result": False, "changes": {}, "comment": f"enable change failed: {out[:300]}"}
+                changes["enabled"] = {"old": is_enabled, "new": want_enabled}
+
+    if not changes:
+        return {"result": True, "changes": {}, "comment": "service in desired state"}
+    return {"result": None if test else True, "changes": changes,
+            "comment": "would change service" if test else "service reconciled"}
+
+
+def _service_react(state: dict, test: bool) -> dict:
+    """watch reaction: restart the service."""
+    name = state["name"]
+    if test:
+        return {"result": None, "changes": {"restart": "would restart (watch)"}, "comment": "would restart"}
+    rc, out = _svc_restart(name)
+    if rc == 0:
+        return {"result": True, "changes": {"restart": "restarted (watch)"}, "comment": "restarted"}
+    return {"result": False, "changes": {}, "comment": f"restart failed: {out[:300]}"}

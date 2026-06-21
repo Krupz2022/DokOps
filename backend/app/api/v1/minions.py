@@ -11,6 +11,9 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_async_db, get_current_user, require_god_mode
+from app.api import deps as _deps
+from app.services.blueprint_service import compile_blueprint
+from app.models.blueprint import BlueprintRun, ResourceResult
 from app.core.db import AsyncSessionLocal
 from app.models.audit import AuditLog
 from app.models.minion import Minion, MinionJob
@@ -267,6 +270,78 @@ async def delete_service_override(
     await db.delete(svc)
     await db.commit()
     return {"deleted": True}
+
+
+# ── Blueprint endpoints ─────────────────────────────────────────────────────
+
+@router.get("/blueprint/runs/{run_id}")
+async def get_blueprint_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    run = await db.get(BlueprintRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    results = (await db.exec(select(ResourceResult).where(ResourceResult.run_id == run_id))).all()
+    return {"run": run, "results": results}
+
+
+@router.get("/{minion_id}/blueprint")
+async def preview_blueprint(
+    minion_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    states, sources = await compile_blueprint(minion_id, db)
+    return {"resources": states, "sources": sources}
+
+
+@router.post("/{minion_id}/blueprint/run")
+async def run_blueprint_endpoint(
+    minion_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user),
+):
+    test = bool(body.get("test", True))
+    if not test:
+        # Apply path: enforce God Mode explicitly (dependency can't be conditional).
+        if not _deps.is_god_mode_active(getattr(current_user, "id", 0)):
+            raise HTTPException(status_code=403, detail="God Mode required to apply a blueprint")
+
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+
+    states, sources = await compile_blueprint(minion_id, db)
+    run = BlueprintRun(minion_id=minion_id, actor=current_user.username, test=test, status="running")
+    db.add(run)
+    if not test:
+        db.add(AuditLog(
+            actor=current_user.username,
+            action="apply_blueprint",
+            resource=f"minion/{minion_id}",
+            result="SUCCESS",
+            mode="GOD",
+            source="SYSTEM",
+        ))
+    await db.commit()
+    await db.refresh(run)
+
+    try:
+        await manager.dispatch_blueprint(minion_id, run.id, states, sources, test)
+    except Exception as e:  # noqa: BLE001 — surface dispatch failure to caller
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"run_id": run.id, "test": test}
+
+
+@router.get("/{minion_id}/blueprint/runs")
+async def list_blueprint_runs(
+    minion_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    return (await db.exec(select(BlueprintRun).where(BlueprintRun.minion_id == minion_id))).all()
 
 
 # ── WebSocket ───────────────────────────────────────────────────────────────

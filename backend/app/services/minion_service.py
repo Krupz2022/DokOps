@@ -225,7 +225,7 @@ class MinionConnectionManager:
         ws = self._connections.get(minion_id)
         if not ws:
             raise RuntimeError(f"Minion {minion_id} is not connected")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_blueprints[run_id] = future
         await ws.send_json({

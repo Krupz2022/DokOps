@@ -125,3 +125,19 @@ async def delete_assignment(assignment_id: str, db: AsyncSession = Depends(get_a
     await db.delete(asn)
     await db.commit()
     return {"deleted": True}
+
+
+@router.get("/{blueprint_id}/sources")
+async def list_sources(blueprint_id: str, db: AsyncSession = Depends(get_async_db),
+                       _: User = Depends(get_current_user)):
+    if not await db.get(Blueprint, blueprint_id):
+        raise HTTPException(status_code=404, detail="Blueprint not found")
+    return (await db.exec(select(BlueprintSource).where(BlueprintSource.blueprint_id == blueprint_id))).all()
+
+
+@router.get("/{blueprint_id}/assignments")
+async def list_assignments(blueprint_id: str, db: AsyncSession = Depends(get_async_db),
+                           _: User = Depends(get_current_user)):
+    if not await db.get(Blueprint, blueprint_id):
+        raise HTTPException(status_code=404, detail="Blueprint not found")
+    return (await db.exec(select(BlueprintAssignment).where(BlueprintAssignment.blueprint_id == blueprint_id))).all()

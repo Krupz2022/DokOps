@@ -52,3 +52,21 @@ def test_upsert_source_and_assignment(admin_client):
     a = admin_client.post(f"/api/v1/blueprints/{sid}/assignments", json={"scope_type": "minion", "scope_id": "web-01"})
     assert a.status_code == 200
     assert a.json()["scope_id"] == "web-01"
+
+
+def test_list_sources_and_assignments(admin_client):
+    sid = admin_client.post("/api/v1/blueprints/", json={"name": "web", "yaml_body": "resources: []"}).json()["id"]
+    admin_client.put(f"/api/v1/blueprints/{sid}/sources/nginx.conf", json={"content": "server {}"})
+    admin_client.post(f"/api/v1/blueprints/{sid}/assignments", json={"scope_type": "minion", "scope_id": "web-01"})
+
+    srcs = admin_client.get(f"/api/v1/blueprints/{sid}/sources")
+    assert srcs.status_code == 200
+    assert [s["name"] for s in srcs.json()] == ["nginx.conf"]
+
+    asns = admin_client.get(f"/api/v1/blueprints/{sid}/assignments")
+    assert asns.status_code == 200
+    assert asns.json()[0]["scope_id"] == "web-01"
+
+
+def test_list_sources_404_for_missing_blueprint(admin_client):
+    assert admin_client.get("/api/v1/blueprints/nope/sources").status_code == 404

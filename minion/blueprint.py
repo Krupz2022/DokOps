@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 
@@ -75,9 +76,6 @@ def handle_cmd(state: dict, sources: dict, test: bool) -> dict:
     if rc == 0:
         return {"result": True, "changes": {"executed": name}, "comment": out[:500]}
     return {"result": False, "changes": {}, "comment": f"exit {rc}: {out[:500]}"}
-
-
-import shutil
 
 
 # ── package helpers (split out so tests can monkeypatch) ──────────────────────

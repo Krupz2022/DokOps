@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Box, Wrench, FileText, Settings, BookOpen,
   ShieldAlert, MessageSquare, Database, Plug, Network, Orbit, GitBranch, Workflow, Server,
   Building2, ShieldCheck, ArrowRightCircle, Clock, BellDot, Vault, LogOut, BarChart2,
-  ExternalLink, Sun, Moon,
+  ExternalLink, Sun, Moon, ScrollText,
 } from "lucide-react";
 import { useTheme } from "../ui/ThemeProvider";
 import { cn } from "../../lib/utils";
@@ -44,6 +44,7 @@ function useNavSections(ragEnabled: boolean): { label: string; items: NavItem[] 
         { name: "Clusters",       path: "/clusters",                        icon: Orbit },
         { name: "Vault",          path: "/vault",                           icon: Vault },
         { name: "Minions",        path: "/infrastructure/minions",          icon: Server },
+        { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
         { name: "Groups",  path: "/infrastructure/organisations",    icon: Building2 },
       ],
     },

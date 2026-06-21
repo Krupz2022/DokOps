@@ -35,8 +35,12 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
   useEffect(() => { loadPreview(); loadRuns(); }, [minionId]);
 
   async function fetchRunResults(runId: string) {
-    const r = await api.get(`/minions/blueprint/runs/${runId}`);
-    setResults((r.data as { results: ResourceResult[] }).results ?? []);
+    try {
+      const r = await api.get(`/minions/blueprint/runs/${runId}`);
+      setResults((r.data as { results: ResourceResult[] }).results ?? []);
+    } catch {
+      toast("Failed to load run results", "error");
+    }
   }
 
   async function runBlueprint(test: boolean) {

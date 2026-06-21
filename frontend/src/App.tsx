@@ -24,6 +24,7 @@ const MCPServers = lazy(() => import("./pages/MCPServers"));
 const Workflows = lazy(() => import("./pages/Workflows"));
 const Minions = lazy(() => import("./pages/Minions"));
 const MinionDetail = lazy(() => import("./pages/MinionDetail"));
+const Blueprints = lazy(() => import("./pages/Blueprints"));
 const Clusters = lazy(() => import("./pages/Clusters"));
 const Vault = lazy(() => import("./pages/Vault"));
 const Organisations = lazy(() => import("./pages/Organisations"));
@@ -121,6 +122,7 @@ function App() {
                                             <Route path="/workflows" element={<AppLayout><Workflows /></AppLayout>} />
                                             <Route path="/infrastructure/minions" element={<AppLayout><Minions /></AppLayout>} />
                                             <Route path="/infrastructure/minions/:minionId" element={<AppLayout><MinionDetail /></AppLayout>} />
+                                            <Route path="/infrastructure/blueprints" element={<AdminGuard><AppLayout><Blueprints /></AppLayout></AdminGuard>} />
                                             <Route path="/infrastructure/organisations" element={<AppLayout><Organisations /></AppLayout>} />
                                             <Route path="/patching" element={<AppLayout><Patching /></AppLayout>} />
                                             <Route path="/patching/pipelines" element={<AppLayout><Pipelines /></AppLayout>} />

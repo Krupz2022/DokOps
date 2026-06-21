@@ -16,6 +16,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+try:
+    import blueprint as blueprint_engine
+except ImportError:
+    blueprint_engine = None  # type: ignore[assignment]
+
 IS_WINDOWS = sys.platform == "win32"
 CONFIG_FILE = Path(
     r"C:\ProgramData\DokOps\minion\config.env" if IS_WINDOWS
@@ -354,6 +359,74 @@ async def run_job(ws, job_id: str, cmd: str, timeout: int) -> None:
     log.info("Job %s cleaned up (exit_code=%s)", job_id, exit_code)
 
 
+async def handle_messages(ws) -> None:
+    """Process inbound messages until the socket closes (extracted for testability)."""
+    async for raw in ws:
+        msg = json.loads(raw)
+        t = msg.get("type")
+        if t == "blueprint":
+            results = []
+            if blueprint_engine is not None:
+                try:
+                    results = blueprint_engine.run_blueprint(
+                        msg.get("resources", []), msg.get("sources", {}), bool(msg.get("test", True))
+                    )
+                except Exception as e:  # noqa: BLE001 — report compile/order failures upstream
+                    results = [{"id": "_compile", "result": False, "changes": {}, "comment": str(e)}]
+            await ws.send(json.dumps({"type": "blueprint_result", "run_id": msg.get("run_id"), "results": results}))
+        elif t == "welcome":
+            log.info("Status: %s", msg.get("status"))
+        elif t == "approved":
+            log.info("Approved by master — ready for jobs")
+        elif t == "job":
+            asyncio.ensure_future(run_job(ws, msg["job_id"], msg["cmd"], msg.get("timeout", 60)))
+        elif t == "ping":
+            await ws.send(json.dumps({"type": "pong"}))
+        elif t == "scan_patches":
+            async def _rescan():
+                pd = collect_patches()
+                await ws.send(json.dumps({"type": "patches", "data": pd}))
+                del pd
+            asyncio.ensure_future(_rescan())
+
+        elif t == "discover_services":
+            async def _discover():
+                def _run(cmd: str) -> str:
+                    try:
+                        return subprocess.check_output(
+                            cmd, shell=True, stderr=subprocess.DEVNULL,
+                            text=True, timeout=15
+                        )
+                    except Exception:
+                        return ""
+                if IS_WINDOWS:
+                    netstat_out = _run("netstat -ano")
+                    services_out = _run(
+                        'powershell -Command "Get-Service | Where-Object {$_.Status -eq \'Running\'}'
+                        ' | Select-Object -Property Name,DisplayName | ConvertTo-Json -Compress"'
+                    )
+                    docker_out = _run("docker ps --format '{{json .}}'")
+                    await ws.send(json.dumps({
+                        "type": "discover_services_result",
+                        "platform": "windows",
+                        "netstat": netstat_out,
+                        "services": services_out,
+                        "docker": docker_out,
+                    }))
+                else:
+                    ss_out = _run("ss -tlnp")
+                    systemctl_out = _run("systemctl list-units --type=service --state=running --no-pager")
+                    docker_out = _run("docker ps --format '{{json .}}'")
+                    await ws.send(json.dumps({
+                        "type": "discover_services_result",
+                        "platform": "linux",
+                        "ss": ss_out,
+                        "systemctl": systemctl_out,
+                        "docker": docker_out,
+                    }))
+            asyncio.ensure_future(_discover())
+
+
 async def connect_and_run(url: str, token: Optional[str], org: str = "", env: str = "") -> None:
     import websockets
 
@@ -411,60 +484,7 @@ async def connect_and_run(url: str, token: Optional[str], org: str = "", env: st
         asyncio.ensure_future(patch_scanner())
 
         # Message loop
-        async for raw in ws:
-            msg = json.loads(raw)
-            t = msg.get("type")
-            if t == "welcome":
-                log.info("Status: %s", msg.get("status"))
-            elif t == "approved":
-                log.info("Approved by master — ready for jobs")
-            elif t == "job":
-                asyncio.ensure_future(run_job(ws, msg["job_id"], msg["cmd"], msg.get("timeout", 60)))
-            elif t == "ping":
-                await ws.send(json.dumps({"type": "pong"}))
-            elif t == "scan_patches":
-                async def _rescan():
-                    pd = collect_patches()
-                    await ws.send(json.dumps({"type": "patches", "data": pd}))
-                    del pd
-                asyncio.ensure_future(_rescan())
-
-            elif t == "discover_services":
-                async def _discover():
-                    def _run(cmd: str) -> str:
-                        try:
-                            return subprocess.check_output(
-                                cmd, shell=True, stderr=subprocess.DEVNULL,
-                                text=True, timeout=15
-                            )
-                        except Exception:
-                            return ""
-                    if IS_WINDOWS:
-                        netstat_out = _run("netstat -ano")
-                        services_out = _run(
-                            'powershell -Command "Get-Service | Where-Object {$_.Status -eq \'Running\'}'
-                            ' | Select-Object -Property Name,DisplayName | ConvertTo-Json -Compress"'
-                        )
-                        docker_out = _run("docker ps --format '{{json .}}'")
-                        await ws.send(json.dumps({
-                            "type": "discover_services_result",
-                            "platform": "windows",
-                            "netstat": netstat_out,
-                            "services": services_out,
-                            "docker": docker_out,
-                        }))
-                    else:
-                        ss_out = _run("ss -tlnp")
-                        systemctl_out = _run("systemctl list-units --type=service --state=running --no-pager")
-                        docker_out = _run("docker ps --format '{{json .}}'")
-                        await ws.send(json.dumps({
-                            "type": "discover_services_result",
-                            "platform": "linux",
-                            "ss": ss_out,
-                            "systemctl": systemctl_out,
-                            "docker": docker_out,
-                        }))
-                asyncio.ensure_future(_discover())
+        await handle_messages(ws)
 
 
 async def main() -> None:

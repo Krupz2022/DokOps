@@ -40,7 +40,6 @@ def test_handle_result_persists_state_results(isolated_session, monkeypatch):
 
     asyncio.get_event_loop().run_until_complete(go())
 
-    rows = isolated_session.query(ResourceResult).all() if hasattr(isolated_session, "query") else None
     from sqlmodel import select as _select
     persisted = isolated_session.exec(_select(ResourceResult).where(ResourceResult.run_id == "r1")).all()
     assert len(persisted) == 1

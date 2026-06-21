@@ -260,7 +260,7 @@ def _deps(state: dict) -> list[str]:
 def order_resources(states: list[dict]) -> list[dict]:
     """Topologically order by require+watch. Raises ValueError on cycle/unknown id."""
     by_id = {s["id"]: s for s in states}
-    visited: dict[str, int] = {}  # 0=visiting, 1=done
+    visited: dict[str, int] = {}  # 1 = done (visiting tracked via the stack set)
     out: list[dict] = []
 
     def visit(sid: str, stack: set[str]) -> None:

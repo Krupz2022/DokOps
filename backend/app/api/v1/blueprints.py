@@ -1,6 +1,4 @@
 # backend/app/api/v1/blueprints.py
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select

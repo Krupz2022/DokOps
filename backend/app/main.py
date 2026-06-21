@@ -151,12 +151,12 @@ async def lifespan(app: FastAPI):
     if _os_seed.path.isdir(_blueprints_dir):
         from app.core.blueprint_seed import seed_blueprints_from_dir
         from app.core.db import AsyncSessionLocal as _AsyncSessionLocal_seed
-        async with _AsyncSessionLocal_seed() as _db_seed:
-            try:
+        try:
+            async with _AsyncSessionLocal_seed() as _db_seed:
                 _n = await seed_blueprints_from_dir(_blueprints_dir, _db_seed)
                 logging.getLogger(__name__).info("Seeded %d blueprint(s) from %s", _n, _blueprints_dir)
-            except Exception as _e:  # noqa: BLE001 — seeding must never block startup
-                logging.getLogger(__name__).warning("Blueprint seed failed: %s", _e)
+        except Exception as _e:  # noqa: BLE001 — seeding must never block startup
+            logging.getLogger(__name__).warning("Blueprint seed failed: %s", _e)
 
     # Add backend/bin/ to PATH so installed CLI tools are discoverable
     import os

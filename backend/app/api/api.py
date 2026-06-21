@@ -58,3 +58,5 @@ from app.api.v1 import analytics as analytics_router
 api_router.include_router(analytics_router.router, prefix="/analytics", tags=["Analytics"])
 from app.api.v1 import knowledge_sources as knowledge_sources_router
 api_router.include_router(knowledge_sources_router.router, prefix="/knowledge-sources", tags=["knowledge-sources"])
+from app.api.v1 import blueprints as blueprints_router
+api_router.include_router(blueprints_router.router, prefix="/blueprints", tags=["blueprints"])

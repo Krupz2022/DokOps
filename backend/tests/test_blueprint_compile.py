@@ -28,8 +28,8 @@ def test_compile_merges_org_then_group(isolated_session, async_session):
     isolated_session.add(m); isolated_session.commit()
     isolated_session.add(MinionGroupMember(group_id=grp.id, minion_id="web-01"))
 
-    sf_org = Blueprint(name="base", yaml_body="states:\n  - id: pkg\n    type: pkg\n    name: nginx\n    ensure: present\n  - id: conf\n    type: file\n    path: /x\n    source: nginx.conf")
-    sf_grp = Blueprint(name="mumbai", yaml_body="states:\n  - id: conf\n    type: file\n    path: /x\n    source: nginx.conf\n    mode: '0640'")
+    sf_org = Blueprint(name="base", yaml_body="resources:\n  - id: pkg\n    type: pkg\n    name: nginx\n    ensure: present\n  - id: conf\n    type: file\n    path: /x\n    source: nginx.conf")
+    sf_grp = Blueprint(name="mumbai", yaml_body="resources:\n  - id: conf\n    type: file\n    path: /x\n    source: nginx.conf\n    mode: '0640'")
     isolated_session.add(sf_org); isolated_session.add(sf_grp); isolated_session.commit()
     isolated_session.refresh(sf_org); isolated_session.refresh(sf_grp)
     isolated_session.add(BlueprintSource(blueprint_id=sf_org.id, name="nginx.conf", content="ORG"))

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import yaml
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.models.minion import Minion
+from app.models.patch import MinionGroup, MinionGroupMember, Organisation
+from app.models.blueprint import BlueprintSource, BlueprintAssignment, Blueprint
 
 
 def merge_blueprints(ordered_yaml_bodies: list[str]) -> list[dict]:
@@ -30,14 +36,6 @@ def collect_referenced_sources(
     return {name: content for name, content in sources_by_name.items() if name in wanted}
 
 
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
-
-from app.models.minion import Minion
-from app.models.patch import MinionGroup, MinionGroupMember, Organisation
-from app.models.blueprint import BlueprintSource, BlueprintAssignment, Blueprint
-
-
 async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict], dict[str, str]]:
     """Gather org→group→minion assignments, merge, and bundle referenced sources."""
     minion = await db.get(Minion, minion_id)
@@ -53,11 +51,11 @@ async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict
             select(MinionGroupMember).where(MinionGroupMember.minion_id == minion_id)
         )).all()
     ]
-    org_ids: set[str] = set()
+    org_ids: list[str] = []
     for gid in group_ids:
         grp = await db.get(MinionGroup, gid)
-        if grp:
-            org_ids.add(grp.org_id)
+        if grp and grp.org_id not in org_ids:
+            org_ids.append(grp.org_id)
 
     for oid in org_ids:
         scope_ids.append(("org", oid))

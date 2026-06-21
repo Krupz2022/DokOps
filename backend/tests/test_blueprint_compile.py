@@ -16,7 +16,7 @@ def async_session(isolated_session):
     engine = create_async_engine(url, connect_args={"check_same_thread": False})
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     yield maker
-    asyncio.get_event_loop().run_until_complete(engine.dispose())
+    asyncio.run(engine.dispose())
 
 
 def test_compile_merges_org_then_group(isolated_session, async_session):
@@ -42,7 +42,17 @@ def test_compile_merges_org_then_group(isolated_session, async_session):
         async with async_session() as db:
             return await compile_blueprint("web-01", db)
 
-    states, sources = asyncio.get_event_loop().run_until_complete(run())
+    states, sources = asyncio.run(run())
     assert [s["id"] for s in states] == ["pkg", "conf"]
     assert next(s for s in states if s["id"] == "conf")["mode"] == "0640"  # group won
     assert sources == {"nginx.conf": "MUM"}  # group source bundled (its file-state survived)
+
+
+def test_compile_unknown_minion_returns_empty(isolated_session, async_session):
+    async def run():
+        async with async_session() as db:
+            return await compile_blueprint("nonexistent-id", db)
+
+    states, sources = asyncio.run(run())
+    assert states == []
+    assert sources == {}

@@ -36,5 +36,5 @@ def test_collect_only_referenced_sources():
 
 
 def test_merge_ignores_empty_body():
-    merged = merge_blueprints(["", "states:\n  - id: a\n    type: cmd\n    name: 'echo hi'"])
+    merged = merge_blueprints(["", "resources:\n  - id: a\n    type: cmd\n    name: 'echo hi'"])
     assert [s["id"] for s in merged] == ["a"]

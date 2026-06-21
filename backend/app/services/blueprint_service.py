@@ -11,8 +11,7 @@ def merge_blueprints(ordered_yaml_bodies: list[str]) -> list[dict]:
         if not body or not body.strip():
             continue
         doc = yaml.safe_load(body) or {}
-        # Support both 'resources' and 'states' keys
-        states_list = doc.get("resources", []) or doc.get("states", []) or []
+        states_list = doc.get("resources", []) or []
         for state in states_list:
             sid = state.get("id")
             if not sid:

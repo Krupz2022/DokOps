@@ -381,6 +381,9 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                         db.add(m)
                         await db.commit()
 
+            elif msg_type == "blueprint_result":
+                await manager.handle_blueprint_result(data["run_id"], data.get("results", []))
+
             elif msg_type == "discover_services_result":
                 platform_name = data.get("platform", "linux")
                 if platform_name == "windows":

@@ -70,6 +70,7 @@ class MinionConnectionManager:
         self._connections: dict[str, WebSocket] = {}
         self._pending_jobs: dict[str, asyncio.Future] = {}
         self._job_chunks: dict[str, list[str]] = {}
+        self._pending_blueprints: dict[str, asyncio.Future] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -207,6 +208,66 @@ class MinionConnectionManager:
                 await ws.send_json({"type": "approved"})
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Blueprint dispatch
+    # ------------------------------------------------------------------
+
+    async def dispatch_blueprint(
+        self,
+        minion_id: str,
+        run_id: str,
+        states: list,
+        sources: dict,
+        test: bool,
+        timeout: int = 300,
+    ) -> dict:
+        ws = self._connections.get(minion_id)
+        if not ws:
+            raise RuntimeError(f"Minion {minion_id} is not connected")
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_blueprints[run_id] = future
+        await ws.send_json({
+            "type": "blueprint", "run_id": run_id, "test": test,
+            "resources": states, "sources": sources,
+        })
+        try:
+            return await asyncio.wait_for(future, timeout=timeout + 10)
+        except asyncio.TimeoutError:
+            self._pending_blueprints.pop(run_id, None)
+            async with AsyncSessionLocal() as db:
+                from app.models.blueprint import BlueprintRun
+                run = await db.get(BlueprintRun, run_id)
+                if run:
+                    run.status = "failed"
+                    run.completed_at = utcnow()
+                    db.add(run)
+                    await db.commit()
+            raise
+
+    async def handle_blueprint_result(self, run_id: str, results: list) -> None:
+        import json as _json
+        from app.models.blueprint import BlueprintRun, ResourceResult
+        any_failed = any(r.get("result") is False for r in results)
+        async with AsyncSessionLocal() as db:
+            for r in results:
+                db.add(ResourceResult(
+                    run_id=run_id,
+                    resource_id=r.get("id", "?"),
+                    result=r.get("result"),
+                    changes=_json.dumps(r.get("changes", {})),
+                    comment=r.get("comment", ""),
+                ))
+            run = await db.get(BlueprintRun, run_id)
+            if run:
+                run.status = "failed" if any_failed else "done"
+                run.completed_at = utcnow()
+                db.add(run)
+            await db.commit()
+        fut = self._pending_blueprints.pop(run_id, None)
+        if fut and not fut.done():
+            fut.set_result({"results": results})
 
 
 # ---------------------------------------------------------------------------

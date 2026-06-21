@@ -143,6 +143,21 @@ async def lifespan(app: FastAPI):
     await _run_patch_migrations()   # ← run AFTER create_db_and_tables; IF NOT EXISTS makes this safe on fresh DBs too
     await init_db()
 
+    # Seed blueprints from scope-encoded directory (if present). Errors are
+    # caught and logged so a bad seed file never blocks application startup.
+    import os as _os_seed
+    from pathlib import Path as _Path_seed
+    _blueprints_dir = str(_Path_seed(__file__).resolve().parent / "blueprints")
+    if _os_seed.path.isdir(_blueprints_dir):
+        from app.core.blueprint_seed import seed_blueprints_from_dir
+        from app.core.db import AsyncSessionLocal as _AsyncSessionLocal_seed
+        async with _AsyncSessionLocal_seed() as _db_seed:
+            try:
+                _n = await seed_blueprints_from_dir(_blueprints_dir, _db_seed)
+                logging.getLogger(__name__).info("Seeded %d blueprint(s) from %s", _n, _blueprints_dir)
+            except Exception as _e:  # noqa: BLE001 — seeding must never block startup
+                logging.getLogger(__name__).warning("Blueprint seed failed: %s", _e)
+
     # Add backend/bin/ to PATH so installed CLI tools are discoverable
     import os
     from pathlib import Path

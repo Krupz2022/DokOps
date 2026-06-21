@@ -37,4 +37,5 @@ def test_service_running_starts_when_inactive(monkeypatch):
     monkeypatch.setattr(h, "_svc_start", lambda name: (started.setdefault(name, True), (0, ""))[1])
     res = h.handle_service({"type": "service", "name": "nginx", "ensure": "running"}, {}, test=False)
     assert res["result"] is True
-    assert "start" in str(res["changes"]).lower() or started == {"nginx": True}
+    assert started == {"nginx": True}
+    assert res["changes"]["active"]["new"] is True

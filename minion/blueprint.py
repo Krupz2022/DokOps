@@ -243,3 +243,77 @@ def _service_react(state: dict, test: bool) -> dict:
     if rc == 0:
         return {"result": True, "changes": {"restart": "restarted (watch)"}, "comment": "restarted"}
     return {"result": False, "changes": {}, "comment": f"restart failed: {out[:300]}"}
+
+
+HANDLERS = {
+    "pkg": lambda s, src, t: handle_pkg(s, src, t),
+    "service": lambda s, src, t: handle_service(s, src, t),
+    "file": lambda s, src, t: handle_file(s, src, t),
+    "cmd": lambda s, src, t: handle_cmd(s, src, t),
+}
+
+
+def _deps(state: dict) -> list[str]:
+    return list(state.get("require") or []) + list(state.get("watch") or [])
+
+
+def order_resources(states: list[dict]) -> list[dict]:
+    """Topologically order by require+watch. Raises ValueError on cycle/unknown id."""
+    by_id = {s["id"]: s for s in states}
+    visited: dict[str, int] = {}  # 0=visiting, 1=done
+    out: list[dict] = []
+
+    def visit(sid: str, stack: set[str]) -> None:
+        if visited.get(sid) == 1:
+            return
+        if sid in stack:
+            raise ValueError(f"requisite cycle at '{sid}'")
+        if sid not in by_id:
+            raise ValueError(f"unknown requisite id '{sid}'")
+        stack.add(sid)
+        for dep in _deps(by_id[sid]):
+            visit(dep, stack)
+        stack.discard(sid)
+        visited[sid] = 1
+        out.append(by_id[sid])
+
+    for s in states:
+        visit(s["id"], set())
+    return out
+
+
+def run_blueprint(states: list[dict], sources: dict, test: bool) -> list[dict]:
+    ordered = order_resources(states)
+    results: dict[str, dict] = {}
+    failed: set[str] = set()
+    changed: set[str] = set()
+
+    for st in ordered:
+        sid = st["id"]
+        reqs = list(st.get("require") or [])
+        if any(r in failed for r in reqs):
+            res = {"id": sid, "result": False, "changes": {}, "comment": "requisite failed — skipped"}
+        else:
+            handler = HANDLERS.get(st["type"])
+            if not handler:
+                res = {"id": sid, "result": False, "changes": {}, "comment": f"unknown type '{st['type']}'"}
+            else:
+                res = dict(handler(st, sources, test))
+                res["id"] = sid
+                watched = list(st.get("watch") or [])
+                if st["type"] == "service" and any(w in changed for w in watched):
+                    react = _service_react(st, test)
+                    res["changes"] = {**res.get("changes", {}), **react.get("changes", {})}
+                    if res["result"] is True and react["result"] is None:
+                        res["result"] = None
+                    if react["result"] is False:
+                        res["result"] = False
+                    res["comment"] = (res.get("comment", "") + "; " + react.get("comment", "")).strip("; ")
+
+        results[sid] = res
+        if res["result"] is False:
+            failed.add(sid)
+        if res.get("changes"):
+            changed.add(sid)
+
+    return [results[s["id"]] for s in ordered]

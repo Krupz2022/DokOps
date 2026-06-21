@@ -345,3 +345,29 @@ Or directly via the UI:
 2. Filter by group: `web-servers`.
 3. Enter: `sed -i 's/worker_connections 1024/worker_connections 4096/' /etc/nginx/nginx.conf && nginx -t && systemctl reload nginx`
 4. Click **Execute** — results stream per-server.
+
+---
+
+## Blueprints
+
+DokOps minions support declarative **blueprints** (similar to Salt/Uyuni states). A blueprint is YAML that describes desired system resources:
+
+```yaml
+resources:
+  - id: nginx-pkg
+    type: pkg          # pkg | service | file | cmd
+    name: nginx
+    ensure: present
+  - id: nginx-svc
+    type: service
+    name: nginx
+    ensure: running
+    require: [nginx-pkg]
+```
+
+A minion's **blueprint** is the merge of all blueprints assigned to its organisation, its groups, and itself. Later, more-specific definitions win by `id`.
+
+- **Dry-run** (`POST /api/v1/minions/{id}/blueprint/run` with `{"test": true}`) shows what *would* change — open to any user.
+- **Apply** (`{"test": false}`) reconciles the minion and requires **God Mode**; it is audit-logged.
+
+Blueprints live in the DB (UI editor / REST), and can be seeded from `backend/app/blueprints/{orgs,groups,minions}/...` on startup.

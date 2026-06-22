@@ -343,7 +343,68 @@ async def mark_offline_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Live run event relay (blueprint streaming)
+# ---------------------------------------------------------------------------
+
+_TERMINAL = ("done", "error")
+
+
+class RunHub:
+    """In-memory per-run event buffer + fan-out to live SSE subscribers."""
+
+    MAX_LOG_EVENTS = 5000
+    EVICT_AFTER_S = 60
+
+    def __init__(self) -> None:
+        self._buffers: dict[str, list[dict]] = {}
+        self._subs: dict[str, set[asyncio.Queue]] = {}
+
+    def publish(self, run_id: str, event: dict) -> None:
+        buf = self._buffers.setdefault(run_id, [])
+        if event.get("kind") == "log":
+            log_count = sum(1 for e in buf if e.get("kind") == "log")
+            if log_count < self.MAX_LOG_EVENTS:
+                buf.append(event)
+            elif log_count == self.MAX_LOG_EVENTS:
+                buf.append({"kind": "log", "id": event.get("id"), "line": "… output truncated …"})
+        else:
+            buf.append(event)
+        for q in list(self._subs.get(run_id, ())):
+            q.put_nowait(event)
+        if event.get("kind") in _TERMINAL:
+            try:
+                asyncio.get_running_loop().call_later(self.EVICT_AFTER_S, self._evict, run_id)
+            except RuntimeError:
+                pass  # no loop (sync context) — buffer stays until process exit
+
+    async def subscribe(self, run_id: str):
+        q: asyncio.Queue = asyncio.Queue()
+        self._subs.setdefault(run_id, set()).add(q)
+        backlog = list(self._buffers.get(run_id, []))  # snapshot (sync, atomic vs publish)
+        try:
+            for event in backlog:
+                yield event
+                if event.get("kind") in _TERMINAL:
+                    return
+            while True:
+                event = await q.get()
+                yield event
+                if event.get("kind") in _TERMINAL:
+                    return
+        finally:
+            subs = self._subs.get(run_id)
+            if subs:
+                subs.discard(q)
+
+    def _evict(self, run_id: str) -> None:
+        self._buffers.pop(run_id, None)
+        if not self._subs.get(run_id):
+            self._subs.pop(run_id, None)
+
+
+# ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
 manager = MinionConnectionManager()
+run_hub = RunHub()

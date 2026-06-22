@@ -90,37 +90,61 @@ export default function Blueprints() {
   }
 
   return (
-    <div className="p-6 flex gap-6 max-w-6xl mx-auto">
-      {/* Left: list */}
-      <div className="w-64 shrink-0">
-        <div className="flex items-center justify-between mb-3">
-          <h1 className="text-lg font-bold text-foreground">Blueprints</h1>
-          <button onClick={newBlueprint} className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90">+ New</button>
+    <div className="p-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground leading-tight">Blueprints</h1>
+          <p className="text-sm text-muted-foreground mt-1 max-w-xl">
+            Declarative desired-state configs. Assign to an org, group, or minion and apply across your fleet.
+          </p>
         </div>
-        <div className="space-y-1">
-          {list.map(b => (
-            <button key={b.id} onClick={() => selectBlueprint(b.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm ${selectedId === b.id ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted/50"}`}>
-              {b.name}
-            </button>
-          ))}
-          {list.length === 0 && <p className="text-xs text-muted-foreground">No blueprints yet.</p>}
-        </div>
+        <button onClick={newBlueprint}
+          className="shrink-0 px-3.5 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium">
+          + New blueprint
+        </button>
       </div>
 
-      {/* Right: editor */}
-      <div className="flex-1 min-w-0 space-y-4">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="blueprint name"
-          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground" />
-        <div>
-          <label className="text-xs text-muted-foreground uppercase tracking-wider">YAML</label>
-          <textarea value={yamlBody} onChange={e => setYamlBody(e.target.value)} rows={16} spellCheck={false}
-            className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 font-mono text-xs text-foreground" />
-        </div>
-        <button onClick={save} className="px-4 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium">Save</button>
+      <div className="grid grid-cols-1 lg:grid-cols-[15rem_1fr] gap-6 items-start">
+        {/* List */}
+        <aside className="bg-card border border-border rounded-xl p-2">
+          {list.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center px-3 py-8">No blueprints yet.<br />Create one to get started.</p>
+          ) : (
+            <div className="space-y-0.5">
+              {list.map(b => (
+                <button key={b.id} onClick={() => selectBlueprint(b.id)}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${selectedId === b.id ? "bg-primary/10 text-primary font-medium" : "text-foreground hover:bg-muted/50"}`}>
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </aside>
+
+        {/* Editor */}
+        <section className="space-y-5 min-w-0">
+          <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+            <div>
+              <label className="text-xs text-muted-foreground uppercase tracking-wider">Name</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. web-baseline"
+                className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground uppercase tracking-wider">YAML</label>
+              <textarea value={yamlBody} onChange={e => setYamlBody(e.target.value)} rows={18} spellCheck={false}
+                className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 font-mono text-xs text-foreground leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-primary" />
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={save} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium">
+                {selectedId ? "Save changes" : "Create blueprint"}
+              </button>
+              {selectedId && <span className="text-xs text-muted-foreground">Editing “{name}”</span>}
+            </div>
+          </div>
 
         {/* Sources */}
-        <details open className="bg-card border border-border rounded-xl p-4">
+        <details open className="bg-card border border-border rounded-xl p-5">
           <summary className="text-sm font-semibold text-foreground cursor-pointer">Sources ({sources.length})</summary>
           <div className="mt-3 space-y-3">
             {sources.map(s => (
@@ -137,7 +161,7 @@ export default function Blueprints() {
         </details>
 
         {/* Assignments */}
-        <details open className="bg-card border border-border rounded-xl p-4">
+        <details open className="bg-card border border-border rounded-xl p-5">
           <summary className="text-sm font-semibold text-foreground cursor-pointer">Assignments ({assignments.length})</summary>
           <div className="mt-3 space-y-2">
             {assignments.map(a => (
@@ -171,6 +195,7 @@ export default function Blueprints() {
             {!selectedId && <p className="text-[11px] text-muted-foreground">Save the blueprint before assigning.</p>}
           </div>
         </details>
+        </section>
       </div>
     </div>
   );

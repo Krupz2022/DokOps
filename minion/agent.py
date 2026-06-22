@@ -365,15 +365,33 @@ async def handle_messages(ws) -> None:
         msg = json.loads(raw)
         t = msg.get("type")
         if t == "blueprint":
-            results = []
-            if blueprint_engine is not None:
+            run_id = msg.get("run_id")
+            loop = asyncio.get_running_loop()
+
+            def _emit(event, _run_id=run_id):
+                asyncio.run_coroutine_threadsafe(
+                    ws.send(json.dumps({"type": "blueprint_event", "run_id": _run_id, "event": event})),
+                    loop,
+                )
+
+            async def _drive(_msg=msg, _run_id=run_id):
+                if blueprint_engine is None:
+                    await ws.send(json.dumps({"type": "blueprint_event", "run_id": _run_id,
+                                              "event": {"kind": "error", "message": "blueprint engine not installed"}}))
+                    return
                 try:
-                    results = blueprint_engine.run_blueprint(
-                        msg.get("resources", []), msg.get("sources", {}), bool(msg.get("test", True))
+                    results = await asyncio.to_thread(
+                        blueprint_engine.run_blueprint,
+                        _msg.get("resources", []), _msg.get("sources", {}),
+                        bool(_msg.get("test", True)), _emit,
                     )
-                except Exception as e:  # noqa: BLE001 — report compile/order failures upstream
-                    results = [{"id": "_compile", "result": False, "changes": {}, "comment": str(e)}]
-            await ws.send(json.dumps({"type": "blueprint_result", "run_id": msg.get("run_id"), "results": results}))
+                    await ws.send(json.dumps({"type": "blueprint_event", "run_id": _run_id,
+                                              "event": {"kind": "done", "results": results}}))
+                except Exception as e:  # noqa: BLE001
+                    await ws.send(json.dumps({"type": "blueprint_event", "run_id": _run_id,
+                                              "event": {"kind": "error", "message": str(e)}}))
+
+            asyncio.ensure_future(_drive())
         elif t == "welcome":
             log.info("Status: %s", msg.get("status"))
         elif t == "approved":

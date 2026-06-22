@@ -1,4 +1,3 @@
-# backend/tests/test_agent_blueprint_message.py
 import asyncio
 import json
 import os
@@ -23,18 +22,25 @@ class FakeWS:
         return gen()
 
 
-def test_blueprint_message_runs_and_replies(monkeypatch):
+def test_blueprint_message_streams_events_and_done():
     msg = json.dumps({
-        "type": "blueprint", "run_id": "r1", "test": True,
-        "resources": [{"id": "a", "type": "cmd", "name": "echo hi"}], "sources": {},
+        "type": "blueprint", "run_id": "r1", "test": False,
+        "resources": [{"id": "c", "type": "cmd", "name": "echo live-output"}], "sources": {},
     })
     ws = FakeWS([msg])
 
     async def drive():
-        await agent.handle_messages(ws)  # processes inbound, then stops
+        await agent.handle_messages(ws)
+        for _ in range(50):                # allow the background run + threadsafe sends to flush
+            await asyncio.sleep(0.02)
+            if any(m.get("event", {}).get("kind") == "done" for m in ws.sent):
+                break
 
     asyncio.get_event_loop().run_until_complete(drive())
-    replies = [m for m in ws.sent if m.get("type") == "blueprint_result"]
-    assert replies and replies[0]["run_id"] == "r1"
-    assert replies[0]["results"][0]["id"] == "a"
-    assert replies[0]["results"][0]["result"] is None  # test mode would-run
+    events = [m["event"] for m in ws.sent if m.get("type") == "blueprint_event" and m.get("run_id") == "r1"]
+    kinds = [e["kind"] for e in events]
+    assert "resource_start" in kinds
+    assert any(e["kind"] == "log" and "live-output" in e.get("line", "") for e in events)
+    assert kinds[-1] == "done"
+    done = events[-1]
+    assert done["results"][0]["result"] is True

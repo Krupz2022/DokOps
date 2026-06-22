@@ -4,6 +4,7 @@ import { useAppContext } from "../../context/AppContext";
 import { useToast } from "../../context/ToastContext";
 import { useConfirm } from "../../context/ConfirmContext";
 import BlueprintResultTable from "./BlueprintResultTable";
+import LiveRunConsole from "./LiveRunConsole";
 import { dryRunWarning } from "../../lib/blueprintView";
 import type { CompiledBlueprint, ResourceResult, BlueprintRun, RunResponse } from "../../types/blueprint";
 
@@ -17,6 +18,7 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
   const [runs, setRuns] = useState<BlueprintRun[]>([]);
   const [running, setRunning] = useState(false);
   const [hasDryRun, setHasDryRun] = useState(false);
+  const [liveRunId, setLiveRunId] = useState<string | null>(null);
 
   async function loadPreview() {
     try {
@@ -32,7 +34,17 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
       setRuns((r.data as BlueprintRun[]).slice(-10).reverse());
     } catch { /* ignore */ }
   }
-  useEffect(() => { loadPreview(); loadRuns(); }, [minionId]);
+  useEffect(() => {
+    loadPreview();
+    loadRuns();
+    api.get(`/minions/${minionId}/blueprint/runs`)
+      .then((r) => {
+        const runs = r.data as BlueprintRun[];
+        const active = runs.find((x) => x.status === "running");
+        if (active) { setRunning(true); setLiveRunId(active.id); }
+      })
+      .catch(() => { /* ignore */ });
+  }, [minionId]);
 
   async function fetchRunResults(runId: string) {
     try {
@@ -49,16 +61,23 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
     try {
       const r = await api.post(`/minions/${minionId}/blueprint/run`, { test });
       const { run_id } = r.data as RunResponse;
-      await fetchRunResults(run_id);
       if (test) setHasDryRun(true);
-      loadRuns();
+      setLiveRunId(run_id);          // → LiveRunConsole streams it
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string };
       if (err.response?.status === 403) toast("God Mode required to apply", "error");
       else toast(err.response?.data?.detail ?? err.message ?? "Run failed", "error");
-    } finally {
       setRunning(false);
     }
+  }
+
+  async function handleRunDone() {
+    setRunning(false);
+    if (liveRunId) {
+      await fetchRunResults(liveRunId);   // settle into the persisted result table
+      setLiveRunId(null);
+    }
+    loadRuns();
   }
 
   async function handleApply() {
@@ -122,7 +141,12 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
       </div>
 
       {/* Results */}
-      {results && (
+      {liveRunId ? (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h2 className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Live run</h2>
+          <LiveRunConsole runId={liveRunId} onDone={handleRunDone} />
+        </div>
+      ) : results && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h2 className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Result</h2>
           <BlueprintResultTable results={results} />

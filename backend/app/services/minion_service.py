@@ -70,7 +70,6 @@ class MinionConnectionManager:
         self._connections: dict[str, WebSocket] = {}
         self._pending_jobs: dict[str, asyncio.Future] = {}
         self._job_chunks: dict[str, list[str]] = {}
-        self._pending_blueprints: dict[str, asyncio.Future] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -214,39 +213,26 @@ class MinionConnectionManager:
     # ------------------------------------------------------------------
 
     async def dispatch_blueprint(
-        self,
-        minion_id: str,
-        run_id: str,
-        states: list,
-        sources: dict,
-        test: bool,
-        timeout: int = 300,
-    ) -> dict:
+        self, minion_id: str, run_id: str, states: list, sources: dict, test: bool,
+    ) -> None:
+        """Fire-and-forget: send the blueprint to the agent; results stream back via events."""
         ws = self._connections.get(minion_id)
         if not ws:
             raise RuntimeError(f"Minion {minion_id} is not connected")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
-        self._pending_blueprints[run_id] = future
         await ws.send_json({
             "type": "blueprint", "run_id": run_id, "test": test,
             "resources": states, "sources": sources,
         })
-        try:
-            return await asyncio.wait_for(future, timeout=timeout + 10)
-        except asyncio.TimeoutError:
-            self._pending_blueprints.pop(run_id, None)
-            async with AsyncSessionLocal() as db:
-                from app.models.blueprint import BlueprintRun
-                run = await db.get(BlueprintRun, run_id)
-                if run:
-                    run.status = "failed"
-                    run.completed_at = utcnow()
-                    db.add(run)
-                    await db.commit()
-            raise
 
-    async def handle_blueprint_result(self, run_id: str, results: list) -> None:
+    async def handle_blueprint_event(self, run_id: str, event: dict) -> None:
+        run_hub.publish(run_id, event)
+        kind = event.get("kind")
+        if kind == "done":
+            await self._persist_blueprint_results(run_id, event.get("results", []))
+        elif kind == "error":
+            await self._mark_run_failed(run_id)
+
+    async def _persist_blueprint_results(self, run_id: str, results: list) -> None:
         import json as _json
         from app.models.blueprint import BlueprintRun, ResourceResult
         any_failed = any(r.get("result") is False for r in results)
@@ -266,9 +252,30 @@ class MinionConnectionManager:
                 run.completed_at = utcnow()
                 db.add(run)
             await db.commit()
-        fut = self._pending_blueprints.pop(run_id, None)
-        if fut and not fut.done():
-            fut.set_result({"results": results})
+
+    async def _mark_run_failed(self, run_id: str) -> None:
+        from app.models.blueprint import BlueprintRun
+        async with AsyncSessionLocal() as db:
+            run = await db.get(BlueprintRun, run_id)
+            if run and run.status == "running":
+                run.status = "failed"
+                run.completed_at = utcnow()
+                db.add(run)
+                await db.commit()
+
+    async def fail_running_blueprints(self, minion_id: str) -> None:
+        from app.models.blueprint import BlueprintRun
+        from sqlmodel import select
+        async with AsyncSessionLocal() as db:
+            runs = (await db.exec(select(BlueprintRun).where(
+                BlueprintRun.minion_id == minion_id, BlueprintRun.status == "running"))).all()
+            for run in runs:
+                run.status = "failed"
+                run.completed_at = utcnow()
+                db.add(run)
+                run_hub.publish(run.id, {"kind": "error", "message": "minion disconnected"})
+            if runs:
+                await db.commit()
 
 
 # ---------------------------------------------------------------------------

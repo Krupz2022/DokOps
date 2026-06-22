@@ -58,8 +58,8 @@ function useNavSections(ragEnabled: boolean): NavSection[] {
       icon: Boxes,
       items: [
         { name: "Minions",        path: "/infrastructure/minions",          icon: Server },
-        { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
         { name: "Groups",         path: "/infrastructure/organisations",    icon: Building2 },
+        { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
         { name: "Compliance",     path: "/patching",                        icon: ShieldCheck },
         { name: "Pipelines",      path: "/patching/pipelines",              icon: ArrowRightCircle },
         { name: "Schedules",      path: "/patching/schedules",              icon: Clock },

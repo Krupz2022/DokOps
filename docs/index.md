@@ -27,6 +27,7 @@ DokOps is a production-grade Kubernetes DevOps platform that combines an AI-powe
 | [Azure Integration](features/azure-integration.md) | Cost management, resource discovery, anomaly detection |
 | [MCP Servers](features/mcp-servers.md) | Connect external MCP tool servers |
 | [Minions (Remote Agents)](features/minions.md) | Manage Linux & Windows bare-metal/VM fleets, middleware discovery |
+| [Blueprints](features/blueprints.md) | Declarative desired-state config (packages, files, services) applied across the fleet |
 | [Workflow Builder & Agents](features/workflows.md) | Scripted pipelines + goal-driven AI agents with approval gates |
 | [CLI Tools](features/cli-tools.md) | Run and manage CLI tools from the UI |
 | [Patch Management](features/patching.md) | Multi-stage pipelines, Linux & Windows compliance, per-device views, schedule notifications |

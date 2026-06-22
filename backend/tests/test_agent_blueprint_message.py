@@ -36,7 +36,7 @@ def test_blueprint_message_streams_events_and_done():
             if any(m.get("event", {}).get("kind") == "done" for m in ws.sent):
                 break
 
-    asyncio.get_event_loop().run_until_complete(drive())
+    asyncio.run(drive())
     events = [m["event"] for m in ws.sent if m.get("type") == "blueprint_event" and m.get("run_id") == "r1"]
     kinds = [e["kind"] for e in events]
     assert "resource_start" in kinds

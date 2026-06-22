@@ -55,3 +55,10 @@ export interface RunResponse {
   run_id: string;
   test: boolean;
 }
+
+export type BlueprintEvent =
+  | { kind: "resource_start"; id: string }
+  | { kind: "log"; id: string; line: string }
+  | { kind: "resource_result"; id: string; result: boolean | null; changes: Record<string, unknown> | string; comment: string; output?: string }
+  | { kind: "done"; results: ResourceResult[] }
+  | { kind: "error"; message: string };

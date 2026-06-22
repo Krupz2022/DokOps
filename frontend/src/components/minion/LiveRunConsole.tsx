@@ -49,7 +49,11 @@ export default function LiveRunConsole({ runId, onDone }: { runId: string; onDon
       if (ev.kind === "error") { setError(ev.message); es.close(); }
       endRef.current?.scrollIntoView({ block: "nearest" });
     };
-    es.onerror = () => es.close();
+    es.onerror = () => {
+      // Transient drop: let EventSource auto-reconnect (the backend replays the buffer).
+      // Only give up if the browser already closed the stream (fatal).
+      if (es.readyState === EventSource.CLOSED) es.close();
+    };
     return () => es.close();
   }, [runId, onDone]);
 

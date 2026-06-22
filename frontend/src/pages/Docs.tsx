@@ -328,6 +328,20 @@ const FEATURES: Feature[] = [
         ],
     },
     {
+        icon: <Layers className="w-5 h-5 text-cyan-400" />,
+        title: "Blueprints",
+        badge: "New",
+        badgeColor: "bg-cyan-500/20 text-cyan-400",
+        description: "Declarative desired-state config for the fleet — declare packages, files, and services; dry-run the diff; apply with God Mode.",
+        bullets: [
+            "Resource types: pkg, service, file, cmd — idempotent, Linux + Windows",
+            "Requisites: require (ordering) and watch (restart a service on config change)",
+            "Assign to org / group / minion; merged org → group → minion (later wins)",
+            "Dry-run shows what would change (open); apply requires God Mode + audit",
+            "Author in the UI or seed from backend/app/blueprints/ on startup",
+        ],
+    },
+    {
         icon: <Package className="w-5 h-5 text-emerald-400" />,
         title: "Patch Management",
         description: "End-to-end OS patching for Linux and Windows minions with multi-stage promotion pipelines.",

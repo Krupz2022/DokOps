@@ -5,13 +5,17 @@ from typing import Optional
 
 from app.core.datetimes import utcnow
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from jose import jwt, JWTError
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_async_db, get_current_user, require_god_mode
 from app.api import deps as _deps
+from app.core.config import settings
+from app.core.security import ALGORITHM
 from app.services.blueprint_service import compile_blueprint
 from app.models.blueprint import BlueprintRun, ResourceResult
 from app.core.db import AsyncSessionLocal
@@ -26,6 +30,7 @@ from app.services.minion_service import (
     verify_token,
     is_read_allowed,
     manager,
+    run_hub,
 )
 from app.services.service_discovery_service import parse_discovery_output, persist_discovery, DISCOVERY_COMMANDS
 
@@ -287,6 +292,25 @@ async def get_blueprint_run(
     return {"run": run, "results": results}
 
 
+@router.get("/blueprint/runs/{run_id}/stream")
+async def stream_blueprint_run(run_id: str, token: Optional[str] = Query(None)):
+    # EventSource can't set headers — authenticate via the token query param.
+    if not token:
+        raise HTTPException(status_code=401, detail="token required")
+    try:
+        jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    import json as _json
+
+    async def gen():
+        async for event in run_hub.subscribe(run_id):
+            yield f"data: {_json.dumps(event)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 @router.get("/{minion_id}/blueprint")
 async def preview_blueprint(
     minion_id: str,
@@ -456,8 +480,8 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                         db.add(m)
                         await db.commit()
 
-            elif msg_type == "blueprint_result":
-                await manager.handle_blueprint_result(data["run_id"], data.get("results", []))
+            elif msg_type == "blueprint_event":
+                await manager.handle_blueprint_event(data["run_id"], data.get("event", {}))
 
             elif msg_type == "discover_services_result":
                 platform_name = data.get("platform", "linux")
@@ -488,4 +512,5 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
                 m.status = "offline"
                 db.add(m)
                 await db.commit()
+        await manager.fail_running_blueprints(minion_id)
         log.info("Minion %s disconnected", minion_id)

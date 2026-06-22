@@ -59,3 +59,28 @@ def test_preview_returns_states(admin_client):
     resp = admin_client.get("/api/v1/minions/web-01/blueprint")
     assert resp.status_code == 200
     assert "resources" in resp.json() and "sources" in resp.json()
+
+
+def test_run_returns_immediately_without_blocking(admin_client):
+    # dispatch is fire-and-forget: the POST must return run_id without awaiting agent results
+    called = {}
+    async def fake_dispatch(minion_id, run_id, states, sources, test):
+        called["run_id"] = run_id  # returns immediately, no result await
+    with patch("app.services.minion_service.manager.dispatch_blueprint", side_effect=fake_dispatch):
+        with patch("app.services.minion_service.manager.is_connected", return_value=True):
+            resp = admin_client.post("/api/v1/minions/web-01/blueprint/run", json={"test": True})
+    assert resp.status_code == 200
+    assert resp.json()["run_id"] == called["run_id"]
+
+
+def test_stream_endpoint_emits_buffered_events(admin_client):
+    from app.services.minion_service import run_hub
+    run_hub.publish("run-xyz", {"kind": "resource_start", "id": "a"})
+    run_hub.publish("run-xyz", {"kind": "done", "results": []})
+    # token via query param (EventSource style)
+    import re
+    tok = admin_client.headers["Authorization"].split()[1]
+    with admin_client.stream("GET", f"/api/v1/minions/blueprint/runs/run-xyz/stream?token={tok}") as r:
+        assert r.status_code == 200
+        body = "".join(chunk for chunk in r.iter_text())
+    assert "resource_start" in body and '"kind": "done"' in body.replace(" ", "") or "done" in body

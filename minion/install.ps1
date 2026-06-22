@@ -86,6 +86,8 @@ Remove-Item $wheelDir -Recurse -Force -ErrorAction SilentlyContinue
 # Create install dir and download agent
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Invoke-WebRequest -Uri "$Url/minion/agent.py" -OutFile $AgentScript -UseBasicParsing
+# Blueprint engine — must sit next to the agent so `import blueprint` resolves
+Invoke-WebRequest -Uri "$Url/minion/blueprint.py" -OutFile "$InstallDir\blueprint.py" -UseBasicParsing
 Write-Host "[dokops-minion] Agent downloaded to $AgentScript"
 
 # Write config (preserve existing MINION_ID if present)

@@ -25,14 +25,23 @@ export default function BlueprintResultTable({ results }: { results: ResourceRes
       {results.map((r) => {
         const chip = resultChip(r.result, r.changes);
         const summary = changeSummary(r.changes);
+        const output = (r.output ?? "").trim();
         return (
-          <div key={resultRowId(r)} className="flex items-start gap-3 text-sm py-1.5 border-b border-border/50 last:border-0">
-            <span className="font-mono text-foreground w-40 shrink-0 truncate">{resultRowId(r)}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${TONE[chip.tone]}`}>{chip.label}</span>
-            <div className="flex-1 min-w-0">
-              {summary && <div className="font-mono text-xs text-foreground truncate">{summary}</div>}
-              {r.comment && <div className="text-xs text-muted-foreground truncate">{r.comment}</div>}
+          <div key={resultRowId(r)} className="py-1.5 border-b border-border/50 last:border-0">
+            <div className="flex items-start gap-3 text-sm">
+              <span className="font-mono text-foreground w-40 shrink-0 truncate">{resultRowId(r)}</span>
+              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${TONE[chip.tone]}`}>{chip.label}</span>
+              <div className="flex-1 min-w-0">
+                {summary && <div className="font-mono text-xs text-foreground truncate">{summary}</div>}
+                {r.comment && <div className="text-xs text-muted-foreground truncate">{r.comment}</div>}
+              </div>
             </div>
+            {output && (
+              <details className="mt-1 ml-2">
+                <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground select-none">Logs</summary>
+                <pre className="mt-1 bg-background border border-border rounded p-2 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all max-h-64 overflow-auto">{output}</pre>
+              </details>
+            )}
           </div>
         );
       })}

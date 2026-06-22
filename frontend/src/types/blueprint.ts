@@ -26,6 +26,7 @@ export interface ResourceResult {
   result: boolean | null;
   changes: Record<string, unknown> | string;
   comment: string;
+  output?: string;
 }
 
 export interface BlueprintRun {

@@ -9,13 +9,38 @@ import sys
 
 IS_WINDOWS = sys.platform == "win32"
 
+import contextvars
+
+_emit_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_emit", default=None)
+_rid_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_rid", default=None)
+
 
 def _run(cmd, shell: bool = False) -> tuple[int, str]:
+    emit = _emit_var.get()
+    if emit is None:
+        try:
+            p = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=300)
+            return p.returncode, (p.stdout or "") + (p.stderr or "")
+        except Exception as e:  # noqa: BLE001 — surface failure as nonzero rc
+            return 1, str(e)
+    # streaming path: read line-by-line and emit log events as they arrive
+    rid = _rid_var.get()
+    lines: list[str] = []
     try:
-        p = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=300)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
-    except Exception as e:  # noqa: BLE001 — surface failure as nonzero rc
+        p = subprocess.Popen(
+            cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+    except Exception as e:  # noqa: BLE001
+        emit({"kind": "log", "id": rid, "line": str(e)})
         return 1, str(e)
+    assert p.stdout is not None
+    for raw in p.stdout:
+        line = raw.rstrip("\n")
+        lines.append(line)
+        emit({"kind": "log", "id": rid, "line": line})
+    p.wait()
+    return (p.returncode or 0), "\n".join(lines)
 
 
 def _sha(text: str) -> str:
@@ -285,7 +310,9 @@ def order_resources(states: list[dict]) -> list[dict]:
     return out
 
 
-def run_blueprint(states: list[dict], sources: dict, test: bool) -> list[dict]:
+def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None) -> list[dict]:
+    if emit is not None:
+        _emit_var.set(emit)
     ordered = order_resources(states)
     results: dict[str, dict] = {}
     failed: set[str] = set()
@@ -293,6 +320,9 @@ def run_blueprint(states: list[dict], sources: dict, test: bool) -> list[dict]:
 
     for st in ordered:
         sid = st["id"]
+        if emit is not None:
+            _rid_var.set(sid)
+            emit({"kind": "resource_start", "id": sid})
         reqs = list(st.get("require") or [])
         if any(r in failed for r in reqs):
             res = {"id": sid, "result": False, "changes": {}, "comment": "requisite failed — skipped"}
@@ -321,5 +351,7 @@ def run_blueprint(states: list[dict], sources: dict, test: bool) -> list[dict]:
             failed.add(sid)
         if res.get("changes"):
             changed.add(sid)
+        if emit is not None:
+            emit({"kind": "resource_result", **res})
 
     return [results[s["id"]] for s in ordered]

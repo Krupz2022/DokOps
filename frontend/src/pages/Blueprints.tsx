@@ -90,7 +90,7 @@ export default function Blueprints() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 w-full max-w-[100rem] mx-auto">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
@@ -143,6 +143,7 @@ export default function Blueprints() {
             </div>
           </div>
 
+          <div className="grid xl:grid-cols-2 gap-5 items-start">
         {/* Sources */}
         <details open className="bg-card border border-border rounded-xl p-5">
           <summary className="text-sm font-semibold text-foreground cursor-pointer">Sources ({sources.length})</summary>
@@ -195,6 +196,7 @@ export default function Blueprints() {
             {!selectedId && <p className="text-[11px] text-muted-foreground">Save the blueprint before assigning.</p>}
           </div>
         </details>
+          </div>
         </section>
       </div>
     </div>

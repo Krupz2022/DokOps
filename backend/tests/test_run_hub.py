@@ -21,7 +21,7 @@ def test_subscribe_replays_backlog_then_tails():
         await asyncio.wait_for(task, timeout=1)
         return seen
 
-    seen = asyncio.get_event_loop().run_until_complete(go())
+    seen = asyncio.run(go())
     kinds = [e["kind"] for e in seen]
     assert kinds == ["resource_start", "log", "log", "done"]
     assert seen[1]["line"] == "hello" and seen[2]["line"] == "world"
@@ -37,7 +37,7 @@ def test_late_subscriber_gets_full_backlog():
         seen = [ev async for ev in hub.subscribe("r2")]   # subscribe AFTER done
         return seen
 
-    seen = asyncio.get_event_loop().run_until_complete(go())
+    seen = asyncio.run(go())
     assert [e.get("line") for e in seen if e["kind"] == "log"] == ["0", "1", "2"]
     assert seen[-1]["kind"] == "done"
 
@@ -59,6 +59,6 @@ def test_fan_out_two_subscribers():
         await asyncio.wait_for(asyncio.gather(ta, tb), timeout=1)
         return a, b
 
-    a, b = asyncio.get_event_loop().run_until_complete(go())
+    a, b = asyncio.run(go())
     assert [e["kind"] for e in a] == ["log", "done"]
     assert [e["kind"] for e in b] == ["log", "done"]

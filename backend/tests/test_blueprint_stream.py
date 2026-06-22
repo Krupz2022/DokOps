@@ -30,7 +30,7 @@ def test_done_event_persists_results(isolated_session, monkeypatch):
             {"id": "a", "result": True, "changes": {"new": "installed"}, "comment": "installed", "output": "logs"},
         ]})
 
-    asyncio.get_event_loop().run_until_complete(go())
+    asyncio.run(go())
 
     rows = isolated_session.exec(select(ResourceResult).where(ResourceResult.run_id == "r1")).all()
     assert len(rows) == 1 and rows[0].output == "logs"
@@ -44,6 +44,6 @@ def test_error_event_marks_failed(isolated_session, monkeypatch):
     isolated_session.commit()
     mgr = MinionConnectionManager()
 
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         mgr.handle_blueprint_event("r2", {"kind": "error", "message": "boom"}))
     assert isolated_session.get(BlueprintRun, "r2").status == "failed"

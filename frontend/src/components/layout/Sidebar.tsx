@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Box, Wrench, FileText, Settings, BookOpen,
   ShieldAlert, MessageSquare, Database, Plug, Network, Orbit, GitBranch, Workflow, Server,
   Building2, ShieldCheck, ArrowRightCircle, Clock, BellDot, Vault, LogOut, BarChart2,
-  ExternalLink, Sun, Moon, ScrollText,
+  ExternalLink, Sun, Moon, ScrollText, Boxes, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { useTheme } from "../ui/ThemeProvider";
 import { cn } from "../../lib/utils";
@@ -22,7 +22,14 @@ interface NavItem {
   icon: React.ElementType;
 }
 
-function useNavSections(ragEnabled: boolean): { label: string; items: NavItem[] }[] {
+interface NavSection {
+  label: string;
+  items: NavItem[];
+  collapsible?: boolean;
+  icon?: React.ElementType;
+}
+
+function useNavSections(ragEnabled: boolean): NavSection[] {
   return [
     {
       label: "MAIN",
@@ -43,17 +50,19 @@ function useNavSections(ragEnabled: boolean): { label: string; items: NavItem[] 
       items: [
         { name: "Clusters",       path: "/clusters",                        icon: Orbit },
         { name: "Vault",          path: "/vault",                           icon: Vault },
-        { name: "Minions",        path: "/infrastructure/minions",          icon: Server },
-        { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
-        { name: "Groups",  path: "/infrastructure/organisations",    icon: Building2 },
       ],
     },
     {
-      label: "PATCHING",
+      label: "Fleet",
+      collapsible: true,
+      icon: Boxes,
       items: [
-        { name: "Compliance",  path: "/patching",            icon: ShieldCheck },
-        { name: "Pipelines",   path: "/patching/pipelines",  icon: ArrowRightCircle },
-        { name: "Schedules",   path: "/patching/schedules",  icon: Clock },
+        { name: "Minions",        path: "/infrastructure/minions",          icon: Server },
+        { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
+        { name: "Groups",         path: "/infrastructure/organisations",    icon: Building2 },
+        { name: "Compliance",     path: "/patching",                        icon: ShieldCheck },
+        { name: "Pipelines",      path: "/patching/pipelines",              icon: ArrowRightCircle },
+        { name: "Schedules",      path: "/patching/schedules",              icon: Clock },
       ],
     },
     {
@@ -74,6 +83,7 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const [ragEnabled, setRagEnabled] = useState(false);
   const [popupOpen, setPopupOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ Fleet: true });
   const popupRef = useRef<HTMLDivElement>(null);
 
   const toggleTheme = () => setTheme(theme === "dark" ? "light" : "dark");
@@ -112,6 +122,57 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   const userStr = localStorage.getItem("user");
   const user = userStr ? JSON.parse(userStr) : null;
   const initials = user?.username ? user.username.slice(0, 2).toUpperCase() : "U";
+
+  // nested = item lives inside a collapsible group → indent it under the group header
+  const renderNavItem = (item: NavItem, nested: boolean) => {
+    const isActive = location.pathname === item.path;
+    return (
+      <Link
+        key={item.path}
+        to={item.path}
+        onClick={() => {
+          if (window.innerWidth < 1024) setCollapsed(true);
+        }}
+        className={cn(
+          "w-full flex items-center transition-all duration-150 group relative text-sm",
+          collapsed ? "px-0 py-2.5 justify-center" : nested ? "pl-9 pr-4 py-2" : "px-4 py-2",
+          isActive
+            ? cn(
+                "nav-active-gradient text-foreground border-l-2 border-primary dark:shadow-glow-sm",
+                collapsed ? "" : nested ? "pl-[calc(2.25rem-2px)]" : "pl-[calc(1rem-2px)]"
+              )
+            : "text-muted-foreground hover:text-foreground hover:bg-secondary/40 border-l-2 border-transparent"
+        )}
+      >
+        <item.icon
+          className={cn(
+            "flex-shrink-0 transition-colors duration-150",
+            collapsed ? "w-4 h-4" : "w-3.5 h-3.5 mr-2.5",
+            isActive
+              ? "text-primary drop-shadow-[0_0_6px_hsl(191_89%_55%_/_0.6)]"
+              : "text-muted-foreground group-hover:text-foreground"
+          )}
+        />
+        {!collapsed && (
+          <span className={cn("truncate sidebar-text-in", isActive ? "font-medium" : "font-normal")}>
+            {item.name}
+          </span>
+        )}
+
+        {/* Active indicator dot */}
+        {isActive && collapsed && (
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-primary shadow-[0_0_6px_hsl(191_89%_55%_/_0.8)]" />
+        )}
+
+        {/* Collapsed tooltip */}
+        {collapsed && (
+          <span className="absolute left-full ml-2 px-2.5 py-1.5 glass border border-border text-foreground text-xs rounded-md opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg font-medium">
+            {item.name}
+          </span>
+        )}
+      </Link>
+    );
+  };
 
   return (
     <>
@@ -155,65 +216,36 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
 
         {/* Nav */}
         <nav className="flex-1 py-4 overflow-y-auto">
-          {navSections.map((section) => (
-            <div key={section.label} className="mb-5">
-              {!collapsed && (
-                <p className="px-4 mb-1.5 text-[9px] font-mono font-semibold text-muted-foreground/35 tracking-[0.2em] sidebar-text-in">
-                  {section.label}
-                </p>
-              )}
-              {section.items.map((item) => {
-                const isActive = location.pathname === item.path;
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    onClick={() => {
-                      if (window.innerWidth < 1024) setCollapsed(true);
-                    }}
-                    className={cn(
-                      "w-full flex items-center transition-all duration-150 group relative",
-                      "text-sm",
-                      collapsed ? "px-0 py-2.5 justify-center" : "px-4 py-2",
-                      isActive
-                        ? "nav-active-gradient text-foreground border-l-2 border-primary pl-[calc(1rem-2px)] dark:shadow-glow-sm"
-                        : "text-muted-foreground hover:text-foreground hover:bg-secondary/40 border-l-2 border-transparent"
-                    )}
-                  >
-                    <item.icon
-                      className={cn(
-                        "flex-shrink-0 transition-colors duration-150",
-                        collapsed ? "w-4 h-4" : "w-3.5 h-3.5 mr-2.5",
-                        isActive
-                          ? "text-primary drop-shadow-[0_0_6px_hsl(191_89%_55%_/_0.6)]"
-                          : "text-muted-foreground group-hover:text-foreground"
-                      )}
-                    />
-                    {!collapsed && (
-                      <span className={cn(
-                        "truncate sidebar-text-in",
-                        isActive ? "font-medium" : "font-normal"
-                      )}>
-                        {item.name}
+          {navSections.map((section) => {
+            // Collapsible groups (e.g. Fleet) only fold when the rail is expanded.
+            const isGroup = !!section.collapsible && !collapsed;
+            const open = openGroups[section.label] ?? true;
+            return (
+              <div key={section.label} className="mb-5">
+                {!collapsed && (
+                  isGroup ? (
+                    <button
+                      onClick={() => setOpenGroups((g) => ({ ...g, [section.label]: !open }))}
+                      className="w-full flex items-center gap-2 px-4 mb-1 text-muted-foreground hover:text-foreground transition-colors group/section"
+                    >
+                      {section.icon && <section.icon className="w-3.5 h-3.5 flex-shrink-0" />}
+                      <span className="text-[11px] font-semibold tracking-wide flex-1 text-left sidebar-text-in">
+                        {section.label}
                       </span>
-                    )}
-
-                    {/* Active indicator dot */}
-                    {isActive && collapsed && (
-                      <span className="absolute right-1 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-primary shadow-[0_0_6px_hsl(191_89%_55%_/_0.8)]" />
-                    )}
-
-                    {/* Collapsed tooltip */}
-                    {collapsed && (
-                      <span className="absolute left-full ml-2 px-2.5 py-1.5 glass border border-border text-foreground text-xs rounded-md opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg font-medium">
-                        {item.name}
-                      </span>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
-          ))}
+                      {open
+                        ? <ChevronDown className="w-3.5 h-3.5 opacity-50 group-hover/section:opacity-100" />
+                        : <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover/section:opacity-100" />}
+                    </button>
+                  ) : (
+                    <p className="px-4 mb-1.5 text-[9px] font-mono font-semibold text-muted-foreground/35 tracking-[0.2em] sidebar-text-in">
+                      {section.label}
+                    </p>
+                  )
+                )}
+                {(!isGroup || open) && section.items.map((item) => renderNavItem(item, isGroup))}
+              </div>
+            );
+          })}
         </nav>
 
         {/* User row + popup */}

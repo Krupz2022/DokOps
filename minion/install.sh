@@ -49,6 +49,8 @@ $PYTHON -m pip install --quiet websockets psutil
 mkdir -p /etc/dokops-minion
 curl -fsSL "$DOKOPS_URL/minion/agent.py" -o /usr/local/bin/dokops-minion-agent.py
 chmod +x /usr/local/bin/dokops-minion-agent.py
+# Blueprint engine — must sit next to the agent so `import blueprint` resolves
+curl -fsSL "$DOKOPS_URL/minion/blueprint.py" -o /usr/local/bin/blueprint.py
 
 # Write config
 cat > /etc/dokops-minion/config.env <<EOF

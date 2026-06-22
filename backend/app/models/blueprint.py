@@ -55,3 +55,4 @@ class ResourceResult(SQLModel, table=True):
     result: Optional[bool] = None  # True | None(would-change) | False
     changes: str = Field(default="{}")  # JSON
     comment: str = Field(default="")
+    output: str = Field(default="")  # captured command output (logs)

@@ -86,6 +86,7 @@ async def _run_patch_migrations() -> None:
         _col("patchschedule", "timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
         _col("patchschedule", "promote_from_previous", "INTEGER NOT NULL DEFAULT 0"),
         _col("minion", "last_patch_scan", "TIMESTAMP"),
+        _col("resourceresult", "output", "TEXT NOT NULL DEFAULT ''"),
     ]
     async with async_engine.connect() as conn:
         for sql in migrations:
@@ -282,6 +283,14 @@ async def serve_agent():
     if not p.exists():
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="agent.py not bundled")
+    return FileResponse(p, media_type="text/x-python")
+
+@app.get("/minion/blueprint.py", include_in_schema=False)
+async def serve_blueprint_engine():
+    p = _MINION_DIR / "blueprint.py"
+    if not p.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="blueprint.py not bundled")
     return FileResponse(p, media_type="text/x-python")
 
 @app.get("/minion/install.sh", include_in_schema=False)

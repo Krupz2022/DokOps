@@ -74,8 +74,8 @@ def handle_cmd(state: dict, sources: dict, test: bool) -> dict:
 
     rc, out = _run(name, shell=True)
     if rc == 0:
-        return {"result": True, "changes": {"executed": name}, "comment": out[:500]}
-    return {"result": False, "changes": {}, "comment": f"exit {rc}: {out[:500]}"}
+        return {"result": True, "changes": {"executed": name}, "comment": "command ran", "output": out}
+    return {"result": False, "changes": {}, "comment": f"exit {rc}", "output": out}
 
 
 # ── package helpers (split out so tests can monkeypatch) ──────────────────────
@@ -142,8 +142,8 @@ def handle_pkg(state: dict, sources: dict, test: bool) -> dict:
                     "comment": "would install"}
         rc, out = _pkg_install(name)
         if rc == 0:
-            return {"result": True, "changes": {"old": "absent", "new": "installed"}, "comment": "installed"}
-        return {"result": False, "changes": {}, "comment": f"install failed: {out[:300]}"}
+            return {"result": True, "changes": {"old": "absent", "new": "installed"}, "comment": "installed", "output": out}
+        return {"result": False, "changes": {}, "comment": "install failed", "output": out}
 
     if ensure == "absent":
         if not installed:
@@ -152,8 +152,8 @@ def handle_pkg(state: dict, sources: dict, test: bool) -> dict:
             return {"result": None, "changes": {"old": "installed", "new": "absent"}, "comment": "would remove"}
         rc, out = _pkg_remove(name)
         if rc == 0:
-            return {"result": True, "changes": {"old": "installed", "new": "absent"}, "comment": "removed"}
-        return {"result": False, "changes": {}, "comment": f"remove failed: {out[:300]}"}
+            return {"result": True, "changes": {"old": "installed", "new": "absent"}, "comment": "removed", "output": out}
+        return {"result": False, "changes": {}, "comment": "remove failed", "output": out}
 
     return {"result": False, "changes": {}, "comment": f"unknown ensure '{ensure}'"}
 
@@ -206,14 +206,16 @@ def handle_service(state: dict, sources: dict, test: bool) -> dict:
     want_active = ensure == "running"
     changes: dict = {}
 
+    logs: list[str] = []
     is_active = _svc_is_active(name)
     if is_active != want_active:
         if test:
             changes["active"] = {"old": is_active, "new": want_active}
         else:
             rc, out = (_svc_start(name) if want_active else _svc_stop(name))
+            logs.append(out)
             if rc != 0:
-                return {"result": False, "changes": {}, "comment": f"service change failed: {out[:300]}"}
+                return {"result": False, "changes": {}, "comment": "service change failed", "output": "\n".join(logs)}
             changes["active"] = {"old": is_active, "new": want_active}
 
     if "enabled" in state:
@@ -224,14 +226,15 @@ def handle_service(state: dict, sources: dict, test: bool) -> dict:
                 changes["enabled"] = {"old": is_enabled, "new": want_enabled}
             else:
                 rc, out = _svc_set_enabled(name, want_enabled)
+                logs.append(out)
                 if rc != 0:
-                    return {"result": False, "changes": {}, "comment": f"enable change failed: {out[:300]}"}
+                    return {"result": False, "changes": {}, "comment": "enable change failed", "output": "\n".join(logs)}
                 changes["enabled"] = {"old": is_enabled, "new": want_enabled}
 
     if not changes:
         return {"result": True, "changes": {}, "comment": "service in desired state"}
     return {"result": None if test else True, "changes": changes,
-            "comment": "would change service" if test else "service reconciled"}
+            "comment": "would change service" if test else "service reconciled", "output": "\n".join(logs)}
 
 
 def _service_react(state: dict, test: bool) -> dict:
@@ -241,8 +244,8 @@ def _service_react(state: dict, test: bool) -> dict:
         return {"result": None, "changes": {"restart": "would restart (watch)"}, "comment": "would restart"}
     rc, out = _svc_restart(name)
     if rc == 0:
-        return {"result": True, "changes": {"restart": "restarted (watch)"}, "comment": "restarted"}
-    return {"result": False, "changes": {}, "comment": f"restart failed: {out[:300]}"}
+        return {"result": True, "changes": {"restart": "restarted (watch)"}, "comment": "restarted", "output": out}
+    return {"result": False, "changes": {}, "comment": "restart failed", "output": out}
 
 
 HANDLERS = {
@@ -304,12 +307,15 @@ def run_blueprint(states: list[dict], sources: dict, test: bool) -> list[dict]:
                 if st["type"] == "service" and any(w in changed for w in watched):
                     react = _service_react(st, test)
                     res["changes"] = {**res.get("changes", {}), **react.get("changes", {})}
+                    if react.get("output"):
+                        res["output"] = (res.get("output", "") + "\n" + react["output"]).strip()
                     if res["result"] is True and react["result"] is None:
                         res["result"] = None
                     if react["result"] is False:
                         res["result"] = False
                     res["comment"] = (res.get("comment", "") + "; " + react.get("comment", "")).strip("; ")
 
+        res["output"] = str(res.get("output", ""))[:4000]
         results[sid] = res
         if res["result"] is False:
             failed.add(sid)

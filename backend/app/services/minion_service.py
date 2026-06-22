@@ -258,6 +258,7 @@ class MinionConnectionManager:
                     result=r.get("result"),
                     changes=_json.dumps(r.get("changes", {})),
                     comment=r.get("comment", ""),
+                    output=r.get("output", ""),
                 ))
             run = await db.get(BlueprintRun, run_id)
             if run:

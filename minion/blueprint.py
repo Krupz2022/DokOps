@@ -311,47 +311,50 @@ def order_resources(states: list[dict]) -> list[dict]:
 
 
 def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None) -> list[dict]:
-    if emit is not None:
-        _emit_var.set(emit)
-    ordered = order_resources(states)
-    results: dict[str, dict] = {}
-    failed: set[str] = set()
-    changed: set[str] = set()
+    _emit_token = _emit_var.set(emit) if emit is not None else None
+    try:
+        ordered = order_resources(states)
+        results: dict[str, dict] = {}
+        failed: set[str] = set()
+        changed: set[str] = set()
 
-    for st in ordered:
-        sid = st["id"]
-        if emit is not None:
-            _rid_var.set(sid)
-            emit({"kind": "resource_start", "id": sid})
-        reqs = list(st.get("require") or [])
-        if any(r in failed for r in reqs):
-            res = {"id": sid, "result": False, "changes": {}, "comment": "requisite failed — skipped"}
-        else:
-            handler = HANDLERS.get(st["type"])
-            if not handler:
-                res = {"id": sid, "result": False, "changes": {}, "comment": f"unknown type '{st['type']}'"}
+        for st in ordered:
+            sid = st["id"]
+            if emit is not None:
+                _rid_var.set(sid)
+                emit({"kind": "resource_start", "id": sid})
+            reqs = list(st.get("require") or [])
+            if any(r in failed for r in reqs):
+                res = {"id": sid, "result": False, "changes": {}, "comment": "requisite failed — skipped"}
             else:
-                res = dict(handler(st, sources, test))
-                res["id"] = sid
-                watched = list(st.get("watch") or [])
-                if st["type"] == "service" and any(w in changed for w in watched):
-                    react = _service_react(st, test)
-                    res["changes"] = {**res.get("changes", {}), **react.get("changes", {})}
-                    if react.get("output"):
-                        res["output"] = (res.get("output", "") + "\n" + react["output"]).strip()
-                    if res["result"] is True and react["result"] is None:
-                        res["result"] = None
-                    if react["result"] is False:
-                        res["result"] = False
-                    res["comment"] = (res.get("comment", "") + "; " + react.get("comment", "")).strip("; ")
+                handler = HANDLERS.get(st["type"])
+                if not handler:
+                    res = {"id": sid, "result": False, "changes": {}, "comment": f"unknown type '{st['type']}'"}
+                else:
+                    res = dict(handler(st, sources, test))
+                    res["id"] = sid
+                    watched = list(st.get("watch") or [])
+                    if st["type"] == "service" and any(w in changed for w in watched):
+                        react = _service_react(st, test)
+                        res["changes"] = {**res.get("changes", {}), **react.get("changes", {})}
+                        if react.get("output"):
+                            res["output"] = (res.get("output", "") + "\n" + react["output"]).strip()
+                        if res["result"] is True and react["result"] is None:
+                            res["result"] = None
+                        if react["result"] is False:
+                            res["result"] = False
+                        res["comment"] = (res.get("comment", "") + "; " + react.get("comment", "")).strip("; ")
 
-        res["output"] = str(res.get("output", ""))[:4000]
-        results[sid] = res
-        if res["result"] is False:
-            failed.add(sid)
-        if res.get("changes"):
-            changed.add(sid)
-        if emit is not None:
-            emit({"kind": "resource_result", **res})
+            res["output"] = str(res.get("output", ""))[:4000]
+            results[sid] = res
+            if res["result"] is False:
+                failed.add(sid)
+            if res.get("changes"):
+                changed.add(sid)
+            if emit is not None:
+                emit({"kind": "resource_result", **res})
 
-    return [results[s["id"]] for s in ordered]
+        return [results[s["id"]] for s in ordered]
+    finally:
+        if _emit_token is not None:
+            _emit_var.reset(_emit_token)

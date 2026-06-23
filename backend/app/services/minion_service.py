@@ -415,3 +415,49 @@ class RunHub:
 
 manager = MinionConnectionManager()
 run_hub = RunHub()
+
+
+# ---------------------------------------------------------------------------
+# Enrollment helper
+# ---------------------------------------------------------------------------
+
+async def apply_enrollment_key(minion_id: str, key_value: str) -> None:
+    """Provisioning side of enrollment (auth already done): match the activation key,
+    place the minion in its group, and bootstrap its blueprints ONCE."""
+    from app.models.activation_key import ActivationKey
+    from app.models.patch import MinionGroupMember
+    from app.models.minion import Minion
+    from app.models.blueprint import BlueprintRun
+    from app.models.audit import AuditLog
+    from app.services.blueprint_service import compile_key_blueprints
+
+    async with AsyncSessionLocal() as db:
+        candidates = (await db.exec(select(ActivationKey).where(ActivationKey.enabled == True))).all()  # noqa: E712
+        key = next((k for k in candidates if verify_token(key_value, k.value_hash)), None)
+        if key is None:
+            _log.info("enroll: minion %s sent an unknown/disabled activation key", minion_id)
+            return
+
+        # authoritative placement (idempotent)
+        if key.group_id and not await db.get(MinionGroupMember, (key.group_id, minion_id)):
+            db.add(MinionGroupMember(group_id=key.group_id, minion_id=minion_id))
+            await db.commit()
+
+        minion = await db.get(Minion, minion_id)
+        if not (key.run_on_attach and minion and not minion.bootstrapped):
+            return
+
+        resources, sources = await compile_key_blueprints(key.id, db)
+        run = BlueprintRun(minion_id=minion_id, actor=f"enroll:{key.name}", test=False, status="running")
+        db.add(run)
+        db.add(AuditLog(actor=f"enroll:{key.name}", action="bootstrap_blueprint",
+                        resource=f"minion/{minion_id}", result="SUCCESS", mode="GOD", source="SYSTEM"))
+        minion.bootstrapped = True
+        db.add(minion)
+        await db.commit()
+        await db.refresh(run)
+
+    try:
+        await manager.dispatch_blueprint(minion_id, run.id, resources, sources, test=False)
+    except Exception as e:  # noqa: BLE001 — agent may have dropped; bootstrap is best-effort
+        _log.warning("enroll bootstrap dispatch failed for %s: %s", minion_id, e)

@@ -86,6 +86,7 @@ async def _run_patch_migrations() -> None:
         _col("patchschedule", "timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
         _col("patchschedule", "promote_from_previous", "INTEGER NOT NULL DEFAULT 0"),
         _col("minion", "last_patch_scan", "TIMESTAMP"),
+        _col("minion", "bootstrapped", "INTEGER NOT NULL DEFAULT 0"),
         _col("resourceresult", "output", "TEXT NOT NULL DEFAULT ''"),
     ]
     async with async_engine.connect() as conn:

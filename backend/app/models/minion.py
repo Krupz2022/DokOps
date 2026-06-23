@@ -14,6 +14,7 @@ class Minion(SQLModel, table=True):
     last_seen: Optional[datetime] = utc_optional_field()
     approved_by: Optional[str] = None
     last_patch_scan: Optional[datetime] = utc_optional_field()
+    bootstrapped: bool = Field(default=False)
     created_at: datetime = utc_field()
 
 

@@ -4,6 +4,8 @@ import { useToast } from "../context/ToastContext";
 import type { Blueprint, BlueprintSource, BlueprintAssignment } from "../types/blueprint";
 
 interface Org { id: string; name: string; }
+interface Group { id: string; name: string; }
+interface MinionLite { id: string; hostname: string; }
 
 export default function Blueprints() {
   const { toast } = useToast();
@@ -14,8 +16,18 @@ export default function Blueprints() {
   const [sources, setSources] = useState<BlueprintSource[]>([]);
   const [assignments, setAssignments] = useState<BlueprintAssignment[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [minions, setMinions] = useState<MinionLite[]>([]);
   const [newScopeType, setNewScopeType] = useState<"org" | "group" | "minion">("minion");
   const [newScopeId, setNewScopeId] = useState("");
+
+  // Resolve a stored scope id to a human-readable name (falls back to the id).
+  function scopeLabel(type: string, id: string): string {
+    if (type === "org") return orgs.find(o => o.id === id)?.name ?? id;
+    if (type === "group") return groups.find(g => g.id === id)?.name ?? id;
+    if (type === "minion") return minions.find(m => m.id === id)?.hostname ?? id;
+    return id;
+  }
   const [newSourceName, setNewSourceName] = useState("");
 
   async function loadList() {
@@ -25,6 +37,8 @@ export default function Blueprints() {
   useEffect(() => {
     loadList();
     api.get("/organisations").then(r => setOrgs(r.data as Org[])).catch(() => setOrgs([]));
+    api.get("/organisations/groups").then(r => setGroups(r.data as Group[])).catch(() => setGroups([]));
+    api.get("/minions").then(r => setMinions(r.data as MinionLite[])).catch(() => setMinions([]));
   }, []);
 
   async function selectBlueprint(id: string) {
@@ -168,28 +182,25 @@ export default function Blueprints() {
             {assignments.map(a => (
               <div key={a.id} className="flex items-center gap-2 text-sm">
                 <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground w-14 text-center">{a.scope_type}</span>
-                <span className="font-mono text-foreground flex-1 truncate">{a.scope_id}</span>
+                <span className="text-foreground flex-1 truncate" title={a.scope_id}>{scopeLabel(a.scope_type, a.scope_id)}</span>
                 <button onClick={() => removeAssignment(a.id)} className="text-xs text-muted-foreground hover:text-red-400">remove</button>
               </div>
             ))}
             <div className="flex gap-2 items-center pt-1">
-              <select value={newScopeType} onChange={e => setNewScopeType(e.target.value as "org" | "group" | "minion")}
+              <select value={newScopeType}
+                onChange={e => { setNewScopeType(e.target.value as "org" | "group" | "minion"); setNewScopeId(""); }}
                 className="bg-background border border-border rounded px-2 py-1 text-xs text-foreground">
                 <option value="org">org</option>
                 <option value="group">group</option>
                 <option value="minion">minion</option>
               </select>
-              {newScopeType === "org" ? (
-                <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)}
-                  className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground">
-                  <option value="">select org…</option>
-                  {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                </select>
-              ) : (
-                <input value={newScopeId} onChange={e => setNewScopeId(e.target.value)}
-                  placeholder={newScopeType === "group" ? "group id" : "minion id"}
-                  className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground" />
-              )}
+              <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)}
+                className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground">
+                <option value="">select {newScopeType}…</option>
+                {newScopeType === "org" && orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                {newScopeType === "group" && groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                {newScopeType === "minion" && minions.map(m => <option key={m.id} value={m.id}>{m.hostname || m.id}</option>)}
+              </select>
               <button onClick={addAssignment} disabled={!selectedId || !newScopeId.trim()}
                 className="text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50">Add</button>
             </div>

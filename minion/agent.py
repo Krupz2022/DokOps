@@ -461,9 +461,7 @@ def build_ws_url(base_url: str, minion_id: str, token: Optional[str], key: str =
 async def connect_and_run(url: str, token: Optional[str], org: str = "", env: str = "") -> None:
     import websockets
 
-    ws_url = url
-    if token:
-        ws_url = f"{url}?token={token}"
+    ws_url = url  # main() already built the full URL (token + key) via build_ws_url
 
     log.info("Connecting to %s", url)
     async with websockets.connect(ws_url, ping_interval=30, ping_timeout=90) as ws:

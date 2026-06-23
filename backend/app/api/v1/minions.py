@@ -371,7 +371,7 @@ async def list_blueprint_runs(
 # ── WebSocket ───────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{minion_id}")
-async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] = None):
+async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] = None, key: Optional[str] = None):
     # Reject immediately if no token provided — prevents unauthenticated minion impersonation
     if not token:
         await ws.close(code=1008, reason="Authentication required")
@@ -410,6 +410,13 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
     await ws.send_json({"type": "welcome", "minion_id": minion_id, "status": status})
     if status == "active":
         await ws.send_json({"type": "discover_services"})
+
+    if key and status == "active":
+        from app.services.minion_service import apply_enrollment_key
+        try:
+            await apply_enrollment_key(minion_id, key)
+        except Exception as e:  # noqa: BLE001 — provisioning must never break the connection
+            log.warning("enrollment-key provisioning failed for %s: %s", minion_id, e)
 
     try:
         while True:

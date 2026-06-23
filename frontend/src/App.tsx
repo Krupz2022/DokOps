@@ -33,6 +33,7 @@ const Pipelines = lazy(() => import("./pages/Pipelines"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const AlertIncidents = lazy(() => import("./pages/AlertIncidents"));
 const Analytics = lazy(() => import("./pages/Analytics"));
+const Keys = lazy(() => import("./pages/Keys"));
 
 import { ThemeProvider } from "./components/ui/ThemeProvider";
 import { AppProvider, useAppContext } from "./context/AppContext";
@@ -123,6 +124,7 @@ function App() {
                                             <Route path="/infrastructure/minions" element={<AppLayout><Minions /></AppLayout>} />
                                             <Route path="/infrastructure/minions/:minionId" element={<AppLayout><MinionDetail /></AppLayout>} />
                                             <Route path="/infrastructure/blueprints" element={<AdminGuard><AppLayout><Blueprints /></AppLayout></AdminGuard>} />
+                                            <Route path="/infrastructure/keys" element={<AdminGuard><AppLayout><Keys /></AppLayout></AdminGuard>} />
                                             <Route path="/infrastructure/organisations" element={<AppLayout><Organisations /></AppLayout>} />
                                             <Route path="/patching" element={<AppLayout><Patching /></AppLayout>} />
                                             <Route path="/patching/pipelines" element={<AppLayout><Pipelines /></AppLayout>} />

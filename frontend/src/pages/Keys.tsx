@@ -31,6 +31,16 @@ export default function Keys() {
   function toggle(id: string) {
     setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   }
+  function move(idx: number, dir: -1 | 1) {
+    setPicked(p => {
+      const j = idx + dir;
+      if (j < 0 || j >= p.length) return p;
+      const next = [...p];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return next;
+    });
+  }
+  const bpName = (id: string) => blueprints.find(b => b.id === id)?.name ?? id;
 
   async function createKey() {
     if (!name.trim()) return;
@@ -109,6 +119,23 @@ export default function Keys() {
               ))}
               {blueprints.length === 0 && <p className="text-xs text-muted-foreground">No blueprints yet.</p>}
             </div>
+            {picked.length > 0 && (
+              <div className="mt-3">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Run order (top runs first)</p>
+                <div className="space-y-1">
+                  {picked.map((id, i) => (
+                    <div key={id} className="flex items-center gap-2 text-sm bg-background border border-border rounded px-2 py-1">
+                      <span className="text-muted-foreground w-5 text-right">{i + 1}.</span>
+                      <span className="flex-1 truncate text-foreground">{bpName(id)}</span>
+                      <button onClick={() => move(i, -1)} disabled={i === 0}
+                        title="move up" className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▲</button>
+                      <button onClick={() => move(i, 1)} disabled={i === picked.length - 1}
+                        title="move down" className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▼</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <button onClick={createKey} disabled={!name.trim()}
             className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium disabled:opacity-50">

@@ -426,6 +426,22 @@ Not yet supported — planned for later phases:
 
 ---
 
+## Activation keys (bootstrap on onboard)
+
+Create an **activation key** under **Fleet → Keys**: give it a name, optionally a target group, attach a set of blueprints, and toggle **Run on attach**. Creating it shows a one-time **key value** plus an install command.
+
+Install a machine with that key — enrollment auth is still `-Token`; `-Key` is a separate provisioning selector:
+
+```powershell
+... install.ps1 ... -Token '<enrollment key>' -Key '<activation key value>'
+```
+
+On first enrollment with `-Key`, the minion joins the key's group and — if **Run on attach** is enabled — applies the key's blueprints **once** (visible in the minion's blueprint run history, streamed live). Reconnects don't re-run it (guarded by a per-minion `bootstrapped` flag). A machine onboarded **without** `-Key` gets nothing extra.
+
+> `-Key` is *not* an auth credential — a missing or wrong `-Key` never affects enrollment, it just means no bootstrap. Auto-apply on enroll is authorized by an admin having created the key, attached blueprints, and enabled run-on-attach; each bootstrap is audit-logged as `enroll:<key>`.
+
+---
+
 ## Related
 
 - [Minions (Remote Agents)](minions.md) — the agent fleet blueprints run on

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Box, Wrench, FileText, Settings, BookOpen,
   ShieldAlert, MessageSquare, Database, Plug, Network, Orbit, GitBranch, Workflow, Server,
   Building2, ShieldCheck, ArrowRightCircle, Clock, BellDot, Vault, LogOut, BarChart2,
-  ExternalLink, Sun, Moon, ScrollText, Boxes, ChevronDown, ChevronRight,
+  ExternalLink, Sun, Moon, ScrollText, Boxes, ChevronDown, ChevronRight, KeyRound,
 } from "lucide-react";
 import { useTheme } from "../ui/ThemeProvider";
 import { cn } from "../../lib/utils";
@@ -60,6 +60,7 @@ function useNavSections(ragEnabled: boolean): NavSection[] {
         { name: "Minions",        path: "/infrastructure/minions",          icon: Server },
         { name: "Groups",         path: "/infrastructure/organisations",    icon: Building2 },
         { name: "Blueprints",     path: "/infrastructure/blueprints",       icon: ScrollText },
+        { name: "Keys",           path: "/infrastructure/keys",             icon: KeyRound },
         { name: "Compliance",     path: "/patching",                        icon: ShieldCheck },
         { name: "Pipelines",      path: "/patching/pipelines",              icon: ArrowRightCircle },
         { name: "Schedules",      path: "/patching/schedules",              icon: Clock },

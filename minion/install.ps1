@@ -4,6 +4,7 @@
 param(
     [string]$Url   = "http://localhost:8000",
     [string]$Token = "",
+    [string]$Key   = "",
     [string]$Org   = "",
     [string]$Env   = ""
 )
@@ -96,6 +97,7 @@ if (Test-Path $ConfigFile) {
     $existingId = (Get-Content $ConfigFile | Where-Object { $_ -match "^MINION_ID=" }) -replace "^MINION_ID=",""
 }
 $config = "DOKOPS_URL=$Url`nMINION_TOKEN=$Token`nORG=$Org`nENV=$Env"
+if ($Key)        { $config += "`nKEY=$Key" }
 if ($existingId) { $config += "`nMINION_ID=$existingId" }
 [System.IO.File]::WriteAllText($ConfigFile, $config, [System.Text.UTF8Encoding]::new($false))
 

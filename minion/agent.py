@@ -445,6 +445,19 @@ async def handle_messages(ws) -> None:
             asyncio.ensure_future(_discover())
 
 
+def build_ws_url(base_url: str, minion_id: str, token: Optional[str], key: str = "") -> str:
+    base_url = base_url.rstrip("/")
+    scheme = "wss" if base_url.startswith("https") else "ws"
+    host = base_url.split("://", 1)[1]
+    url = f"{scheme}://{host}/api/v1/minions/ws/{minion_id}"
+    if token:
+        url += f"?token={token}"
+    if key:
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}key={key}"
+    return url
+
+
 async def connect_and_run(url: str, token: Optional[str], org: str = "", env: str = "") -> None:
     import websockets
 
@@ -521,9 +534,8 @@ async def main() -> None:
         with CONFIG_FILE.open("a") as f:
             f.write(f"\nMINION_ID={minion_id}\n")
 
-    ws_scheme = "wss" if base_url.startswith("https") else "ws"
-    host = base_url.split("://", 1)[1]
-    ws_url = f"{ws_scheme}://{host}/api/v1/minions/ws/{minion_id}"
+    key = cfg.get("KEY", "")
+    ws_url = build_ws_url(base_url, minion_id, token, key)
 
     backoff = 1
     while True:

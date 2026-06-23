@@ -5,6 +5,7 @@ set -euo pipefail
 
 DOKOPS_URL="${DOKOPS_URL:-}"
 TOKEN=""
+KEY=""
 ORG=""
 ENV=""
 
@@ -12,6 +13,7 @@ for arg in "$@"; do
   case "$arg" in
     --token=*) TOKEN="${arg#--token=}" ;;
     --url=*)   DOKOPS_URL="${arg#--url=}" ;;
+    --key=*)   KEY="${arg#--key=}" ;;
     --org=*)   ORG="${arg#--org=}" ;;
     --env=*)   ENV="${arg#--env=}" ;;
   esac
@@ -53,12 +55,14 @@ chmod +x /usr/local/bin/dokops-minion-agent.py
 curl -fsSL "$DOKOPS_URL/minion/blueprint.py" -o /usr/local/bin/blueprint.py
 
 # Write config
-cat > /etc/dokops-minion/config.env <<EOF
+CONFIG_FILE=/etc/dokops-minion/config.env
+cat > "$CONFIG_FILE" <<EOF
 DOKOPS_URL=$DOKOPS_URL
 MINION_TOKEN=$TOKEN
 ORG=$ORG
 ENV=$ENV
 EOF
+[ -n "$KEY" ] && echo "KEY=$KEY" >> "$CONFIG_FILE"
 
 # Resolve full path for use in heredoc
 PYTHON_BIN=$(command -v $PYTHON)

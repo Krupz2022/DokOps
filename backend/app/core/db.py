@@ -16,6 +16,7 @@ from app.models.oauth_state import OAuthState  # noqa: F401
 from app.models.workflow import Workflow, WorkflowRun  # noqa: F401
 from app.models.activation import Activation  # noqa: F401
 from app.models.minion import Minion, MinionJob  # noqa: F401
+from app.models.activation_key import ActivationKey, KeyBlueprint  # noqa: F401
 from app.models.cluster import ClusterConnection, CloudCredential  # noqa: F401
 from app.models.patch import (  # noqa: F401 — imported for SQLModel table creation
     Organisation, MinionGroup, MinionGroupMember, MinionPatch,

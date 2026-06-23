@@ -7,6 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.minion import Minion
 from app.models.patch import MinionGroup, MinionGroupMember, Organisation
 from app.models.blueprint import BlueprintSource, BlueprintAssignment, Blueprint
+from app.models.activation_key import KeyBlueprint
 
 
 def merge_blueprints(ordered_yaml_bodies: list[str]) -> list[dict]:
@@ -89,4 +90,24 @@ async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict
         )).all():
             pool[src.name] = src.content
 
+    return merged, collect_referenced_sources(merged, pool)
+
+
+async def compile_key_blueprints(key_id: str, db: AsyncSession) -> tuple[list[dict], dict[str, str]]:
+    """Merge an activation key's attached blueprints (in position order) + bundle their sources."""
+    rows = (await db.exec(
+        select(KeyBlueprint).where(KeyBlueprint.key_id == key_id).order_by(KeyBlueprint.position)
+    )).all()
+    blueprints: list[Blueprint] = []
+    for kb in rows:
+        bp = await db.get(Blueprint, kb.blueprint_id)
+        if bp:
+            blueprints.append(bp)
+    merged = merge_blueprints([bp.yaml_body for bp in blueprints])
+    pool: dict[str, str] = {}
+    for bp in blueprints:
+        for src in (await db.exec(
+            select(BlueprintSource).where(BlueprintSource.blueprint_id == bp.id)
+        )).all():
+            pool[src.name] = src.content
     return merged, collect_referenced_sources(merged, pool)

@@ -19,6 +19,20 @@ export default function Keys() {
   const [runOnAttach, setRunOnAttach] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [created, setCreated] = useState<CreatedKey | null>(null);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenSaved, setTokenSaved] = useState(false);
+
+  function genToken() { setTokenInput(crypto.randomUUID().replace(/-/g, "")); }
+  async function saveToken() {
+    if (!tokenInput.trim()) return;
+    try {
+      await api.post("/ai/config", { minion_auto_accept_key: tokenInput.trim() });
+      setTokenSaved(true);
+      setTimeout(() => setTokenSaved(false), 4000);
+    } catch {
+      toast("Failed to save enrollment token", "error");
+    }
+  }
 
   async function loadKeys() { setKeys((await api.get("/keys")).data as ActivationKey[]); }
   useEffect(() => {
@@ -75,6 +89,22 @@ export default function Keys() {
           A key attaches blueprints to onboarding. Install a machine with <code>-Key &lt;value&gt;</code> and,
           if "run on attach" is on, its blueprints apply once. <code>-Token</code> still handles enrollment auth.
         </p>
+      </div>
+
+      {/* Global enrollment token (the --token auto-accept key every minion installs with) */}
+      <div className="mb-6 bg-card border border-border rounded-xl p-4">
+        <h2 className="text-sm font-semibold text-foreground">Enrollment token</h2>
+        <p className="text-xs text-muted-foreground mt-1 mb-2 max-w-2xl">
+          The shared <code>-Token</code> every minion installs with — a matching token auto-accepts the machine on connect. Set it once; it's stored hashed, so copy it for your install commands.
+        </p>
+        <div className="flex gap-2 items-center max-w-2xl">
+          <input value={tokenInput} onChange={e => setTokenInput(e.target.value)} placeholder="enrollment token value"
+            className="flex-1 bg-background border border-border rounded-lg px-3 py-2 font-mono text-xs text-foreground" />
+          <button onClick={genToken} className="text-xs px-2 py-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground">generate</button>
+          <button onClick={saveToken} disabled={!tokenInput.trim()}
+            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium disabled:opacity-50">Save</button>
+          {tokenSaved && <span className="text-xs text-green-400">saved</span>}
+        </div>
       </div>
 
       {created && (

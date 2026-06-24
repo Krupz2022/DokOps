@@ -211,10 +211,68 @@ def test_portainer_config_roundtrip_redacts_key(client):
     assert "api_key" not in body
 
 
-def test_docker_503_when_unconfigured(client, session):
+def _seed_minion_docker(session, os_id="ubuntu", docker="24.0.5"):
+    import json as _json
+    from app.models.minion import Minion
+    session.add(Minion(id="m1", hostname="h", status="active",
+                       grains=_json.dumps({"os": os_id, "docker": docker})))
+    session.commit()
+
+
+def test_parse_docker_cli_maps_to_portainer_shape():
+    from app.services.live_resources import parse_docker_cli
+    out = (
+        '{"ID":"abc123","Names":"web","Image":"nginx:latest","State":"running","Status":"Up 2h"}\n'
+        "@@IMAGES@@\n"
+        '{"ID":"img1","Repository":"nginx","Tag":"latest"}\n'
+        "@@VOLUMES@@\n"
+        '{"Name":"vol1","Driver":"local"}\n'
+        "@@NETWORKS@@\n"
+        '{"ID":"net1","Name":"bridge","Driver":"bridge"}\n'
+    )
+    d = parse_docker_cli(out)
+    assert d["containers"] == [{"Id": "abc123", "Names": ["/web"], "Image": "nginx:latest",
+                               "State": "running", "Status": "Up 2h"}]
+    assert d["images"] == [{"Id": "img1", "RepoTags": ["nginx:latest"]}]
+    assert d["volumes"] == {"Volumes": [{"Name": "vol1", "Driver": "local"}]}
+    assert d["networks"] == [{"Id": "net1", "Name": "bridge", "Driver": "bridge"}]
+
+
+def test_docker_unconfigured_503_when_disconnected(client, session):
+    # No Portainer config → fallback path → minion not connected → 503.
     _seed_minion(session)
     r = client.get("/api/v1/minions/m1/resources/docker")
     assert r.status_code == 503
+
+
+def test_docker_fallback_502_when_host_has_no_docker(client, session):
+    # No Portainer, connected, but grains report no docker → clear 502.
+    _seed_minion(session, "windows")  # grains has no "docker" key
+    from app.services.minion_service import manager
+    with patch.object(manager, "is_connected", return_value=True):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 502
+    assert "Docker is not installed" in r.json()["detail"]
+
+
+def test_docker_fallback_uses_agent_cli(client, session):
+    _seed_minion_docker(session, "ubuntu", "24.0.5")
+    from app.services.minion_service import manager
+    captured = {}
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        captured["god_mode"] = god_mode
+        return {"stdout": '{"ID":"c1","Names":"web","Image":"nginx","State":"running","Status":"Up"}\n'
+                          "@@IMAGES@@\n@@VOLUMES@@\n@@NETWORKS@@\n", "exit_code": 0}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "agent"
+    assert body["containers"][0]["Id"] == "c1"
+    assert captured["god_mode"] is True
 
 
 def test_docker_proxies_when_configured(client, session):

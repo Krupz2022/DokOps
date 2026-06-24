@@ -53,6 +53,18 @@ def client_fixture(session: Session):
 from app.services.live_resources import services_command, parse_services
 
 
+def test_get_service_allowlist_blocks_chaining():
+    from app.services.minion_service import is_read_allowed
+    # the real feature command (single pipe) is allowed
+    assert is_read_allowed("Get-Service | Where-Object {$_.Status -eq 'Running'}")
+    assert is_read_allowed("systemctl list-units --type=service | grep ssh")
+    # statement chaining / command substitution is rejected even behind a safe prefix
+    assert not is_read_allowed("Get-Service; Remove-Item -Recurse C:/data")
+    assert not is_read_allowed("Get-Service | Out-Null; Remove-Item C:/data")
+    assert not is_read_allowed("docker ps && rm -rf /")
+    assert not is_read_allowed("docker ps $(rm -rf /)")
+
+
 def test_services_command_picks_os():
     assert services_command("ubuntu").startswith("systemctl list-units")
     assert services_command("windows").startswith("Get-Service")

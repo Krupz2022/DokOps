@@ -4,6 +4,7 @@ import api from "../lib/api";
 import MinionApproveModal from "../components/MinionApproveModal";
 import MinionJobModal from "../components/MinionJobModal";
 import BlueprintTab from "../components/minion/BlueprintTab";
+import ResourcesTab from "../components/minion/ResourcesTab";
 
 interface Minion {
   id: string; hostname: string; status: string;
@@ -76,7 +77,7 @@ export default function MinionDetail() {
   const [showApprove, setShowApprove] = useState(false);
   const [showJob, setShowJob] = useState(false);
   const [jobOutput, setJobOutput] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "jobs" | "services" | "blueprints">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "jobs" | "services" | "resources" | "blueprints">("overview");
   const [services, setServices] = useState<DiscoveredService[]>([]);
   const [credScopes, setCredScopes] = useState<Record<string, CredentialScope>>({});
   const [diagService, setDiagService] = useState<DiscoveredService | null>(null);
@@ -239,7 +240,7 @@ export default function MinionDetail() {
 
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-border mb-6">
-        {(["overview", "jobs", "services", "blueprints"] as const).map(tab => (
+        {(["overview", "jobs", "services", "resources", "blueprints"] as const).map(tab => (
           <button
             key={tab}
             onClick={() => { setActiveTab(tab); setDiagService(null); }}
@@ -414,6 +415,10 @@ export default function MinionDetail() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === "resources" && minionId && (
+        <ResourcesTab minionId={minionId} />
       )}
 
       {activeTab === "blueprints" && minionId && (

@@ -33,6 +33,7 @@ from app.services.minion_service import (
     run_hub,
 )
 from app.services.service_discovery_service import parse_discovery_output, persist_discovery, DISCOVERY_COMMANDS
+from app.services import live_resources
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ class ServiceOverrideCreate(BaseModel):
     install_type: str = "native"
     container_name: Optional[str] = None
     port: int
+
+
+class PortainerConfigIn(BaseModel):
+    base_url: str
+    api_key: str
+    endpoint_id: int = 1
 
 
 router = APIRouter()
@@ -277,6 +284,29 @@ async def delete_service_override(
     return {"deleted": True}
 
 
+@router.get("/{minion_id}/portainer")
+async def get_portainer(
+    minion_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    cfg = await live_resources.get_portainer_config(minion_id, db)
+    if not cfg:
+        return {"configured": False, "base_url": None, "endpoint_id": None}
+    return {"configured": True, "base_url": cfg.get("base_url"), "endpoint_id": cfg.get("endpoint_id")}
+
+
+@router.put("/{minion_id}/portainer")
+async def put_portainer(
+    minion_id: str,
+    body: PortainerConfigIn,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    await live_resources.set_portainer_config(minion_id, body.model_dump(), db)
+    return {"saved": True}
+
+
 # ── Blueprint endpoints ─────────────────────────────────────────────────────
 
 @router.get("/blueprint/runs/{run_id}")
@@ -338,6 +368,7 @@ async def run_blueprint_endpoint(
         raise HTTPException(status_code=503, detail="Minion is not connected")
 
     states, sources = await compile_blueprint(minion_id, db)
+
     run = BlueprintRun(minion_id=minion_id, actor=current_user.username, test=test, status="running")
     db.add(run)
     if not test:

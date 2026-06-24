@@ -7,7 +7,7 @@ import { LogsTerminal } from "../ui/LogsTerminal";
 import ReactMarkdown from "react-markdown";
 
 interface DockerData {
-  source?: "portainer" | "agent";
+  source?: "portainer" | "portainer-edge" | "agent";
   containers: { Id: string; Names?: string[]; Image?: string; State?: string; Status?: string }[];
   images: { Id: string; RepoTags?: string[]; Size?: number }[];
   volumes: { Volumes?: { Name: string; Driver: string }[] };
@@ -27,7 +27,8 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [svcErr, setSvcErr] = useState<string | null>(null);
   const [svcLoaded, setSvcLoaded] = useState(false);
   const [configured, setConfigured] = useState<boolean | null>(null);
-  const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1 });
+  const [ptr, setPtr] = useState<{ base_url?: string; endpoint_id?: number; via_agent?: boolean }>({});
+  const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1, via_agent: true });
   const [cfgErr, setCfgErr] = useState<string | null>(null);
   const [showCfg, setShowCfg] = useState(false);
   const [logName, setLogName] = useState<string | null>(null);
@@ -53,6 +54,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     try {
       const cfg = await api.get(`/minions/${minionId}/portainer`);
       setConfigured(cfg.data.configured);
+      setPtr({ base_url: cfg.data.base_url, endpoint_id: cfg.data.endpoint_id, via_agent: cfg.data.via_agent });
     } catch { /* config probe failure shouldn't blank docker */ }
     try {
       const d = await api.get(`/minions/${minionId}/resources/docker`);
@@ -238,10 +240,23 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
         </div>
         <div className="flex items-center gap-3 text-xs pb-1">
           {docker?.source && (
-            <span className="text-muted-foreground">via {docker.source === "portainer" ? "Portainer" : "agent (docker CLI)"}</span>
+            <span className="text-muted-foreground">via {
+              docker.source === "portainer" ? "Portainer (VM)"
+                : docker.source === "portainer-edge" ? "Portainer (edge agent)"
+                : "agent (docker CLI)"
+            }</span>
           )}
           {tab !== "services" && (
-            <button onClick={() => setShowCfg(v => !v)} className="text-primary hover:underline">
+            <button onClick={() => setShowCfg(v => {
+              const next = !v;
+              if (next) setForm(f => ({
+                ...f,
+                base_url: ptr.base_url ?? f.base_url,
+                endpoint_id: ptr.endpoint_id ?? f.endpoint_id,
+                via_agent: ptr.via_agent ?? true,
+              }));
+              return next;
+            })} className="text-primary hover:underline">
               {configured ? "Reconfigure Portainer" : "Configure Portainer"}
             </button>
           )}
@@ -271,6 +286,14 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
               <input type="number" className="mt-1 w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
                 value={form.endpoint_id} onChange={e => setForm({ ...form, endpoint_id: Number(e.target.value) })} />
               <span className="text-[11px] text-muted-foreground">Usually <code>1</code> for a local Portainer. It's the number in Portainer's URL: <code>/#!/&lt;id&gt;/docker/…</code></span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={form.via_agent}
+                onChange={e => setForm({ ...form, via_agent: e.target.checked })} />
+              <span className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Fetch from the minion (edge)</span> — the agent queries Portainer locally and returns the data.
+                Use this when Portainer is only reachable on the minion's network, not from the DokOps server. The URL above is then from the <em>minion's</em> view (often <code>https://localhost:9443</code>).
+              </span>
             </label>
             <button onClick={saveConfig} className="px-3 py-1.5 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">Save &amp; connect</button>
             {cfgErr && <p className="text-sm text-red-400">{cfgErr}</p>}

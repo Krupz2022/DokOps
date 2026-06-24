@@ -62,6 +62,7 @@ async def set_portainer_config(minion_id: str, cfg: dict, db: AsyncSession) -> N
         "base_url": cfg["base_url"].rstrip("/"),
         "api_key": cfg["api_key"],
         "endpoint_id": int(cfg["endpoint_id"]),
+        "via_agent": bool(cfg.get("via_agent", True)),
     })
     if row:
         row.value = value

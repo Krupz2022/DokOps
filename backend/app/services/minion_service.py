@@ -82,6 +82,7 @@ class MinionConnectionManager:
         self._connections: dict[str, WebSocket] = {}
         self._pending_jobs: dict[str, asyncio.Future] = {}
         self._job_chunks: dict[str, list[str]] = {}
+        self._pending_portainer: dict[str, asyncio.Future] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -197,6 +198,39 @@ class MinionConnectionManager:
 
         # handle_done already persisted status/exit_code — no DB write needed here
         return result
+
+    # ------------------------------------------------------------------
+    # Portainer fetch via the agent (edge networks the VM can't reach)
+    # ------------------------------------------------------------------
+
+    async def fetch_portainer(
+        self, minion_id: str, base_url: str, api_key: str, endpoint_id: int, timeout: int = 20,
+    ) -> dict:
+        """Ask the agent to query its LOCAL Portainer and return the Docker resources.
+        Raises RuntimeError if the minion is offline or the agent reports an error."""
+        ws = self._connections.get(minion_id)
+        if not ws:
+            raise RuntimeError(f"Minion {minion_id} is not connected")
+        req_id = str(uuid4())
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_portainer[req_id] = future
+        await ws.send_json({
+            "type": "portainer_fetch", "req_id": req_id,
+            "base_url": base_url, "api_key": api_key, "endpoint_id": endpoint_id,
+        })
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_portainer.pop(req_id, None)
+            raise RuntimeError("Agent did not return Portainer data in time")
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        return result.get("data", {})
+
+    def handle_portainer_result(self, req_id: str, payload: dict) -> None:
+        future = self._pending_portainer.pop(req_id, None)
+        if future and not future.done():
+            future.set_result(payload)
 
     # ------------------------------------------------------------------
     # Control messages
@@ -450,10 +484,15 @@ async def apply_enrollment_key(minion_id: str, key_value: str) -> None:
             _log.info("enroll: minion %s sent an unknown/disabled activation key", minion_id)
             return
 
-        # authoritative placement (idempotent)
-        if key.group_id and not await db.get(MinionGroupMember, (key.group_id, minion_id)):
-            db.add(MinionGroupMember(group_id=key.group_id, minion_id=minion_id))
-            await db.commit()
+        # authoritative placement (idempotent): only place an *ungrouped* minion, so we
+        # never create a second membership or override a manual group assignment.
+        if key.group_id:
+            already = (await db.exec(
+                select(MinionGroupMember).where(MinionGroupMember.minion_id == minion_id)
+            )).first()
+            if not already:
+                db.add(MinionGroupMember(group_id=key.group_id, minion_id=minion_id))
+                await db.commit()
 
         minion = await db.get(Minion, minion_id)
         if not (key.run_on_attach and minion and not minion.bootstrapped):

@@ -49,6 +49,7 @@ class PortainerConfigIn(BaseModel):
     base_url: str
     api_key: str
     endpoint_id: int = 1
+    via_agent: bool = True  # default: fetch from the minion (works for edge + co-located Portainer)
 
 
 router = APIRouter()
@@ -292,8 +293,13 @@ async def get_portainer(
 ):
     cfg = await live_resources.get_portainer_config(minion_id, db)
     if not cfg:
-        return {"configured": False, "base_url": None, "endpoint_id": None}
-    return {"configured": True, "base_url": cfg.get("base_url"), "endpoint_id": cfg.get("endpoint_id")}
+        return {"configured": False, "base_url": None, "endpoint_id": None, "via_agent": True}
+    return {
+        "configured": True,
+        "base_url": cfg.get("base_url"),
+        "endpoint_id": cfg.get("endpoint_id"),
+        "via_agent": cfg.get("via_agent", False),
+    }
 
 
 @router.put("/{minion_id}/portainer")
@@ -369,6 +375,18 @@ async def live_docker(
 ):
     cfg = await live_resources.get_portainer_config(minion_id, db)
     if cfg:
+        if cfg.get("via_agent"):
+            # Portainer is reachable only from the edge: the agent queries it locally.
+            if not manager.is_connected(minion_id):
+                raise HTTPException(status_code=503, detail="Minion is not connected")
+            try:
+                data = await manager.fetch_portainer(
+                    minion_id, cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
+                )
+            except Exception as e:  # noqa: BLE001 — surface agent/Portainer failure to UI
+                raise HTTPException(status_code=502, detail=f"Portainer (via agent) request failed: {e}")
+            data["source"] = "portainer-edge"
+            return data
         try:
             data = await live_resources.fetch_docker_resources(
                 cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
@@ -667,6 +685,9 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
 
             elif msg_type == "blueprint_event":
                 await manager.handle_blueprint_event(data["run_id"], data.get("event", {}))
+
+            elif msg_type == "portainer_result":
+                manager.handle_portainer_result(data.get("req_id", ""), data)
 
             elif msg_type == "discover_services_result":
                 platform_name = data.get("platform", "linux")

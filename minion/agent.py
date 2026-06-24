@@ -380,10 +380,17 @@ async def handle_messages(ws) -> None:
                                               "event": {"kind": "error", "message": "blueprint engine not installed"}}))
                     return
                 try:
+                    import urllib.request, urllib.parse
+
+                    def _fetch(source_id):
+                        u = f"{globals().get('_DOKOPS_URL', '')}/minion/source/{source_id}?token={urllib.parse.quote(globals().get('_MINION_TOKEN') or '')}"
+                        with urllib.request.urlopen(u, timeout=120) as r:
+                            return r.read()
+
                     results = await asyncio.to_thread(
                         blueprint_engine.run_blueprint,
                         _msg.get("resources", []), _msg.get("sources", {}),
-                        bool(_msg.get("test", True)), _emit,
+                        bool(_msg.get("test", True)), _emit, _fetch,
                     )
                     await ws.send(json.dumps({"type": "blueprint_event", "run_id": _run_id,
                                               "event": {"kind": "done", "results": results}}))
@@ -443,6 +450,37 @@ async def handle_messages(ws) -> None:
                         "docker": docker_out,
                     }))
             asyncio.ensure_future(_discover())
+
+        elif t == "portainer_fetch":
+            async def _portainer(_msg=msg):
+                req_id = _msg.get("req_id")
+                base = (_msg.get("base_url") or "").rstrip("/")
+                api_key = _msg.get("api_key") or ""
+                eid = _msg.get("endpoint_id", 1)
+
+                def _fetch_all():
+                    import urllib.request, ssl, json as _json
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE  # Portainer often uses a self-signed cert
+                    def _get(path):
+                        url = f"{base}/api/endpoints/{eid}/docker{path}"
+                        req = urllib.request.Request(url, headers={"X-API-Key": api_key})
+                        with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
+                            return _json.loads(r.read().decode("utf-8", "replace"))
+                    return {
+                        "containers": _get("/containers/json?all=1"),
+                        "images": _get("/images/json"),
+                        "volumes": _get("/volumes"),
+                        "networks": _get("/networks"),
+                    }
+
+                try:
+                    data = await asyncio.to_thread(_fetch_all)
+                    await ws.send(json.dumps({"type": "portainer_result", "req_id": req_id, "data": data}))
+                except Exception as e:  # noqa: BLE001 — report failure back to the master
+                    await ws.send(json.dumps({"type": "portainer_result", "req_id": req_id, "error": str(e)}))
+            asyncio.ensure_future(_portainer())
 
 
 def build_ws_url(base_url: str, minion_id: str, token: Optional[str], key: str = "") -> str:
@@ -521,6 +559,8 @@ async def main() -> None:
     base_url = cfg.get("DOKOPS_URL", "http://localhost:8000").rstrip("/")
     minion_id = cfg.get("MINION_ID")
     token = cfg.get("MINION_TOKEN")
+    globals()["_DOKOPS_URL"] = base_url
+    globals()["_MINION_TOKEN"] = token
     org = cfg.get("ORG", "")
     env = cfg.get("ENV", "")
 

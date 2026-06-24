@@ -159,3 +159,19 @@ def test_docker_proxies_when_configured(client, session):
         r = client.get("/api/v1/minions/m1/resources/docker")
     assert r.status_code == 200
     assert r.json()["containers"][0]["Id"] == "abc"
+
+
+def test_docker_502_when_portainer_fails(client, session):
+    _seed_minion(session)
+    client.put("/api/v1/minions/m1/portainer", json={
+        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1,
+    })
+    import httpx
+    from app.services import live_resources as lr
+
+    async def boom(base_url, api_key, endpoint_id):
+        raise httpx.ConnectError("connection refused")
+
+    with patch.object(lr, "fetch_docker_resources", side_effect=boom):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 502

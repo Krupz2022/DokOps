@@ -333,6 +333,34 @@ async def live_services(
     return {"services": live_resources.parse_services(os_id, result.get("stdout", ""))}
 
 
+@router.get("/{minion_id}/resources/services/{name}/logs")
+async def live_service_logs(
+    minion_id: str,
+    name: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    # Strict charset check: name is interpolated into the dispatched command.
+    if not live_resources.valid_service_name(name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    try:
+        grains = json.loads(m.grains or "{}")
+    except (ValueError, TypeError):
+        grains = {}
+    os_id = grains.get("os", "")
+    cmd = live_resources.service_logs_command(os_id, name)
+    # Built from a validated name (no shell metachars) — trusted dispatch, bypasses allowlist.
+    # Note: `systemctl status` exits non-zero for a stopped unit, so we don't treat exit_code
+    # as an error here — the output itself is what the user wants to see.
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_service_logs", timeout=30, god_mode=True)
+    return {"output": result.get("stdout", "")}
+
+
 @router.get("/{minion_id}/resources/docker")
 async def live_docker(
     minion_id: str,

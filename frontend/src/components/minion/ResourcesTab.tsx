@@ -19,6 +19,9 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1 });
   const [cfgErr, setCfgErr] = useState<string | null>(null);
+  const [logSvc, setLogSvc] = useState<string | null>(null);
+  const [logOut, setLogOut] = useState("");
+  const [logLoading, setLogLoading] = useState(false);
 
   const detail = (e: unknown): string =>
     (e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed";
@@ -66,6 +69,20 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
       poll();
     } catch (e: unknown) {
       setCfgErr(detail(e));
+    }
+  }
+
+  async function openLogs(name: string) {
+    setLogSvc(name);
+    setLogOut("");
+    setLogLoading(true);
+    try {
+      const r = await api.get(`/minions/${minionId}/resources/services/${encodeURIComponent(name)}/logs`);
+      setLogOut(r.data.output || "(no output)");
+    } catch (e: unknown) {
+      setLogOut(`Error: ${detail(e)}`);
+    } finally {
+      setLogLoading(false);
     }
   }
 
@@ -118,14 +135,34 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
           services.length === 0 ? <p className="text-sm text-muted-foreground">{svcLoaded ? "No running services" : "Loading…"}</p> : (
             <div className="grid grid-cols-2 gap-x-8 gap-y-1">
               {services.map(s => (
-                <div key={s.name} className="flex items-center gap-2 text-sm">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400" />
-                  <span className="text-foreground truncate" title={s.display_name}>{s.name}</span>
-                </div>
+                <button key={s.name} onClick={() => openLogs(s.name)}
+                  className="flex items-center gap-2 text-sm text-left rounded px-1 -mx-1 hover:bg-muted/50 transition-colors">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                  <span className="text-foreground truncate hover:text-primary" title={s.display_name}>{s.name}</span>
+                </button>
               ))}
             </div>
           )}
       </div>
+
+      {/* Service status + logs modal */}
+      {logSvc && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setLogSvc(null)}>
+          <div className="bg-card border border-border rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <span className="font-semibold text-foreground">{logSvc} — status &amp; logs</span>
+              <button onClick={() => setLogSvc(null)} className="text-muted-foreground hover:text-foreground">✕</button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {logLoading ? (
+                <p className="text-xs text-muted-foreground">Loading…</p>
+              ) : (
+                <pre className="text-xs font-mono text-foreground whitespace-pre-wrap">{logOut}</pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

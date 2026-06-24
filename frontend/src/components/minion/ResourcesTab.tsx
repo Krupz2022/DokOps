@@ -298,7 +298,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
           <div className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-border">
               <span className="font-semibold text-foreground flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-purple-400" /> AI Analysis — {aiName}
+                <Sparkles className="w-4 h-4 text-primary" /> AI Analysis — {aiName}
               </span>
               <button onClick={() => setAiName(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
             </div>
@@ -319,7 +319,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
 function AiBtn({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={onClick} title="AI analyze logs"
-      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors">
+      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-primary/30 text-primary hover:bg-primary/10 transition-colors">
       <Sparkles className="w-3.5 h-3.5" /> AI
     </button>
   );

@@ -137,3 +137,25 @@ def test_portainer_config_roundtrip_redacts_key(client):
     body = r.json()
     assert body == {"configured": True, "base_url": "https://host:9443", "endpoint_id": 2}
     assert "api_key" not in body
+
+
+def test_docker_503_when_unconfigured(client, session):
+    _seed_minion(session)
+    r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 503
+
+
+def test_docker_proxies_when_configured(client, session):
+    _seed_minion(session)
+    client.put("/api/v1/minions/m1/portainer", json={
+        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1,
+    })
+    from app.services import live_resources as lr
+
+    async def fake_fetch(base_url, api_key, endpoint_id):
+        return {"containers": [{"Id": "abc"}], "images": [], "volumes": {"Volumes": []}, "networks": []}
+
+    with patch.object(lr, "fetch_docker_resources", side_effect=fake_fetch):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 200
+    assert r.json()["containers"][0]["Id"] == "abc"

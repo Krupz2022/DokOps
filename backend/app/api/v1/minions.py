@@ -330,6 +330,23 @@ async def live_services(
     return {"services": live_resources.parse_services(os_id, result.get("stdout", ""))}
 
 
+@router.get("/{minion_id}/resources/docker")
+async def live_docker(
+    minion_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    cfg = await live_resources.get_portainer_config(minion_id, db)
+    if not cfg:
+        raise HTTPException(status_code=503, detail="Portainer not configured for this minion")
+    try:
+        return await live_resources.fetch_docker_resources(
+            cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
+        )
+    except Exception as e:  # noqa: BLE001 — surface Portainer/network failure to UI
+        raise HTTPException(status_code=502, detail=f"Portainer request failed: {e}")
+
+
 # ── Blueprint endpoints ─────────────────────────────────────────────────────
 
 @router.get("/blueprint/runs/{run_id}")

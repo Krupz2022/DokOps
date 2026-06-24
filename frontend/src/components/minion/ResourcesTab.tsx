@@ -13,27 +13,42 @@ interface Svc { name: string; display_name: string; status: string }
 export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [services, setServices] = useState<Svc[]>([]);
   const [svcErr, setSvcErr] = useState<string | null>(null);
+  const [svcLoaded, setSvcLoaded] = useState(false);
   const [docker, setDocker] = useState<DockerData | null>(null);
   const [dockerErr, setDockerErr] = useState<string | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1 });
+  const [cfgErr, setCfgErr] = useState<string | null>(null);
+
+  const detail = (e: unknown): string =>
+    (e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed";
 
   const poll = useCallback(async () => {
     try {
       const r = await api.get(`/minions/${minionId}/resources/services`);
       setServices(r.data.services); setSvcErr(null);
     } catch (e: unknown) {
-      setSvcErr((e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed");
+      setSvcErr(detail(e));
+    } finally {
+      setSvcLoaded(true);
     }
+    // Config and Docker fetches are independent: a Docker 502/503 must not blank the config state.
+    let isConfigured = false;
     try {
       const cfg = await api.get(`/minions/${minionId}/portainer`);
       setConfigured(cfg.data.configured);
-      if (cfg.data.configured) {
+      isConfigured = cfg.data.configured;
+    } catch (e: unknown) {
+      setDockerErr(detail(e));
+      return;
+    }
+    if (isConfigured) {
+      try {
         const d = await api.get(`/minions/${minionId}/resources/docker`);
         setDocker(d.data); setDockerErr(null);
+      } catch (e: unknown) {
+        setDockerErr(detail(e));
       }
-    } catch (e: unknown) {
-      setDockerErr((e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed");
     }
   }, [minionId]);
 
@@ -44,9 +59,14 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   }, [poll]);
 
   async function saveConfig() {
-    await api.put(`/minions/${minionId}/portainer`, form);
-    setConfigured(true);
-    poll();
+    try {
+      await api.put(`/minions/${minionId}/portainer`, form);
+      setCfgErr(null);
+      setConfigured(true);
+      poll();
+    } catch (e: unknown) {
+      setCfgErr(detail(e));
+    }
   }
 
   const card = "bg-card border border-border rounded-xl p-4";
@@ -71,6 +91,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
               className="px-3 py-1.5 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
               Save & connect
             </button>
+            {cfgErr && <p className="text-sm text-red-400">{cfgErr}</p>}
           </div>
         ) : dockerErr ? (
           <p className="text-sm text-red-400">{dockerErr}</p>
@@ -94,7 +115,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
       <div className={card}>
         <h2 className="text-xs text-muted-foreground uppercase tracking-wider mb-3">System Services (live)</h2>
         {svcErr ? <p className="text-sm text-red-400">{svcErr}</p> :
-          services.length === 0 ? <p className="text-sm text-muted-foreground">Loading…</p> : (
+          services.length === 0 ? <p className="text-sm text-muted-foreground">{svcLoaded ? "No running services" : "Loading…"}</p> : (
             <div className="grid grid-cols-2 gap-x-8 gap-y-1">
               {services.map(s => (
                 <div key={s.name} className="flex items-center gap-2 text-sm">

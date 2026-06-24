@@ -3,6 +3,7 @@ import api from "../../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
 import { EmptyState } from "../ui/EmptyState";
 import { Box, Layers, HardDrive, Network as NetworkIcon, Server, Search, RefreshCw, FileText } from "lucide-react";
+import { LogsTerminal } from "../ui/LogsTerminal";
 
 interface DockerData {
   source?: "portainer" | "agent";
@@ -28,7 +29,8 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1 });
   const [cfgErr, setCfgErr] = useState<string | null>(null);
   const [showCfg, setShowCfg] = useState(false);
-  const [logTitle, setLogTitle] = useState<string | null>(null);
+  const [logName, setLogName] = useState<string | null>(null);
+  const [logKind, setLogKind] = useState("");
   const [logOut, setLogOut] = useState("");
   const [logLoading, setLogLoading] = useState(false);
 
@@ -72,8 +74,8 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     }
   }
 
-  async function openLogs(title: string, url: string) {
-    setLogTitle(title); setLogOut(""); setLogLoading(true);
+  async function openLogs(name: string, kind: string, url: string) {
+    setLogName(name); setLogKind(kind); setLogOut(""); setLogLoading(true);
     try {
       const r = await api.get(url);
       setLogOut(r.data.output || "(no output)");
@@ -124,7 +126,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
                 <span className="font-mono text-xs text-muted-foreground truncate">{c.Image}</span>,
                 <StateDot state={c.State} />,
                 <span className="text-xs text-muted-foreground">{c.Status}</span>,
-                <LogBtn onClick={() => openLogs(`${name} — docker logs`,
+                <LogBtn onClick={() => openLogs(name, "container",
                   `/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/logs`)} />,
               ],
             };
@@ -194,7 +196,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />{s.name}
             </span>,
             <span className="text-xs text-muted-foreground truncate">{s.display_name}</span>,
-            <LogBtn onClick={() => openLogs(`${s.name} — status & logs`,
+            <LogBtn onClick={() => openLogs(s.name, "service",
               `/minions/${minionId}/resources/services/${encodeURIComponent(s.name)}/logs`)} />,
           ],
         }))}
@@ -262,21 +264,14 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
         </CardContent>
       </Card>
 
-      {/* Logs modal */}
-      {logTitle && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setLogTitle(null)}>
-          <div className="bg-card border border-border rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <span className="font-semibold text-foreground">{logTitle}</span>
-              <button onClick={() => setLogTitle(null)} className="text-muted-foreground hover:text-foreground">✕</button>
-            </div>
-            <div className="flex-1 overflow-auto p-4">
-              {logLoading ? <p className="text-xs text-muted-foreground">Loading…</p>
-                : <pre className="text-xs font-mono text-foreground whitespace-pre-wrap">{logOut}</pre>}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Logs terminal (shared macOS-style viewer, same as K8s) */}
+      <LogsTerminal
+        isOpen={!!logName}
+        onClose={() => setLogName(null)}
+        podName={logName ?? ""}
+        namespace={logKind}
+        logs={logLoading ? "Loading…" : logOut}
+      />
     </div>
   );
 }

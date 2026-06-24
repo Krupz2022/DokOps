@@ -188,8 +188,10 @@ def parse_docker_cli(stdout: str) -> dict:
 
 def container_logs_command(name: str) -> str:
     """`docker logs` for one container (id or name). Caller MUST validate `name` with
-    valid_service_name() first — it is interpolated. Cross-platform (docker CLI)."""
-    return f"docker logs --tail 200 --timestamps {name} 2>&1"
+    valid_service_name() first — it is interpolated. Cross-platform (docker CLI).
+    No `2>&1`: the agent already merges stderr into stdout at the process level, and on
+    Windows an explicit `2>&1` makes PowerShell wrap docker's stderr as NativeCommandError."""
+    return f"docker logs --tail 200 --timestamps {name}"
 
 
 def service_logs_command(os_id: str, name: str) -> str:
@@ -206,5 +208,5 @@ def service_logs_command(os_id: str, name: str) -> str:
     return (
         f"systemctl status {name} --no-pager; "
         "echo; echo '===== recent logs ====='; "
-        f"journalctl -u {name} --no-pager -n 200 2>&1"
+        f"journalctl -u {name} --no-pager -n 200"
     )

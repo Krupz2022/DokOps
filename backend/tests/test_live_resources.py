@@ -65,6 +65,43 @@ def test_get_service_allowlist_blocks_chaining():
     assert not is_read_allowed("docker ps $(rm -rf /)")
 
 
+def test_valid_service_name_rejects_shell_metachars():
+    from app.services.live_resources import valid_service_name
+    assert valid_service_name("ssh")
+    assert valid_service_name("getty@tty1")
+    assert valid_service_name("AdobeARMservice")
+    assert not valid_service_name("ssh; rm -rf /")
+    assert not valid_service_name("foo|bar")
+    assert not valid_service_name("foo bar")
+    assert not valid_service_name("$(whoami)")
+    assert not valid_service_name("")
+
+
+def test_service_logs_400_on_bad_name(client, session):
+    _seed_minion(session)
+    r = client.get("/api/v1/minions/m1/resources/services/ssh%3Brm/logs")
+    assert r.status_code == 400
+
+
+def test_service_logs_returns_output(client, session):
+    _seed_minion(session, "ubuntu")
+    from app.services.minion_service import manager
+    captured = {}
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        captured["cmd"] = cmd
+        captured["god_mode"] = god_mode
+        return {"stdout": "● ssh.service - OpenBSD Secure Shell\n  Active: active (running)", "exit_code": 0}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/services/ssh/logs")
+    assert r.status_code == 200
+    assert "Active: active" in r.json()["output"]
+    assert captured["god_mode"] is True
+    assert "systemctl status ssh" in captured["cmd"] and "journalctl -u ssh" in captured["cmd"]
+
+
 def test_services_command_picks_os():
     assert services_command("ubuntu").startswith("systemctl list-units")
     assert services_command("windows").startswith("Get-Service")

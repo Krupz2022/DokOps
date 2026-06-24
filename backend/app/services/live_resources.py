@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Optional
 
 import httpx
@@ -113,3 +114,31 @@ def parse_services(os_id: str, stdout: str) -> list[dict[str, str]]:
             "status": parts[3],
         })
     return out
+
+
+# Service names are interpolated into a shell/PowerShell command, so they MUST match this
+# strict charset (no shell metacharacters) before being passed to service_logs_command().
+# Covers Linux unit names (incl. template units like "getty@tty1") and Windows service names.
+_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
+
+
+def valid_service_name(name: str) -> bool:
+    return bool(_SERVICE_NAME_RE.match(name or ""))
+
+
+def service_logs_command(os_id: str, name: str) -> str:
+    """Build a per-OS status+logs command for a single service.
+    Caller MUST validate `name` with valid_service_name() first — it is interpolated."""
+    if (os_id or "").lower() == "windows":
+        return (
+            f"Get-Service -Name '{name}' | Format-List Name,DisplayName,Status,StartType; "
+            "Write-Output '===== recent Service Control Manager events ====='; "
+            "Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager'} "
+            f"-MaxEvents 50 -ErrorAction SilentlyContinue | Where-Object {{$_.Message -like '*{name}*'}} "
+            "| Format-List TimeCreated,Id,LevelDisplayName,Message"
+        )
+    return (
+        f"systemctl status {name} --no-pager; "
+        "echo; echo '===== recent logs ====='; "
+        f"journalctl -u {name} --no-pager -n 200 2>&1"
+    )

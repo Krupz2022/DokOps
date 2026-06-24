@@ -106,6 +106,20 @@ def test_live_services_503_when_disconnected(client, session):
     assert r.status_code == 503
 
 
+def test_live_services_502_on_nonzero_exit(client, session):
+    _seed_minion(session, "ubuntu")
+    from app.services.minion_service import manager
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        return {"stdout": "Failed to connect to bus\n", "exit_code": 1}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/services")
+    assert r.status_code == 502
+    assert "Failed to connect to bus" in r.json()["detail"]
+
+
 def test_portainer_config_roundtrip_redacts_key(client):
     # Unset → not configured
     r = client.get("/api/v1/minions/m1/portainer")

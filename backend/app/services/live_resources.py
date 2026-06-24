@@ -5,6 +5,7 @@ import json
 from typing import Optional
 
 from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.setting import SystemSetting
 
@@ -13,7 +14,7 @@ def portainer_setting_key(minion_id: str) -> str:
     return f"portainer:{minion_id}"
 
 
-async def get_portainer_config(minion_id: str, db) -> Optional[dict]:
+async def get_portainer_config(minion_id: str, db: AsyncSession) -> Optional[dict]:
     row = (await db.exec(
         select(SystemSetting).where(SystemSetting.key == portainer_setting_key(minion_id))
     )).first()
@@ -26,7 +27,7 @@ async def get_portainer_config(minion_id: str, db) -> Optional[dict]:
     return cfg
 
 
-async def set_portainer_config(minion_id: str, cfg: dict, db) -> None:
+async def set_portainer_config(minion_id: str, cfg: dict, db: AsyncSession) -> None:
     key = portainer_setting_key(minion_id)
     row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
     value = json.dumps({

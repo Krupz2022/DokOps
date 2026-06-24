@@ -186,6 +186,12 @@ def parse_docker_cli(stdout: str) -> dict:
     return {"containers": containers, "images": images, "volumes": volumes, "networks": networks}
 
 
+def container_logs_command(name: str) -> str:
+    """`docker logs` for one container (id or name). Caller MUST validate `name` with
+    valid_service_name() first — it is interpolated. Cross-platform (docker CLI)."""
+    return f"docker logs --tail 200 --timestamps {name} 2>&1"
+
+
 def service_logs_command(os_id: str, name: str) -> str:
     """Build a per-OS status+logs command for a single service.
     Caller MUST validate `name` with valid_service_name() first — it is interpolated."""

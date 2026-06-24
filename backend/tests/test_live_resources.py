@@ -255,6 +255,31 @@ def test_docker_fallback_502_when_host_has_no_docker(client, session):
     assert "Docker is not installed" in r.json()["detail"]
 
 
+def test_container_logs_400_on_bad_name(client, session):
+    _seed_minion(session)
+    r = client.get("/api/v1/minions/m1/resources/docker/bad%3Bname/logs")
+    assert r.status_code == 400
+
+
+def test_container_logs_returns_output(client, session):
+    _seed_minion_docker(session)
+    from app.services.minion_service import manager
+    captured = {}
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        captured["cmd"] = cmd
+        captured["god_mode"] = god_mode
+        return {"stdout": "2026-06-25T10:00:00Z hello from container", "exit_code": 0}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/docker/sleepy_bose/logs")
+    assert r.status_code == 200
+    assert "hello from container" in r.json()["output"]
+    assert "docker logs" in captured["cmd"] and "sleepy_bose" in captured["cmd"]
+    assert captured["god_mode"] is True
+
+
 def test_docker_fallback_uses_agent_cli(client, session):
     _seed_minion_docker(session, "ubuntu", "24.0.5")
     from app.services.minion_service import manager

@@ -37,7 +37,8 @@ _READ_PREFIXES = (
     "docker volume",
     "systemctl status",
     "systemctl list-units",
-    "Get-Service",
+    "Get-Service ",
+    "Get-Service\n",
     "journalctl",
     "df ",
     "df\n",
@@ -55,9 +56,19 @@ _READ_PREFIXES = (
 )
 
 
+# Statement-chaining / command-substitution tokens. A safe read prefix must not be
+# followed by one of these, or it could smuggle a second command past the allowlist
+# (e.g. "Get-Service | x; Remove-Item ..." or "docker ps; rm -rf /"). A single pipe is
+# allowed — several legitimate read commands pipe into grep/Where-Object.
+_CHAIN_TOKENS = (";", "&&", "||", "`", "$(", "&\n")
+
+
 def is_read_allowed(cmd: str) -> bool:
-    """Return True when *cmd* starts with one of the safe read-only prefixes."""
-    return cmd.startswith(_READ_PREFIXES)
+    """Return True when *cmd* starts with a safe read-only prefix and does not chain
+    a second statement past it."""
+    if not cmd.startswith(_READ_PREFIXES):
+        return False
+    return not any(tok in cmd for tok in _CHAIN_TOKENS)
 
 
 # ---------------------------------------------------------------------------

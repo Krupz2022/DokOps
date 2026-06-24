@@ -254,14 +254,24 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
       {/* Portainer config (optional, Docker tabs only) */}
       {showCfg && tab !== "services" && (
         <Card>
-          <CardContent className="space-y-2 max-w-md">
+          <CardContent className="space-y-3 max-w-md">
             <p className="text-xs text-muted-foreground">Point at this host's Portainer for richer data. Leave unset to use the agent's <code>docker</code> CLI.</p>
-            <input className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
-              placeholder="https://host:9443" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} />
-            <input className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
-              placeholder="API key" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} />
-            <input type="number" className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
-              placeholder="Endpoint ID" value={form.endpoint_id} onChange={e => setForm({ ...form, endpoint_id: Number(e.target.value) })} />
+            <label className="block">
+              <span className="text-xs font-medium text-muted-foreground">Portainer URL</span>
+              <input className="mt-1 w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
+                placeholder="https://host:9443" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-muted-foreground">API key</span>
+              <input className="mt-1 w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
+                placeholder="ptr_…" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-muted-foreground">Environment (endpoint) ID</span>
+              <input type="number" className="mt-1 w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
+                value={form.endpoint_id} onChange={e => setForm({ ...form, endpoint_id: Number(e.target.value) })} />
+              <span className="text-[11px] text-muted-foreground">Usually <code>1</code> for a local Portainer. It's the number in Portainer's URL: <code>/#!/&lt;id&gt;/docker/…</code></span>
+            </label>
             <button onClick={saveConfig} className="px-3 py-1.5 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">Save &amp; connect</button>
             {cfgErr && <p className="text-sm text-red-400">{cfgErr}</p>}
           </CardContent>

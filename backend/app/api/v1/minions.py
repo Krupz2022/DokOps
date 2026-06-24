@@ -49,7 +49,6 @@ class PortainerConfigIn(BaseModel):
     base_url: str
     api_key: str
     endpoint_id: int = 1
-    via_agent: bool = True  # default: fetch from the minion (works for edge + co-located Portainer)
 
 
 router = APIRouter()
@@ -293,13 +292,8 @@ async def get_portainer(
 ):
     cfg = await live_resources.get_portainer_config(minion_id, db)
     if not cfg:
-        return {"configured": False, "base_url": None, "endpoint_id": None, "via_agent": True}
-    return {
-        "configured": True,
-        "base_url": cfg.get("base_url"),
-        "endpoint_id": cfg.get("endpoint_id"),
-        "via_agent": cfg.get("via_agent", False),
-    }
+        return {"configured": False, "base_url": None, "endpoint_id": None}
+    return {"configured": True, "base_url": cfg.get("base_url"), "endpoint_id": cfg.get("endpoint_id")}
 
 
 @router.put("/{minion_id}/portainer")
@@ -373,35 +367,26 @@ async def live_docker(
     db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    cfg = await live_resources.get_portainer_config(minion_id, db)
-    if cfg:
-        if cfg.get("via_agent"):
-            # Portainer is reachable only from the edge: the agent queries it locally.
-            if not manager.is_connected(minion_id):
-                raise HTTPException(status_code=503, detail="Minion is not connected")
-            try:
-                data = await manager.fetch_portainer(
-                    minion_id, cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
-                )
-            except Exception as e:  # noqa: BLE001 — surface agent/Portainer failure to UI
-                raise HTTPException(status_code=502, detail=f"Portainer (via agent) request failed: {e}")
-            data["source"] = "portainer-edge"
-            return data
-        try:
-            data = await live_resources.fetch_docker_resources(
-                cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
-            )
-        except Exception as e:  # noqa: BLE001 — surface Portainer/network failure to UI
-            raise HTTPException(status_code=502, detail=f"Portainer request failed: {e}")
-        data["source"] = "portainer"
-        return data
-
-    # Fallback: no Portainer configured — query the Docker CLI directly through the agent.
     m = await db.get(Minion, minion_id)
     if not m:
         raise HTTPException(status_code=404, detail="Minion not found")
     if not manager.is_connected(minion_id):
         raise HTTPException(status_code=503, detail="Minion is not connected")
+
+    cfg = await live_resources.get_portainer_config(minion_id, db)
+    if cfg:
+        # The agent queries its local Portainer and returns the data over the WebSocket,
+        # so the DokOps server never needs to reach Portainer itself.
+        try:
+            data = await manager.fetch_portainer(
+                minion_id, cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
+            )
+        except Exception as e:  # noqa: BLE001 — surface agent/Portainer failure to UI
+            raise HTTPException(status_code=502, detail=f"Portainer (via agent) request failed: {e}")
+        data["source"] = "portainer"
+        return data
+
+    # No Portainer configured — query the Docker CLI directly through the agent.
     try:
         grains = json.loads(m.grains or "{}")
     except (ValueError, TypeError):

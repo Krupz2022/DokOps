@@ -280,6 +280,32 @@ def test_container_logs_returns_output(client, session):
     assert captured["god_mode"] is True
 
 
+def test_container_analyze_returns_markdown(client, session):
+    _seed_minion_docker(session)
+    from app.services.minion_service import manager
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        return {"stdout": "ERROR connection refused\n", "exit_code": 0}
+
+    async def fake_analyze(logs, query):
+        assert "ERROR connection refused" in logs
+        return "## Root cause\nThe service cannot reach the database."
+
+    import app.services.ai_service as ai_mod
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch), \
+         patch.object(ai_mod.ai_service, "analyze_logs", side_effect=fake_analyze):
+        r = client.post("/api/v1/minions/m1/resources/docker/sleepy_bose/analyze", json={})
+    assert r.status_code == 200
+    assert "Root cause" in r.json()["analysis"]
+
+
+def test_container_analyze_400_on_bad_name(client, session):
+    _seed_minion(session)
+    r = client.post("/api/v1/minions/m1/resources/docker/bad%3Bname/analyze", json={})
+    assert r.status_code == 400
+
+
 def test_docker_fallback_uses_agent_cli(client, session):
     _seed_minion_docker(session, "ubuntu", "24.0.5")
     from app.services.minion_service import manager

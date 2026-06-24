@@ -57,7 +57,7 @@ def services_command(os_id: str) -> str:
     return _WINDOWS_SERVICES_CMD if (os_id or "").lower() == "windows" else _LINUX_SERVICES_CMD
 
 
-def parse_services(os_id: str, stdout: str) -> list[dict]:
+def parse_services(os_id: str, stdout: str) -> list[dict[str, str]]:
     if (os_id or "").lower() == "windows":
         try:
             data = json.loads(stdout or "[]")

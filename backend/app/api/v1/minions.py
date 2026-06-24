@@ -325,6 +325,8 @@ async def live_services(
     os_id = grains.get("os", "")
     cmd = live_resources.services_command(os_id)
     result = await manager.dispatch_job(minion_id, cmd, actor="ui_resources", timeout=30)
+    if result.get("exit_code", 0) != 0:
+        raise HTTPException(status_code=502, detail=f"Service query failed: {result.get('stdout', '').strip()[:500]}")
     return {"services": live_resources.parse_services(os_id, result.get("stdout", ""))}
 
 

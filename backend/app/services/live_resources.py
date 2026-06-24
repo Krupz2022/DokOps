@@ -1,12 +1,9 @@
 """Live (non-persisted) minion resource helpers: Portainer config + proxy, system services."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Optional
-
-import httpx
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -31,30 +28,6 @@ async def get_portainer_config(minion_id: str, db: AsyncSession) -> Optional[dic
     return cfg
 
 
-async def fetch_docker_resources(base_url: str, api_key: str, endpoint_id: int) -> dict:
-    base = f"{base_url.rstrip('/')}/api/endpoints/{endpoint_id}/docker"
-    headers = {"X-API-Key": api_key}
-    paths = {
-        "containers": "/containers/json?all=1",
-        "images": "/images/json",
-        "volumes": "/volumes",
-        "networks": "/networks",
-    }
-    # verify=False: Portainer commonly uses a self-signed cert on :9443.
-    # ponytail: trust on first use is acceptable for an operator-entered host; add a
-    # verify toggle to the config if a customer needs strict TLS.
-    async with httpx.AsyncClient(verify=False, timeout=15) as cx:
-        async def _get(path: str) -> list | dict:
-            resp = await cx.get(base + path, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-        containers, images, volumes, networks = await asyncio.gather(
-            _get(paths["containers"]), _get(paths["images"]),
-            _get(paths["volumes"]), _get(paths["networks"]),
-        )
-    return {"containers": containers, "images": images, "volumes": volumes, "networks": networks}
-
-
 async def set_portainer_config(minion_id: str, cfg: dict, db: AsyncSession) -> None:
     key = portainer_setting_key(minion_id)
     row = (await db.exec(select(SystemSetting).where(SystemSetting.key == key))).first()
@@ -62,7 +35,6 @@ async def set_portainer_config(minion_id: str, cfg: dict, db: AsyncSession) -> N
         "base_url": cfg["base_url"].rstrip("/"),
         "api_key": cfg["api_key"],
         "endpoint_id": int(cfg["endpoint_id"]),
-        "via_agent": bool(cfg.get("via_agent", True)),
     })
     if row:
         row.value = value

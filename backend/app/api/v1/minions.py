@@ -399,6 +399,25 @@ async def live_docker(
     return data
 
 
+@router.get("/{minion_id}/resources/docker/{container}/logs")
+async def live_container_logs(
+    minion_id: str,
+    container: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    if not live_resources.valid_service_name(container):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    cmd = live_resources.container_logs_command(container)  # built from validated name
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_container_logs", timeout=30, god_mode=True)
+    return {"output": result.get("stdout", "")}
+
+
 # ── Blueprint endpoints ─────────────────────────────────────────────────────
 
 @router.get("/blueprint/runs/{run_id}")

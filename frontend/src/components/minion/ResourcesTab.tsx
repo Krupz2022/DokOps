@@ -2,8 +2,9 @@ import { useEffect, useState, useCallback, type ReactNode } from "react";
 import api from "../../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
 import { EmptyState } from "../ui/EmptyState";
-import { Box, Layers, HardDrive, Network as NetworkIcon, Server, Search, RefreshCw, FileText } from "lucide-react";
+import { Box, Layers, HardDrive, Network as NetworkIcon, Server, Search, RefreshCw, FileText, Sparkles, RotateCw, X } from "lucide-react";
 import { LogsTerminal } from "../ui/LogsTerminal";
+import ReactMarkdown from "react-markdown";
 
 interface DockerData {
   source?: "portainer" | "agent";
@@ -33,6 +34,9 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [logKind, setLogKind] = useState("");
   const [logOut, setLogOut] = useState("");
   const [logLoading, setLogLoading] = useState(false);
+  const [aiName, setAiName] = useState<string | null>(null);
+  const [aiOut, setAiOut] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
   const detail = (e: unknown): string =>
     (e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed";
@@ -86,6 +90,18 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     }
   }
 
+  async function analyzeContainer(name: string) {
+    setAiName(name); setAiOut(""); setAiLoading(true);
+    try {
+      const r = await api.post(`/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/analyze`, {});
+      setAiOut(r.data.analysis || "_No analysis returned._");
+    } catch (e: unknown) {
+      setAiOut(`**Error:** ${detail(e)}`);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
   const cname = (c: DockerData["containers"][number]) => (c.Names?.[0] ?? c.Id).replace(/^\//, "");
   const match = (s: string) => s.toLowerCase().includes(filter.toLowerCase());
 
@@ -126,8 +142,11 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
                 <span className="font-mono text-xs text-muted-foreground truncate">{c.Image}</span>,
                 <StateDot state={c.State} />,
                 <span className="text-xs text-muted-foreground">{c.Status}</span>,
-                <LogBtn onClick={() => openLogs(name, "container",
-                  `/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/logs`)} />,
+                <div className="flex gap-1.5">
+                  <LogBtn onClick={() => openLogs(name, "container",
+                    `/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/logs`)} />
+                  <AiBtn onClick={() => analyzeContainer(name)} />
+                </div>,
               ],
             };
           })}
@@ -272,7 +291,37 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
         namespace={logKind}
         logs={logLoading ? "Loading…" : logOut}
       />
+
+      {/* AI analysis modal */}
+      {aiName && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setAiName(null)}>
+          <div className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <span className="font-semibold text-foreground flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-purple-400" /> AI Analysis — {aiName}
+              </span>
+              <button onClick={() => setAiName(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {aiLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground"><RotateCw className="w-4 h-4 animate-spin" /> Analyzing container logs…</div>
+              ) : (
+                <div className="prose prose-sm dark:prose-invert max-w-none text-sm"><ReactMarkdown>{aiOut}</ReactMarkdown></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function AiBtn({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} title="AI analyze logs"
+      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors">
+      <Sparkles className="w-3.5 h-3.5" /> AI
+    </button>
   );
 }
 

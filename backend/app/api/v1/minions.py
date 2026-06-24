@@ -418,6 +418,33 @@ async def live_container_logs(
     return {"output": result.get("stdout", "")}
 
 
+@router.post("/{minion_id}/resources/docker/{container}/analyze")
+async def analyze_container(
+    minion_id: str,
+    container: str,
+    body: dict,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    if not live_resources.valid_service_name(container):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    cmd = live_resources.container_logs_command(container)  # built from validated name
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_container_ai", timeout=30, god_mode=True)
+    logs = result.get("stdout", "")
+    query = (body.get("query") or "These are Docker container logs. Identify errors or issues and likely fixes.").strip()
+    from app.services.ai_service import ai_service  # lazy — avoids import cost when AI unused
+    try:
+        analysis = await ai_service.analyze_logs(logs, query)
+    except Exception as e:  # noqa: BLE001 — surface AI/provider failures to the UI
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {e}")
+    return {"analysis": analysis}
+
+
 # ── Blueprint endpoints ─────────────────────────────────────────────────────
 
 @router.get("/blueprint/runs/{run_id}")

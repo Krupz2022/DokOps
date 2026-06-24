@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import api from "../../lib/api";
 
 interface DockerData {
+  source?: "portainer" | "agent";
   containers: { Id: string; Names?: string[]; Image?: string; State?: string; Status?: string }[];
   images: { Id: string; RepoTags?: string[]; Size?: number }[];
   volumes: { Volumes?: { Name: string; Driver: string }[] };
@@ -19,6 +20,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [form, setForm] = useState({ base_url: "", api_key: "", endpoint_id: 1 });
   const [cfgErr, setCfgErr] = useState<string | null>(null);
+  const [showCfg, setShowCfg] = useState(false);
   const [logSvc, setLogSvc] = useState<string | null>(null);
   const [logOut, setLogOut] = useState("");
   const [logLoading, setLogLoading] = useState(false);
@@ -35,23 +37,17 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     } finally {
       setSvcLoaded(true);
     }
-    // Config and Docker fetches are independent: a Docker 502/503 must not blank the config state.
-    let isConfigured = false;
+    // Portainer config (for the toggle label) and Docker data are fetched independently.
     try {
       const cfg = await api.get(`/minions/${minionId}/portainer`);
       setConfigured(cfg.data.configured);
-      isConfigured = cfg.data.configured;
+    } catch { /* config probe failure shouldn't blank docker */ }
+    // Docker always loads: Portainer when configured, else the agent CLI fallback.
+    try {
+      const d = await api.get(`/minions/${minionId}/resources/docker`);
+      setDocker(d.data); setDockerErr(null);
     } catch (e: unknown) {
-      setDockerErr(detail(e));
-      return;
-    }
-    if (isConfigured) {
-      try {
-        const d = await api.get(`/minions/${minionId}/resources/docker`);
-        setDocker(d.data); setDockerErr(null);
-      } catch (e: unknown) {
-        setDockerErr(detail(e));
-      }
+      setDockerErr(detail(e)); setDocker(null);
     }
   }, [minionId]);
 
@@ -66,6 +62,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
       await api.put(`/minions/${minionId}/portainer`, form);
       setCfgErr(null);
       setConfigured(true);
+      setShowCfg(false);
       poll();
     } catch (e: unknown) {
       setCfgErr(detail(e));
@@ -91,10 +88,23 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     <div className="space-y-6">
       {/* Docker */}
       <div className={card}>
-        <h2 className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Docker (live via Portainer)</h2>
-        {configured === false ? (
-          <div className="space-y-2 max-w-md">
-            <p className="text-sm text-muted-foreground">Portainer not configured for this minion.</p>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xs text-muted-foreground uppercase tracking-wider">Docker (live)</h2>
+          <div className="flex items-center gap-3 text-xs">
+            {docker?.source && (
+              <span className="text-muted-foreground">
+                via {docker.source === "portainer" ? "Portainer" : "agent (docker CLI)"}
+              </span>
+            )}
+            <button onClick={() => setShowCfg(v => !v)} className="text-primary hover:underline">
+              {configured ? "Reconfigure Portainer" : "Configure Portainer"}
+            </button>
+          </div>
+        </div>
+
+        {showCfg && (
+          <div className="space-y-2 max-w-md mb-4 border-b border-border pb-4">
+            <p className="text-xs text-muted-foreground">Point at this host's Portainer for richer data. Leave unset to use the agent's <code>docker</code> CLI.</p>
             <input className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
               placeholder="https://host:9443" value={form.base_url}
               onChange={e => setForm({ ...form, base_url: e.target.value })} />
@@ -110,7 +120,9 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
             </button>
             {cfgErr && <p className="text-sm text-red-400">{cfgErr}</p>}
           </div>
-        ) : dockerErr ? (
+        )}
+
+        {dockerErr ? (
           <p className="text-sm text-red-400">{dockerErr}</p>
         ) : !docker ? (
           <p className="text-sm text-muted-foreground">Loading…</p>

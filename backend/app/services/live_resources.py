@@ -126,6 +126,66 @@ def valid_service_name(name: str) -> bool:
     return bool(_SERVICE_NAME_RE.match(name or ""))
 
 
+# Combined Docker CLI query (works in bash and PowerShell). Each docker sub-command emits
+# one JSON object per line; the @@MARKERS@@ split the four resource types apart.
+_DOCKER_CLI_CMD = (
+    "docker ps -a --format '{{json .}}'; echo '@@IMAGES@@'; "
+    "docker images --format '{{json .}}'; echo '@@VOLUMES@@'; "
+    "docker volume ls --format '{{json .}}'; echo '@@NETWORKS@@'; "
+    "docker network ls --format '{{json .}}'"
+)
+
+
+def docker_cli_command() -> str:
+    return _DOCKER_CLI_CMD
+
+
+def _json_lines(block: str) -> list[dict]:
+    out: list[dict] = []
+    for line in (block or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def parse_docker_cli(stdout: str) -> dict:
+    """Map `docker ... --format '{{json .}}'` CLI output into the same shape the Portainer
+    proxy returns, so the frontend renders both identically."""
+    c, _, after = (stdout or "").partition("@@IMAGES@@")
+    i, _, after2 = after.partition("@@VOLUMES@@")
+    v, _, n = after2.partition("@@NETWORKS@@")
+    containers = [
+        {
+            "Id": d.get("ID", ""),
+            "Names": ["/" + d.get("Names", "")] if d.get("Names") else [],
+            "Image": d.get("Image", ""),
+            "State": d.get("State", ""),
+            "Status": d.get("Status", ""),
+        }
+        for d in _json_lines(c)
+    ]
+    images = [
+        {
+            "Id": d.get("ID", ""),
+            "RepoTags": [f"{d.get('Repository', '')}:{d.get('Tag', '')}"] if d.get("Repository") and d.get("Repository") != "<none>" else [],
+        }
+        for d in _json_lines(i)
+    ]
+    volumes = {"Volumes": [{"Name": d.get("Name", ""), "Driver": d.get("Driver", "")} for d in _json_lines(v)]}
+    networks = [
+        {"Id": d.get("ID", ""), "Name": d.get("Name", ""), "Driver": d.get("Driver", "")}
+        for d in _json_lines(n)
+    ]
+    return {"containers": containers, "images": images, "volumes": volumes, "networks": networks}
+
+
 def service_logs_command(os_id: str, name: str) -> str:
     """Build a per-OS status+logs command for a single service.
     Caller MUST validate `name` with valid_service_name() first — it is interpolated."""

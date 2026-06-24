@@ -368,14 +368,35 @@ async def live_docker(
     _: User = Depends(get_current_user),
 ):
     cfg = await live_resources.get_portainer_config(minion_id, db)
-    if not cfg:
-        raise HTTPException(status_code=503, detail="Portainer not configured for this minion")
+    if cfg:
+        try:
+            data = await live_resources.fetch_docker_resources(
+                cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
+            )
+        except Exception as e:  # noqa: BLE001 — surface Portainer/network failure to UI
+            raise HTTPException(status_code=502, detail=f"Portainer request failed: {e}")
+        data["source"] = "portainer"
+        return data
+
+    # Fallback: no Portainer configured — query the Docker CLI directly through the agent.
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
     try:
-        return await live_resources.fetch_docker_resources(
-            cfg["base_url"], cfg["api_key"], cfg["endpoint_id"]
-        )
-    except Exception as e:  # noqa: BLE001 — surface Portainer/network failure to UI
-        raise HTTPException(status_code=502, detail=f"Portainer request failed: {e}")
+        grains = json.loads(m.grains or "{}")
+    except (ValueError, TypeError):
+        grains = {}
+    if not grains.get("docker"):
+        raise HTTPException(status_code=502, detail="Docker is not installed or not running on this host")
+    # docker_cli_command() is a fixed constant (contains ';') — trusted dispatch, bypasses allowlist.
+    result = await manager.dispatch_job(
+        minion_id, live_resources.docker_cli_command(), actor="ui_resources", timeout=30, god_mode=True
+    )
+    data = live_resources.parse_docker_cli(result.get("stdout", ""))
+    data["source"] = "agent"
+    return data
 
 
 # ── Blueprint endpoints ─────────────────────────────────────────────────────

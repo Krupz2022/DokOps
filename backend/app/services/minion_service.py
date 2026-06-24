@@ -37,6 +37,7 @@ _READ_PREFIXES = (
     "docker volume",
     "systemctl status",
     "systemctl list-units",
+    "Get-Service",
     "journalctl",
     "df ",
     "df\n",

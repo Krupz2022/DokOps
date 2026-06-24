@@ -591,7 +591,7 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
                                     <td className="p-4 font-mono text-xs">{pod.ip}</td>
                                     <td className="p-4 flex gap-2">
                                         <Button size="sm" variant="outline" onClick={() => viewLogs(pod.name)}><Eye className="w-4 h-4" /></Button>
-                                        <Button size="sm" variant="outline" className="text-purple-600 border-purple-200" onClick={() => { setSelectedPod(pod.name); setAiModalOpen(true); }}><Sparkles className="w-4 h-4" /></Button>
+                                        <Button size="sm" variant="outline" className="text-primary border-primary/40" onClick={() => { setSelectedPod(pod.name); setAiModalOpen(true); }}><Sparkles className="w-4 h-4" /></Button>
                                         {godModeActive && <Button size="sm" variant="destructive" onClick={() => deletePod(pod.name)}><Trash2 className="w-4 h-4" /></Button>}
                                     </td>
                                 </tr>

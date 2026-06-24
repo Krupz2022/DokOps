@@ -196,18 +196,18 @@ def test_portainer_config_roundtrip_redacts_key(client):
     # Unset → not configured
     r = client.get("/api/v1/minions/m1/portainer")
     assert r.status_code == 200
-    assert r.json() == {"configured": False, "base_url": None, "endpoint_id": None}
+    assert r.json() == {"configured": False, "base_url": None, "endpoint_id": None, "via_agent": True}
 
-    # Set
+    # Set (via_agent defaults to True)
     r = client.put("/api/v1/minions/m1/portainer", json={
-        "base_url": "https://host:9443", "api_key": "ptr_secret", "endpoint_id": 2,
+        "base_url": "https://host:9443", "api_key": "ptr_secret", "endpoint_id": 2, "via_agent": False,
     })
     assert r.status_code == 200
 
     # Get → configured, key never returned
     r = client.get("/api/v1/minions/m1/portainer")
     body = r.json()
-    assert body == {"configured": True, "base_url": "https://host:9443", "endpoint_id": 2}
+    assert body == {"configured": True, "base_url": "https://host:9443", "endpoint_id": 2, "via_agent": False}
     assert "api_key" not in body
 
 
@@ -329,7 +329,7 @@ def test_docker_fallback_uses_agent_cli(client, session):
 def test_docker_proxies_when_configured(client, session):
     _seed_minion(session)
     client.put("/api/v1/minions/m1/portainer", json={
-        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1,
+        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1, "via_agent": False,
     })
     from app.services import live_resources as lr
 
@@ -340,12 +340,13 @@ def test_docker_proxies_when_configured(client, session):
         r = client.get("/api/v1/minions/m1/resources/docker")
     assert r.status_code == 200
     assert r.json()["containers"][0]["Id"] == "abc"
+    assert r.json()["source"] == "portainer"
 
 
 def test_docker_502_when_portainer_fails(client, session):
     _seed_minion(session)
     client.put("/api/v1/minions/m1/portainer", json={
-        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1,
+        "base_url": "https://host:9443", "api_key": "k", "endpoint_id": 1, "via_agent": False,
     })
     import httpx
     from app.services import live_resources as lr
@@ -356,3 +357,33 @@ def test_docker_502_when_portainer_fails(client, session):
     with patch.object(lr, "fetch_docker_resources", side_effect=boom):
         r = client.get("/api/v1/minions/m1/resources/docker")
     assert r.status_code == 502
+
+
+def test_docker_via_agent_proxies_through_minion(client, session):
+    # via_agent=True → backend asks the agent to query its local Portainer.
+    _seed_minion(session)
+    client.put("/api/v1/minions/m1/portainer", json={
+        "base_url": "https://localhost:9443", "api_key": "k", "endpoint_id": 1, "via_agent": True,
+    })
+    from app.services.minion_service import manager
+
+    async def fake_fetch_portainer(minion_id, base_url, api_key, endpoint_id):
+        return {"containers": [{"Id": "edge1"}], "images": [], "volumes": {"Volumes": []}, "networks": []}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "fetch_portainer", side_effect=fake_fetch_portainer):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 200
+    assert r.json()["containers"][0]["Id"] == "edge1"
+    assert r.json()["source"] == "portainer-edge"
+
+
+def test_docker_via_agent_503_when_disconnected(client, session):
+    _seed_minion(session)
+    client.put("/api/v1/minions/m1/portainer", json={
+        "base_url": "https://localhost:9443", "api_key": "k", "endpoint_id": 1, "via_agent": True,
+    })
+    from app.services.minion_service import manager
+    with patch.object(manager, "is_connected", return_value=False):
+        r = client.get("/api/v1/minions/m1/resources/docker")
+    assert r.status_code == 503

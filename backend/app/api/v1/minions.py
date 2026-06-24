@@ -369,6 +369,15 @@ async def run_blueprint_endpoint(
 
     states, sources = await compile_blueprint(minion_id, db)
 
+    # Optional: run an ordered subset of resources (UI selection + reorder).
+    # Omitted/empty → run the full compiled set in compiled order (unchanged behaviour).
+    only = body.get("resource_ids")
+    if only:
+        by_id = {s.get("id"): s for s in states}
+        states = [by_id[rid] for rid in only if rid in by_id]
+        if not states:
+            raise HTTPException(status_code=400, detail="no matching resources to run")
+
     run = BlueprintRun(minion_id=minion_id, actor=current_user.username, test=test, status="running")
     db.add(run)
     if not test:

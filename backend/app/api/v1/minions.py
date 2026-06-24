@@ -307,6 +307,27 @@ async def put_portainer(
     return {"saved": True}
 
 
+@router.get("/{minion_id}/resources/services")
+async def live_services(
+    minion_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    try:
+        grains = json.loads(m.grains or "{}")
+    except (ValueError, TypeError):
+        grains = {}
+    os_id = grains.get("os", "")
+    cmd = live_resources.services_command(os_id)
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_resources", timeout=30)
+    return {"services": live_resources.parse_services(os_id, result.get("stdout", ""))}
+
+
 # ── Blueprint endpoints ─────────────────────────────────────────────────────
 
 @router.get("/blueprint/runs/{run_id}")

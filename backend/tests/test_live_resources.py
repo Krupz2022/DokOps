@@ -50,6 +50,62 @@ def client_fixture(session: Session):
     asyncio.run(_async_engine.dispose())
 
 
+from app.services.live_resources import services_command, parse_services
+
+
+def test_services_command_picks_os():
+    assert services_command("ubuntu").startswith("systemctl list-units")
+    assert services_command("windows").startswith("Get-Service")
+
+
+def test_parse_services_linux():
+    out = (
+        "ssh.service loaded active running OpenBSD Secure Shell server\n"
+        "cron.service loaded active running Regular background program processing daemon\n"
+    )
+    svcs = parse_services("ubuntu", out)
+    assert {"name": "ssh", "display_name": "OpenBSD Secure Shell server", "status": "running"} in svcs
+    assert len(svcs) == 2
+
+
+def test_parse_services_windows():
+    out = '[{"Name":"Spooler","DisplayName":"Print Spooler","Status":"Running"}]'
+    svcs = parse_services("windows", out)
+    assert svcs == [{"name": "Spooler", "display_name": "Print Spooler", "status": "Running"}]
+
+
+from unittest.mock import patch
+
+
+def _seed_minion(session, os_id="ubuntu"):
+    import json as _json
+    from app.models.minion import Minion
+    session.add(Minion(id="m1", hostname="h", status="active", grains=_json.dumps({"os": os_id})))
+    session.commit()
+
+
+def test_live_services_parses_dispatch_output(client, session):
+    _seed_minion(session, "ubuntu")
+    from app.services.minion_service import manager
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        return {"stdout": "ssh.service loaded active running OpenBSD Secure Shell server\n", "exit_code": 0}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/services")
+    assert r.status_code == 200
+    assert r.json()["services"][0]["name"] == "ssh"
+
+
+def test_live_services_503_when_disconnected(client, session):
+    _seed_minion(session)
+    from app.services.minion_service import manager
+    with patch.object(manager, "is_connected", return_value=False):
+        r = client.get("/api/v1/minions/m1/resources/services")
+    assert r.status_code == 503
+
+
 def test_portainer_config_roundtrip_redacts_key(client):
     # Unset → not configured
     r = client.get("/api/v1/minions/m1/portainer")

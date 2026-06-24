@@ -110,6 +110,29 @@ def test_live_services_parses_dispatch_output(client, session):
     assert r.json()["services"][0]["name"] == "ssh"
 
 
+def test_live_services_windows_bypasses_allowlist(client, session):
+    # Regression: the Windows Get-Service command contains ';' inside @{N='Status';E={...}},
+    # which is_read_allowed rejects as statement-chaining. The endpoint must dispatch it as a
+    # trusted constant (god_mode=True) so it isn't blocked by the user-facing allowlist.
+    from app.services.live_resources import services_command
+    from app.services.minion_service import is_read_allowed, manager
+    win_cmd = services_command("windows")
+    assert ";" in win_cmd and not is_read_allowed(win_cmd)  # would be blocked on the user path
+
+    _seed_minion(session, "windows")
+    captured = {}
+
+    async def fake_dispatch(minion_id, cmd, actor, timeout=60, god_mode=False):
+        captured["god_mode"] = god_mode
+        return {"stdout": "[]", "exit_code": 0}
+
+    with patch.object(manager, "is_connected", return_value=True), \
+         patch.object(manager, "dispatch_job", side_effect=fake_dispatch):
+        r = client.get("/api/v1/minions/m1/resources/services")
+    assert r.status_code == 200
+    assert captured["god_mode"] is True
+
+
 def test_live_services_503_when_disconnected(client, session):
     _seed_minion(session)
     from app.services.minion_service import manager

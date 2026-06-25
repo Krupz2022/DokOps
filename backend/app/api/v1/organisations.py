@@ -70,6 +70,16 @@ async def add_member(
     existing = await db.get(MinionGroupMember, (group_id, body.minion_id))
     if existing:
         return {"added": False, "reason": "already member"}
+    # Single-group invariant: a minion belongs to at most one group. Refuse to add a
+    # minion that's already in another group (use POST /{org}/assign to *move* it).
+    other = (await db.exec(
+        select(MinionGroupMember).where(MinionGroupMember.minion_id == body.minion_id)
+    )).first()
+    if other:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Minion already in group {other.group_id}; remove it first or use /assign to move it",
+        )
     db.add(MinionGroupMember(group_id=group_id, minion_id=body.minion_id))
     await db.commit()
     return {"added": True}

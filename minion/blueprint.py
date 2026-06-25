@@ -1,6 +1,7 @@
 """DokOps minion state handlers — stdlib only, runs on Windows + Linux."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import shutil
@@ -13,6 +14,7 @@ import contextvars
 
 _emit_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_emit", default=None)
 _rid_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_rid", default=None)
+_fetch_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_fetch", default=None)
 
 
 def _run(cmd, shell: bool = False) -> tuple[int, str]:
@@ -47,32 +49,75 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def _sha_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()[:12]
+
+
 def handle_file(state: dict, sources: dict, test: bool) -> dict:
     path = state["path"]
     name = state.get("source")
-    desired = sources.get(name, "")
     if name and name not in sources:
         return {"result": False, "changes": {}, "comment": f"source '{name}' not in bundle"}
+    entry = sources.get(name, {"encoding": "utf-8", "content": ""})
+    if isinstance(entry, str):              # legacy / bare-string = utf-8 text
+        entry = {"encoding": "utf-8", "content": entry}
 
-    current = None
+    # ── text path (unchanged behavior) ──────────────────────────────────────
+    if entry.get("encoding", "utf-8") == "utf-8" and not entry.get("fetch"):
+        desired = entry.get("content", "")
+        current = None
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    current = f.read()
+            except OSError as e:
+                return {"result": False, "changes": {}, "comment": f"read failed: {e}"}
+        if current == desired:
+            return {"result": True, "changes": {}, "comment": "file in desired state"}
+        changes = {"old": _sha(current) if current is not None else "absent", "new": _sha(desired)}
+        if test:
+            return {"result": None, "changes": changes, "comment": "would update file"}
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(desired)
+            if not IS_WINDOWS and state.get("mode"):
+                os.chmod(path, int(str(state["mode"]), 8))
+        except OSError as e:
+            return {"result": False, "changes": {}, "comment": f"write failed: {e}"}
+        return {"result": True, "changes": changes, "comment": "file updated"}
+
+    # ── binary path ─────────────────────────────────────────────────────────
+    try:
+        if entry.get("fetch"):
+            fetch = _fetch_var.get()
+            if fetch is None:
+                return {"result": False, "changes": {}, "comment": "no fetcher for large source"}
+            desired_bytes = fetch(entry["id"])
+            exp = entry.get("sha256")
+            if exp and hashlib.sha256(desired_bytes).hexdigest() != exp:
+                return {"result": False, "changes": {}, "comment": "checksum mismatch on fetched source"}
+        else:
+            desired_bytes = base64.b64decode(entry.get("content", ""))
+    except Exception as e:  # noqa: BLE001
+        return {"result": False, "changes": {}, "comment": f"source error: {e}"}
+
+    current_bytes = None
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                current = f.read()
+            with open(path, "rb") as f:
+                current_bytes = f.read()
         except OSError as e:
             return {"result": False, "changes": {}, "comment": f"read failed: {e}"}
-
-    if current == desired:
+    if current_bytes == desired_bytes:
         return {"result": True, "changes": {}, "comment": "file in desired state"}
-
-    changes = {"old": _sha(current) if current is not None else "absent", "new": _sha(desired)}
+    changes = {"old": _sha_bytes(current_bytes) if current_bytes is not None else "absent", "new": _sha_bytes(desired_bytes)}
     if test:
         return {"result": None, "changes": changes, "comment": "would update file"}
-
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(desired)
+        with open(path, "wb") as f:
+            f.write(desired_bytes)
         if not IS_WINDOWS and state.get("mode"):
             os.chmod(path, int(str(state["mode"]), 8))
     except OSError as e:
@@ -310,8 +355,9 @@ def order_resources(states: list[dict]) -> list[dict]:
     return out
 
 
-def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None) -> list[dict]:
+def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None, fetch=None) -> list[dict]:
     _emit_token = _emit_var.set(emit) if emit is not None else None
+    _fetch_token = _fetch_var.set(fetch) if fetch is not None else None
     try:
         ordered = order_resources(states)
         results: dict[str, dict] = {}
@@ -358,3 +404,5 @@ def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None) -> l
     finally:
         if _emit_token is not None:
             _emit_var.reset(_emit_token)
+        if _fetch_token is not None:
+            _fetch_var.reset(_fetch_token)

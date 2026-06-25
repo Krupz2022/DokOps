@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import yaml
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+INLINE_MAX_BYTES = 1_000_000  # binary sources at/under this size ship inline; larger are fetched
 
 from app.models.minion import Minion
 from app.models.patch import MinionGroup, MinionGroupMember, Organisation
@@ -29,12 +33,21 @@ def merge_blueprints(ordered_yaml_bodies: list[str]) -> list[dict]:
     return [by_id[sid] for sid in order]
 
 
-def collect_referenced_sources(
-    states: list[dict], sources_by_name: dict[str, str]
-) -> dict[str, str]:
-    """Return only the sources referenced by a file-state's `source`."""
+def source_entry(src) -> dict:
+    """Build the run-bundle entry for one BlueprintSource (inline, or fetch ref if a large binary)."""
+    if src.encoding == "base64":
+        raw = base64.b64decode(src.content or "")
+        if len(raw) > INLINE_MAX_BYTES:
+            return {"encoding": "base64", "fetch": True, "id": src.id,
+                    "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+        return {"encoding": "base64", "content": src.content}
+    return {"encoding": "utf-8", "content": src.content}
+
+
+def collect_referenced_sources(states: list[dict], sources_by_name: dict) -> dict[str, dict]:
+    """Return entry objects for the sources referenced by a file-resource's `source`."""
     wanted = {s.get("source") for s in states if s.get("type") == "file" and s.get("source")}
-    return {name: content for name, content in sources_by_name.items() if name in wanted}
+    return {name: source_entry(src) for name, src in sources_by_name.items() if name in wanted}
 
 
 async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict], dict[str, str]]:
@@ -83,12 +96,12 @@ async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict
     merged = merge_blueprints([sf.yaml_body for sf in ordered_files])
 
     # Build the source pool from the surviving files, later files overriding by source name.
-    pool: dict[str, str] = {}
+    pool: dict = {}
     for sf in ordered_files:
         for src in (await db.exec(
             select(BlueprintSource).where(BlueprintSource.blueprint_id == sf.id)
         )).all():
-            pool[src.name] = src.content
+            pool[src.name] = src
 
     return merged, collect_referenced_sources(merged, pool)
 
@@ -104,10 +117,10 @@ async def compile_key_blueprints(key_id: str, db: AsyncSession) -> tuple[list[di
         if bp:
             blueprints.append(bp)
     merged = merge_blueprints([bp.yaml_body for bp in blueprints])
-    pool: dict[str, str] = {}
+    pool: dict = {}
     for bp in blueprints:
         for src in (await db.exec(
             select(BlueprintSource).where(BlueprintSource.blueprint_id == bp.id)
         )).all():
-            pool[src.name] = src.content
+            pool[src.name] = src
     return merged, collect_referenced_sources(merged, pool)

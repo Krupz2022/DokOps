@@ -32,7 +32,7 @@ def test_seed_org_scope(tmp_path, isolated_session):
             return await seed_blueprints_from_dir(str(tmp_path), db)
 
     n = asyncio.run(go())
-    assert n == 1
+    assert n == (1, 0)   # (seeded, pruned)
 
     sf = isolated_session.exec(select(Blueprint)).first()
     assert sf is not None
@@ -57,3 +57,29 @@ def test_seed_is_idempotent(tmp_path, isolated_session):
     asyncio.run(go())
     files = isolated_session.exec(select(Blueprint)).all()
     assert len(files) == 1  # upsert, not duplicate
+
+
+def test_reseed_prune_removes_deleted_yaml_but_keeps_ui_blueprint(tmp_path, isolated_session):
+    # A UI-created (plain-named) blueprint must survive pruning.
+    isolated_session.add(Blueprint(name="ui-made", yaml_body="resources: []"))
+    isolated_session.commit()
+
+    d = tmp_path / "minions" / "web-01"
+    d.mkdir(parents=True)
+    (d / "a.yaml").write_text("resources: []")
+    (d / "b.yaml").write_text("resources: []")
+    maker = _maker(isolated_session)
+
+    async def seed(prune):
+        async with maker() as db:
+            return await seed_blueprints_from_dir(str(tmp_path), db, prune=prune)
+
+    assert asyncio.run(seed(False)) == (2, 0)
+
+    # Remove one YAML from the folder, then reconcile.
+    (d / "b.yaml").unlink()
+    seeded, pruned = asyncio.run(seed(True))
+    assert seeded == 1 and pruned == 1
+
+    names = {b.name for b in isolated_session.exec(select(Blueprint)).all()}
+    assert names == {"ui-made", "minions/web-01/a.yaml"}  # b pruned, ui-made kept

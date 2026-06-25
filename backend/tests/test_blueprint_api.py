@@ -55,6 +55,35 @@ def test_dry_run_open_and_dispatches(admin_client):
     assert "run_id" in resp.json()
 
 
+def test_run_with_resource_ids_filters_and_orders(admin_client, session):
+    # web-01 compiles two resources; running with an explicit ordered subset
+    # must dispatch only those, in the requested order.
+    yaml_body = (
+        "resources:\n"
+        "  - id: vault-pkg\n    type: pkg\n"
+        "  - id: vault-un\n    type: pkg\n"
+    )
+    bp = Blueprint(name="vault", yaml_body=yaml_body)
+    session.add(bp)
+    session.commit()
+    session.refresh(bp)
+    session.add(BlueprintAssignment(blueprint_id=bp.id, scope_type="minion", scope_id="web-01"))
+    session.commit()
+
+    captured = {}
+    async def fake_dispatch(minion_id, run_id, states, sources, test, timeout=300):
+        captured["states"] = states
+        return {"results": []}
+    with patch("app.services.minion_service.manager.dispatch_blueprint", side_effect=fake_dispatch):
+        with patch("app.services.minion_service.manager.is_connected", return_value=True):
+            resp = admin_client.post(
+                "/api/v1/minions/web-01/blueprint/run",
+                json={"test": True, "resource_ids": ["vault-un"]},
+            )
+    assert resp.status_code == 200
+    assert [s["id"] for s in captured["states"]] == ["vault-un"]
+
+
 def test_preview_returns_states(admin_client):
     resp = admin_client.get("/api/v1/minions/web-01/blueprint")
     assert resp.status_code == 200

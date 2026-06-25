@@ -26,6 +26,7 @@ class BlueprintSource(SQLModel, table=True):
     blueprint_id: str = Field(foreign_key="blueprint.id", index=True)
     name: str
     content: str = Field(default="")
+    encoding: str = Field(default="utf-8")  # "utf-8" | "base64"
 
 
 class BlueprintAssignment(SQLModel, table=True):

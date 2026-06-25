@@ -39,7 +39,7 @@ _configure_app_logging()
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, create_engine, Session, select
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -88,6 +88,7 @@ async def _run_patch_migrations() -> None:
         _col("minion", "last_patch_scan", "TIMESTAMP"),
         _col("minion", "bootstrapped", "INTEGER NOT NULL DEFAULT 0"),
         _col("resourceresult", "output", "TEXT NOT NULL DEFAULT ''"),
+        _col("blueprintsource", "encoding", "TEXT NOT NULL DEFAULT 'utf-8'"),
     ]
     async with async_engine.connect() as conn:
         for sql in migrations:
@@ -155,7 +156,7 @@ async def lifespan(app: FastAPI):
         from app.core.db import AsyncSessionLocal as _AsyncSessionLocal_seed
         try:
             async with _AsyncSessionLocal_seed() as _db_seed:
-                _n = await seed_blueprints_from_dir(_blueprints_dir, _db_seed)
+                _n, _ = await seed_blueprints_from_dir(_blueprints_dir, _db_seed)
                 logging.getLogger(__name__).info("Seeded %d blueprint(s) from %s", _n, _blueprints_dir)
         except Exception as _e:  # noqa: BLE001 — seeding must never block startup
             logging.getLogger(__name__).warning("Blueprint seed failed: %s", _e)
@@ -273,8 +274,11 @@ async def root():
 async def health():
     return {"status": "ok"}
 
-from fastapi.responses import FileResponse
+from fastapi import HTTPException as _HTTPException
+from fastapi.responses import FileResponse, Response as _Response
 from pathlib import Path as _Path
+from app.services.minion_service import get_auto_accept_key_hash, verify_token
+from app.api.deps import get_async_db as _deps_get_async_db
 
 _MINION_DIR = _Path(__file__).resolve().parent.parent.parent / "minion"
 
@@ -325,6 +329,28 @@ async def serve_uninstall_ps1():
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="uninstall.ps1 not bundled")
     return FileResponse(p, media_type="text/plain")
+
+
+@app.get("/minion/source/{source_id}", include_in_schema=False)
+async def serve_source(
+    source_id: str,
+    token: str = "",
+    db=Depends(_deps_get_async_db),
+):
+    """Return raw bytes for a BlueprintSource. Requires a valid enrollment token."""
+    stored_hash = await get_auto_accept_key_hash()
+    if not stored_hash or not token or not verify_token(token, stored_hash):
+        raise _HTTPException(status_code=401, detail="Invalid or missing token")
+    from app.models.blueprint import BlueprintSource
+    import base64 as _b64
+    src = await db.get(BlueprintSource, source_id)
+    if not src:
+        raise _HTTPException(status_code=404, detail="Source not found")
+    if src.encoding == "base64":
+        content = _b64.b64decode(src.content or "")
+    else:
+        content = (src.content or "").encode("utf-8")
+    return _Response(content=content, media_type="application/octet-stream")
 
 
 @app.get("/minion/simple/{package_name}/", include_in_schema=False)

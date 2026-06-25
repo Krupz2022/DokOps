@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { Server, Zap, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import BulkRunModal from "../components/BulkRunModal";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import {
+  FleetPage, FleetStat, MinionStatusTag, MinionStatusDot,
+  Surface, CopyBlock,
+} from "../components/fleet/FleetPage";
 
 interface Minion {
   id: string;
@@ -11,56 +18,15 @@ interface Minion {
   last_seen: string | null;
 }
 
-const STATUS_DOT: Record<string, string> = {
-  active:  "bg-green-500",
-  pending: "bg-yellow-400",
-  offline: "bg-red-500",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  active:  "active",
-  pending: "⏳ pending",
-  offline: "offline",
-};
-
-const STATUS_TEXT: Record<string, string> = {
-  active:  "text-green-400",
-  pending: "text-yellow-400",
-  offline: "text-red-400",
-};
+type Filter = "all" | "active" | "pending" | "offline";
 
 export default function Minions() {
   const [minions, setMinions] = useState<Minion[]>([]);
   const [loading, setLoading] = useState(true);
   const [installCmd, setInstallCmd] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [showKeys, setShowKeys] = useState(false);
-  const [keyInput, setKeyInput] = useState("");
-  const [keySaving, setKeySaving] = useState(false);
-  const [keySaved, setKeySaved] = useState(false);
-  const [keyError, setKeyError] = useState("");
   const [showRunModal, setShowRunModal] = useState(false);
-
-  useEffect(() => {
-    if (!keySaved) return;
-    const timer = setTimeout(() => setKeySaved(false), 3000);
-    return () => clearTimeout(timer);
-  }, [keySaved]);
-
-  async function saveKey() {
-    if (!keyInput.trim()) return;
-    setKeySaving(true);
-    setKeyError("");
-    try {
-      await api.post("/ai/config", { minion_auto_accept_key: keyInput.trim() });
-      setKeySaved(true);
-      setKeyInput("");
-    } catch {
-      setKeyError("Failed to save key.");
-    } finally {
-      setKeySaving(false);
-    }
-  }
+  const [filter, setFilter] = useState<Filter>("all");
 
   async function handleDelete(id: string) {
     setDeleting(id);
@@ -83,134 +49,125 @@ export default function Minions() {
     try { return JSON.parse(raw); } catch { return {}; }
   }
 
+  const counts = {
+    active: minions.filter((m) => m.status === "active").length,
+    pending: minions.filter((m) => m.status === "pending").length,
+    offline: minions.filter((m) => m.status === "offline").length,
+  };
+  const visible = filter === "all" ? minions : minions.filter((m) => m.status === filter);
+
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-between items-start mb-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Minions</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            {minions.filter((m) => m.status === "active").length} active ·{" "}
-            {minions.filter((m) => m.status === "pending").length} pending ·{" "}
-            {minions.filter((m) => m.status === "offline").length} offline
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => { setShowKeys(v => !v); setKeyInput(""); setKeyError(""); }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${showKeys ? "bg-blue-900/40 border-blue-600 text-blue-300" : "border-border text-muted-foreground hover:text-foreground"}`}
-          >
-            🔑 Keys
-          </button>
-          <button
-            onClick={() => setShowRunModal(true)}
-            disabled={minions.filter(m => m.status === "active").length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
-          >
-            ⚡ Run Command
-          </button>
-        </div>
-      </div>
-
-      {showKeys && (
-        <div className="mb-4 bg-card border border-blue-900/50 rounded-lg p-4">
-          <p className="text-xs text-blue-400 font-semibold uppercase mb-3">Auto-Accept Key</p>
-          <div className="flex gap-2 items-center">
-            <input
-              type="password"
-              value={keyInput}
-              onChange={e => setKeyInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && saveKey()}
-              placeholder="enter new key…"
-              className="flex-1 bg-muted border border-border rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            <button
-              onClick={saveKey}
-              disabled={keySaving || !keyInput.trim()}
-              className="px-4 py-1.5 bg-primary text-primary-foreground rounded-lg text-sm disabled:opacity-40"
-            >
-              {keySaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-          {keySaved && <p className="text-green-400 text-xs mt-2">Key saved.</p>}
-          {keyError && <p className="text-red-400 text-xs mt-2">{keyError}</p>}
-          <p className="text-xs text-muted-foreground mt-2">Minions connecting with this token are auto-approved.</p>
-        </div>
-      )}
-
+    <FleetPage
+      icon={Server}
+      title="Minions"
+      subtitle="Every machine enrolled in the fleet — health, platform, and last contact."
+      vitals={
+        <>
+          <FleetStat value={minions.length} label="total" tone="cyan"
+            active={filter === "all"} onClick={() => setFilter("all")} />
+          <FleetStat value={counts.active} label="active" tone="green"
+            active={filter === "active"} onClick={() => setFilter("active")} />
+          <FleetStat value={counts.pending} label="pending" tone="amber"
+            active={filter === "pending"} onClick={() => setFilter("pending")} />
+          <FleetStat value={counts.offline} label="offline" tone="red"
+            active={filter === "offline"} onClick={() => setFilter("offline")} />
+        </>
+      }
+      actions={
+        <Button
+          size="sm"
+          onClick={() => setShowRunModal(true)}
+          disabled={counts.active === 0}
+        >
+          <Zap className="w-3.5 h-3.5" /> Run command
+        </Button>
+      }
+    >
       {loading ? (
-        <p className="text-muted-foreground">Loading...</p>
+        <p className="text-muted-foreground text-sm">Loading…</p>
       ) : minions.length === 0 ? (
-        <div className="border border-dashed border-border rounded-lg p-10 text-center text-muted-foreground">
-          <p className="mb-2">No minions registered yet.</p>
-          <p className="text-sm font-mono bg-muted px-3 py-2 rounded inline-block">{installCmd}</p>
-        </div>
+        <Surface className="p-2">
+          <EmptyState
+            icon={Server}
+            title="No minions enrolled"
+            description="Run the install command on a machine to enroll it into the fleet."
+          />
+          <div className="px-5 pb-5 -mt-2 max-w-3xl mx-auto">
+            <CopyBlock label="Install command" value={installCmd} />
+          </div>
+        </Surface>
       ) : (
         <>
-          <div className="rounded-lg border border-border overflow-hidden">
+          <Surface className="overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr className="text-muted-foreground text-xs uppercase">
-                  <th className="w-4 px-4 py-3"></th>
-                  <th className="px-4 py-3 text-left">Host</th>
-                  <th className="px-4 py-3 text-left">OS</th>
-                  <th className="px-4 py-3 text-left">Docker</th>
-                  <th className="px-4 py-3 text-left">Ansible</th>
-                  <th className="px-4 py-3 text-left">Last Seen</th>
-                  <th className="px-4 py-3 text-left">Status</th>
-                  <th className="px-4 py-3"></th>
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border dark:[border-bottom-color:hsl(191_89%_55%_/_0.07)]">
+                  <th className="px-4 py-3 font-medium">Host</th>
+                  <th className="px-4 py-3 font-medium">OS</th>
+                  <th className="px-4 py-3 font-medium">Docker</th>
+                  <th className="px-4 py-3 font-medium">Ansible</th>
+                  <th className="px-4 py-3 font-medium">Last seen</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
-                {minions.map((m) => {
+                {visible.map((m) => {
                   const g = parseGrains(m.grains);
                   return (
-                    <tr key={m.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                    <tr key={m.id} className="border-t border-border/70 hover:bg-secondary/40 transition-colors group">
                       <td className="px-4 py-3">
-                        <span className={`inline-block w-2 h-2 rounded-full ${STATUS_DOT[m.status] ?? "bg-gray-500"}`} />
-                      </td>
-                      <td className="px-4 py-3">
-                        <Link to={`/infrastructure/minions/${m.id}`} className="text-foreground hover:text-primary font-medium">
-                          {m.hostname}
-                        </Link>
-                        <div className="text-xs text-muted-foreground font-mono">{m.id.slice(0, 8)}…</div>
+                        <div className="flex items-center gap-2.5">
+                          <MinionStatusDot status={m.status} />
+                          <div className="min-w-0">
+                            <Link
+                              to={`/infrastructure/minions/${m.id}`}
+                              className="text-foreground hover:text-primary font-medium"
+                            >
+                              {m.hostname}
+                            </Link>
+                            <div className="text-[11px] text-muted-foreground font-mono">{m.id.slice(0, 8)}…</div>
+                          </div>
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{g.os ?? "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{g.docker ? `✓ ${g.docker}` : "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{g.ansible ? `✓` : "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs">
+                      <td className="px-4 py-3 text-muted-foreground font-mono text-xs">{g.docker ? g.docker : "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{g.ansible ? "yes" : "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs font-mono">
                         {m.last_seen ? new Date(m.last_seen).toLocaleString() : "never"}
                       </td>
-                      <td className={`px-4 py-3 text-xs font-medium ${STATUS_TEXT[m.status]}`}>
-                        {STATUS_LABEL[m.status]}
-                      </td>
+                      <td className="px-4 py-3"><MinionStatusTag status={m.status} /></td>
                       <td className="px-4 py-3 text-right">
                         <button
                           onClick={() => handleDelete(m.id)}
                           disabled={deleting === m.id}
-                          className="text-xs text-red-400 hover:text-red-300 border border-red-800 hover:border-red-600 px-2 py-1 rounded transition-colors disabled:opacity-40"
+                          title="Remove minion"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-40"
                         >
-                          {deleting === m.id ? "…" : "Remove"}
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
                     </tr>
                   );
                 })}
+                {visible.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                      No {filter} minions.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
-          </div>
+          </Surface>
 
-          <div className="mt-4 bg-muted rounded-lg px-4 py-3 text-xs text-muted-foreground font-mono">
-            <span className="text-foreground font-medium">Install: </span>
-            {installCmd}
-          </div>
+          <CopyBlock label="Install command" value={installCmd} className="mt-4" />
         </>
       )}
+
       {showRunModal && (
-        <BulkRunModal
-          minions={minions}
-          onClose={() => setShowRunModal(false)}
-        />
+        <BulkRunModal minions={minions} onClose={() => setShowRunModal(false)} />
       )}
-    </div>
+    </FleetPage>
   );
 }

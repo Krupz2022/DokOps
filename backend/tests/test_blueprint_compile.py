@@ -45,7 +45,7 @@ def test_compile_merges_org_then_group(isolated_session, async_session):
     states, sources = asyncio.run(run())
     assert [s["id"] for s in states] == ["pkg", "conf"]
     assert next(s for s in states if s["id"] == "conf")["mode"] == "0640"  # group won
-    assert sources == {"nginx.conf": "MUM"}  # group source bundled (its file-state survived)
+    assert sources == {"nginx.conf": {"encoding": "utf-8", "content": "MUM"}}  # group source bundled (its file-state survived)
 
 
 def test_compile_unknown_minion_returns_empty(isolated_session, async_session):

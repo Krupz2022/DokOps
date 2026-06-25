@@ -219,7 +219,19 @@ http {
 }
 ```
 
-> v1 sources are **text only** (config files). Binary/large files aren't supported. Source deletion isn't available yet.
+### Binary sources
+
+Sources can be **binary** (zips, archives, any file), not just text. In the UI, use **Upload file** in a blueprint's Sources; when seeding, just drop the file in the scope's `files/` folder — a non-text file is auto-detected and stored as binary. A `file` resource references it the same way:
+
+```yaml
+resources:
+  - id: bundle
+    type: file
+    path: /opt/ansible-bundle.zip
+    source: ansible-bundle.zip      # raw binary, shipped intact
+```
+
+Binary sources ≤ 1 MB ship inline with the run; larger ones are downloaded by the agent from DokOps on demand (integrity-checked by sha256). Max source size is 50 MB. This only *ships* the file — extracting an archive is still a `cmd` step (e.g. `unzip`/`tar`).
 
 ---
 
@@ -422,7 +434,7 @@ Not yet supported — planned for later phases:
 - Scheduled auto-apply / drift enforcement
 - Git-repo sync (beyond the startup seed)
 - Windows registry resources
-- Binary / large file sources, and source deletion
+- Source deletion
 
 ---
 

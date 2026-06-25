@@ -3,10 +3,26 @@ import { useNavigate } from "react-router-dom";
 import { TopologyGraph } from "../components/topology/TopologyGraph";
 import { TopologyControls } from "../components/topology/TopologyControls";
 import { TopologyDrawer } from "../components/topology/TopologyDrawer";
+import { TopologyVitals } from "../components/topology/TopologyVitals";
+import { TopologyLegend } from "../components/topology/TopologyLegend";
 import type { TopoNode, TopologySnapshot, ViewMode } from "../lib/topology";
 import { useChatContext } from "../context/ChatContext";
 
 const EMPTY_SNAPSHOT: TopologySnapshot = { nodes: [], edges: [], version: 0, mock: false };
+
+// Reuse previous node objects by id so react-force-graph keeps their settled
+// x/y/fx/fy positions instead of re-running physics from scratch each SSE tick.
+export function mergeSnapshot(prev: TopologySnapshot, incoming: TopologySnapshot): TopologySnapshot {
+  const prevById = new Map(prev.nodes.map((n) => [n.id, n]));
+  const nodes = incoming.nodes.map((n) => {
+    const existing = prevById.get(n.id) as any;
+    if (!existing) return n; // new node — let the engine place it
+    // Mutate existing object in place: update data fields, keep position fields.
+    const { x, y, vx, vy, fx, fy } = existing;
+    return Object.assign(existing, n, { x, y, vx, vy, fx, fy });
+  });
+  return { ...incoming, nodes };
+}
 
 export default function Topology() {
   const { startNewChat, setPanelOpen, sendMessage } = useChatContext();
@@ -49,7 +65,7 @@ export default function Topology() {
 
     es.onmessage = (event) => {
       const data: TopologySnapshot = JSON.parse(event.data);
-      setSnapshot(data);
+      setSnapshot((prev) => mergeSnapshot(prev, data));
       // Initialise all namespaces as visible on first load
       setVisibleNamespaces((prev) => {
         if (prev.size > 0) return prev;
@@ -109,8 +125,15 @@ export default function Topology() {
         snapshot={snapshot}
         viewMode={viewMode}
         visibleNamespaces={visibleNamespaces}
+        focusedId={selectedNode?.id ?? null}
         onNodeClick={setSelectedNode}
       />
+
+      {/* Cluster health triage (top-left) */}
+      <TopologyVitals nodes={snapshot.nodes} onSelect={setSelectedNode} />
+
+      {/* Legend (bottom-left) */}
+      <TopologyLegend />
 
       {/* Controls overlay */}
       <TopologyControls

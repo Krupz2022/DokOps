@@ -92,7 +92,7 @@ export default function Login() {
         </div>
 
         <p className="text-[10px] font-mono text-white/15">
-          v1.0.0 · Crafted by Krupz
+          v1.1 · Crafted by Krupz
         </p>
       </div>
 

@@ -108,7 +108,7 @@ export default function Info() {
                         </h3>
                         <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3 text-sm">
                             <dt className="text-muted-foreground">Version</dt>
-                            <dd className="font-mono">1.1.0</dd>
+                            <dd className="font-mono">1.2</dd>
 
                             <dt className="text-muted-foreground">Backend</dt>
                             <dd className="font-mono">Python 3.10 · FastAPI</dd>

@@ -71,7 +71,7 @@ export function Footer() {
               className="w-1.5 h-1.5 rounded-full bg-emerald-500"
               style={{ boxShadow: "0 0 4px rgb(52 211 153 / 0.7)" }}
             />
-            <span className="text-muted-foreground/70">v1.0.0</span>
+            <span className="text-muted-foreground/70">v1.2</span>
           </div>
         </div>
 

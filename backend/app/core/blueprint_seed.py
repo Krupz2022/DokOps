@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 
@@ -43,9 +44,16 @@ async def _upsert_state_file(name: str, body: str, db: AsyncSession) -> Blueprin
     return sf
 
 
-async def seed_blueprints_from_dir(root: str, db: AsyncSession) -> int:
-    """Walk orgs/groups/minions dirs and upsert blueprints + sources + assignments."""
+async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = False) -> tuple[int, int]:
+    """Walk orgs/groups/minions dirs and upsert blueprints + sources + assignments.
+
+    Returns (seeded, pruned). With prune=True (explicit re-seed / CD reconcile), any
+    seeded blueprint whose backing YAML is gone is deleted with its sources + assignments.
+    Only path-named blueprints (orgs/… groups/… minions/…) are pruned — UI-created ones
+    are never touched. Startup uses prune=False so a not-yet-mounted folder can't wipe data.
+    """
     seeded = 0
+    seen: set[str] = set()
     for scope_kind in ("orgs", "groups", "minions"):
         base = os.path.join(root, scope_kind)
         if not os.path.isdir(base):
@@ -64,6 +72,7 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession) -> int:
             scope_type, scope_id = scope
             for fname in yaml_files:
                 name = f"{scope_kind}/{rel}/{fname}"
+                seen.add(name)
                 with open(os.path.join(dirpath, fname), "r", encoding="utf-8") as fh:
                     sf = await _upsert_state_file(name, fh.read(), db)
                 # sources from a sibling files/ dir
@@ -73,15 +82,22 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession) -> int:
                         src_path = os.path.join(files_dir, src_name)
                         if not os.path.isfile(src_path):
                             continue
-                        with open(src_path, "r", encoding="utf-8") as sfh:
-                            content = sfh.read()
+                        try:
+                            with open(src_path, "r", encoding="utf-8") as sfh:
+                                content = sfh.read()
+                            enc = "utf-8"
+                        except UnicodeDecodeError:
+                            with open(src_path, "rb") as sfh:
+                                content = base64.b64encode(sfh.read()).decode("ascii")
+                            enc = "base64"
                         existing = (await db.exec(select(BlueprintSource).where(
                             BlueprintSource.blueprint_id == sf.id, BlueprintSource.name == src_name))).first()
                         if existing:
                             existing.content = content
+                            existing.encoding = enc
                             db.add(existing)
                         else:
-                            db.add(BlueprintSource(blueprint_id=sf.id, name=src_name, content=content))
+                            db.add(BlueprintSource(blueprint_id=sf.id, name=src_name, content=content, encoding=enc))
                 # assignment (avoid duplicate)
                 dup = (await db.exec(select(BlueprintAssignment).where(
                     BlueprintAssignment.blueprint_id == sf.id,
@@ -90,5 +106,21 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession) -> int:
                 if not dup:
                     db.add(BlueprintAssignment(blueprint_id=sf.id, scope_type=scope_type, scope_id=scope_id))
                 seeded += 1
+
+    # Reconcile: drop seeded blueprints whose YAML no longer exists in the folder.
+    pruned = 0
+    if prune:
+        for bp in (await db.exec(select(Blueprint))).all():
+            is_seeded = bp.name.split("/", 1)[0] in ("orgs", "groups", "minions")
+            if is_seeded and bp.name not in seen:
+                for src in (await db.exec(select(BlueprintSource).where(
+                        BlueprintSource.blueprint_id == bp.id))).all():
+                    await db.delete(src)
+                for asn in (await db.exec(select(BlueprintAssignment).where(
+                        BlueprintAssignment.blueprint_id == bp.id))).all():
+                    await db.delete(asn)
+                await db.delete(bp)
+                pruned += 1
+
     await db.commit()
-    return seeded
+    return seeded, pruned

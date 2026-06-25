@@ -186,7 +186,7 @@ export default function MinionDetail() {
   const statusDot = minion.status === "active" ? "bg-green-400" : minion.status === "pending" ? "bg-yellow-400" : "bg-red-400";
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6">
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-start gap-3">

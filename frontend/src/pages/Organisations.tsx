@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Building2, ChevronDown, ChevronRight, Trash2, Plus } from "lucide-react";
 import api from "../lib/api";
 import { useConfirm } from "../context/ConfirmContext";
 import { useToast } from "../context/ToastContext";
+import { Button } from "../components/ui/Button";
+import {
+  FleetPage, FleetStat, MinionStatusDot, Surface, fieldCls,
+} from "../components/fleet/FleetPage";
 
 interface Org { id: string; name: string; slug: string; }
 interface Group { id: string; name: string; description: string | null; org_id: string; member_ids: string[]; }
@@ -95,9 +101,7 @@ export default function Organisations() {
   async function addMinion(orgId: string) {
     const minionId = addPick[orgId];
     const orgGroups = groups[orgId] || [];
-    // assign to first group if none selected, otherwise need a target — we use the picker group
     if (!minionId) return;
-    // If only one group, assign there; otherwise user picks via move dropdown after adding
     const targetGroup = orgGroups[0];
     if (!targetGroup) { toast("Create a group first.", "error"); return; }
     await api.post(`/organisations/${orgId}/assign`, { minion_id: minionId, group_id: targetGroup.id });
@@ -106,116 +110,128 @@ export default function Organisations() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Groups</h1>
-          <p className="text-muted-foreground text-sm mt-1">Organise minions by customer and environment</p>
-        </div>
-      </div>
-
+    <FleetPage
+      icon={Building2}
+      title="Groups"
+      subtitle="Organise minions by customer and environment."
+      vitals={
+        <>
+          <FleetStat value={orgs.length} label="organisations" tone="cyan" />
+          <FleetStat value={minions.length} label="minions" tone="blue" />
+        </>
+      }
+    >
       {/* Create org */}
-      <div className="bg-card border border-border rounded-lg p-4 mb-6 flex gap-3">
-        <input value={newOrgName} onChange={e => handleOrgNameChange(e.target.value)}
-          placeholder="Customer name" className="flex-1 bg-muted border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-        <input value={newOrgSlug} onChange={e => setNewOrgSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
-          placeholder="slug" className="w-36 bg-muted border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
-        <button onClick={createOrg} disabled={creating || !newOrgName.trim() || !newOrgSlug.trim()}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm disabled:opacity-40">
-          Add Organisation
-        </button>
-      </div>
+      <Surface className="p-4 mb-6">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input value={newOrgName} onChange={e => handleOrgNameChange(e.target.value)}
+            placeholder="Customer name" className={fieldCls + " flex-1"} />
+          <input value={newOrgSlug} onChange={e => setNewOrgSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+            placeholder="slug" className={fieldCls + " sm:w-40 font-mono"} />
+          <Button onClick={createOrg} loading={creating} disabled={!newOrgName.trim() || !newOrgSlug.trim()}>
+            <Plus className="w-4 h-4" /> Add organisation
+          </Button>
+        </div>
+      </Surface>
 
-      {/* Org list */}
-      <div className="space-y-3">
-        {orgs.map(org => {
-          const orgGroups = groups[org.id] || [];
-          // minions already assigned anywhere in this org
-          const assignedIds = new Set(orgGroups.flatMap(g => g.member_ids));
-          const unassigned = minions.filter(m => !assignedIds.has(m.id));
+      {orgs.length === 0 ? (
+        <p className="text-sm text-muted-foreground text-center py-12">No organisations yet — add one above.</p>
+      ) : (
+        <div className="space-y-3">
+          {orgs.map(org => {
+            const orgGroups = groups[org.id] || [];
+            const assignedIds = new Set(orgGroups.flatMap(g => g.member_ids));
+            const unassigned = minions.filter(m => !assignedIds.has(m.id));
+            const isOpen = expanded.has(org.id);
 
-          return (
-            <div key={org.id} className="bg-card border border-border rounded-lg overflow-hidden">
-              {/* Org header */}
-              <div className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-muted/30" onClick={() => toggleOrg(org.id)}>
-                <div>
-                  <span className="font-medium text-foreground">{org.name}</span>
-                  <span className="text-xs text-muted-foreground font-mono ml-2">{org.slug}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground">{orgGroups.length || "?"} groups · {assignedIds.size} minions</span>
-                  <span className="text-muted-foreground text-xs">{expanded.has(org.id) ? "▲" : "▼"}</span>
-                  <button onClick={e => { e.stopPropagation(); deleteOrg(org.id); }}
-                    className="text-xs text-red-400 hover:text-red-300 border border-red-800 px-2 py-1 rounded">Remove</button>
-                </div>
-              </div>
-
-              {expanded.has(org.id) && (
-                <div className="border-t border-border px-4 py-3 space-y-3">
-                  {/* Groups */}
-                  {orgGroups.map(g => (
-                    <div key={g.id} className="bg-muted/20 border border-border rounded-lg overflow-hidden">
-                      {/* Group header */}
-                      <div className="flex items-center justify-between px-3 py-2 bg-muted/30">
-                        <span className="text-sm font-semibold text-foreground">{g.name}</span>
-                        <button onClick={() => deleteGroup(org.id, g.id)} className="text-xs text-red-400 hover:text-red-300">Remove group</button>
-                      </div>
-                      {/* Minion rows */}
-                      {g.member_ids.length === 0 ? (
-                        <p className="px-3 py-2 text-xs text-muted-foreground">No minions in this group.</p>
-                      ) : (
-                        g.member_ids.map(mid => {
-                          const m = minions.find(x => x.id === mid);
-                          const otherGroups = orgGroups.filter(x => x.id !== g.id);
-                          return (
-                            <div key={mid} className="flex items-center justify-between px-3 py-2 border-t border-border/50">
-                              <div className="flex items-center gap-2">
-                                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${m?.status === "active" ? "bg-green-500" : m?.status === "pending" ? "bg-yellow-400" : "bg-red-500"}`} />
-                                <span className="text-sm font-medium">{m?.hostname ?? mid.slice(0, 8)}</span>
-                                <span className="text-xs text-muted-foreground font-mono">{mid.slice(0, 8)}…</span>
-                              </div>
-                              {otherGroups.length > 0 && (
-                                <select
-                                  defaultValue=""
-                                  onChange={e => { if (e.target.value) moveMinion(org.id, mid, e.target.value); e.target.value = ""; }}
-                                  className="bg-muted border border-border rounded px-2 py-0.5 text-xs text-muted-foreground"
-                                >
-                                  <option value="" disabled>Move to…</option>
-                                  {otherGroups.map(og => <option key={og.id} value={og.id}>{og.name}</option>)}
-                                </select>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  ))}
-
-                  {/* Add group */}
-                  <div className="flex gap-2">
-                    <input value={newGroupName[org.id] || ""} onChange={e => setNewGroupName(p => ({ ...p, [org.id]: e.target.value }))}
-                      placeholder="New group name (e.g. qa, prod)" className="flex-1 bg-muted border border-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-                    <button onClick={() => createGroup(org.id)} className="px-3 py-1.5 bg-primary text-primary-foreground rounded-lg text-sm">Add Group</button>
+            return (
+              <Surface key={org.id} className="overflow-hidden">
+                {/* Org header */}
+                <div className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-secondary/40 transition-colors" onClick={() => toggleOrg(org.id)}>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {isOpen ? <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
+                    <span className="font-medium text-foreground truncate">{org.name}</span>
+                    <span className="text-xs text-muted-foreground font-mono">{org.slug}</span>
                   </div>
-
-                  {/* Add unassigned minion */}
-                  {unassigned.length > 0 && orgGroups.length > 0 && (
-                    <div className="flex gap-2 pt-1 border-t border-border/50">
-                      <select value={addPick[org.id] || ""} onChange={e => setAddPick(p => ({ ...p, [org.id]: e.target.value }))}
-                        className="flex-1 bg-muted border border-border rounded-lg px-3 py-1.5 text-sm">
-                        <option value="">Add unassigned minion…</option>
-                        {unassigned.map(m => <option key={m.id} value={m.id}>{m.hostname}</option>)}
-                      </select>
-                      <button onClick={() => addMinion(org.id)} disabled={!addPick[org.id]}
-                        className="px-3 py-1.5 bg-primary text-primary-foreground rounded-lg text-sm disabled:opacity-40">Add</button>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <span className="text-xs text-muted-foreground">{isOpen ? orgGroups.length : "·"} groups · {assignedIds.size} minions</span>
+                    <button onClick={e => { e.stopPropagation(); deleteOrg(org.id); }}
+                      title="Delete organisation"
+                      className="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+
+                {isOpen && (
+                  <div className="border-t border-border/70 px-4 py-3 space-y-3">
+                    {/* Groups */}
+                    {orgGroups.map(g => (
+                      <div key={g.id} className="border border-border rounded-lg overflow-hidden bg-background/40">
+                        <div className="flex items-center justify-between px-3 py-2 bg-secondary/40">
+                          <span className="text-sm font-semibold text-foreground">{g.name}</span>
+                          <button onClick={() => deleteGroup(org.id, g.id)}
+                            title="Delete group"
+                            className="inline-flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        {g.member_ids.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-muted-foreground">No minions in this group.</p>
+                        ) : (
+                          g.member_ids.map(mid => {
+                            const m = minions.find(x => x.id === mid);
+                            const otherGroups = orgGroups.filter(x => x.id !== g.id);
+                            return (
+                              <div key={mid} className="flex items-center justify-between px-3 py-2 border-t border-border/50">
+                                <Link to={`/infrastructure/minions/${mid}`}
+                                  className="group/m flex items-center gap-2 min-w-0 hover:text-primary transition-colors" title="Open minion">
+                                  <MinionStatusDot status={m?.status ?? "offline"} className="w-1.5 h-1.5" />
+                                  <span className="text-sm font-medium truncate group-hover/m:text-primary group-hover/m:underline">{m?.hostname ?? mid.slice(0, 8)}</span>
+                                  <span className="text-xs text-muted-foreground font-mono">{mid.slice(0, 8)}…</span>
+                                </Link>
+                                {otherGroups.length > 0 && (
+                                  <select
+                                    defaultValue=""
+                                    onChange={e => { if (e.target.value) moveMinion(org.id, mid, e.target.value); e.target.value = ""; }}
+                                    className="bg-background border border-border rounded px-2 py-0.5 text-xs text-muted-foreground"
+                                  >
+                                    <option value="" disabled>Move to…</option>
+                                    {otherGroups.map(og => <option key={og.id} value={og.id}>{og.name}</option>)}
+                                  </select>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Add group */}
+                    <div className="flex gap-2">
+                      <input value={newGroupName[org.id] || ""} onChange={e => setNewGroupName(p => ({ ...p, [org.id]: e.target.value }))}
+                        placeholder="New group name (e.g. qa, prod)" className={fieldCls + " flex-1 py-1.5"} />
+                      <Button size="sm" onClick={() => createGroup(org.id)}><Plus className="w-3.5 h-3.5" /> Group</Button>
+                    </div>
+
+                    {/* Add unassigned minion */}
+                    {unassigned.length > 0 && orgGroups.length > 0 && (
+                      <div className="flex gap-2 pt-1 border-t border-border/50">
+                        <select value={addPick[org.id] || ""} onChange={e => setAddPick(p => ({ ...p, [org.id]: e.target.value }))}
+                          className={fieldCls + " flex-1 py-1.5"}>
+                          <option value="">Add unassigned minion…</option>
+                          {unassigned.map(m => <option key={m.id} value={m.id}>{m.hostname}</option>)}
+                        </select>
+                        <Button size="sm" onClick={() => addMinion(org.id)} disabled={!addPick[org.id]}>Add</Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Surface>
+            );
+          })}
+        </div>
+      )}
+    </FleetPage>
   );
 }

@@ -32,6 +32,11 @@ export function TopologyControls({
     onNamespacesChange(next);
   };
 
+  const allSelected = namespaces.length > 0 && visibleNamespaces.size === namespaces.length;
+  const noneSelected = visibleNamespaces.size === 0;
+  const toggleAll = () =>
+    onNamespacesChange(allSelected ? new Set() : new Set(namespaces));
+
   return (
     <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
       {/* Live indicator */}
@@ -83,6 +88,20 @@ export function TopologyControls({
             <p className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-widest mb-1.5 px-1">
               Namespaces
             </p>
+            <label className="flex items-center gap-2 px-1 py-1 cursor-pointer hover:bg-secondary/40 rounded text-xs border-b border-border/50 mb-1">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = !allSelected && !noneSelected;
+                }}
+                onChange={toggleAll}
+                className="accent-primary"
+              />
+              <span className="font-mono text-muted-foreground">
+                {allSelected ? "Deselect all" : "Select all"}
+              </span>
+            </label>
             {namespaces.map((ns) => (
               <label
                 key={ns}

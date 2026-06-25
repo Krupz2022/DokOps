@@ -103,3 +103,28 @@ def test_create_group_in_org(client):
     )
     assert r2.status_code == 200
     assert r2.json()["name"] == "dev-web"
+
+
+def test_add_member_refuses_second_group(client, session):
+    from sqlmodel import select
+    from app.models.minion import Minion
+    from app.models.patch import MinionGroupMember
+
+    org_id = client.post("/api/v1/organisations/", json={"name": "T", "slug": "t"}).json()["id"]
+    g1 = client.post(f"/api/v1/organisations/{org_id}/groups", json={"name": "g1"}).json()["id"]
+    g2 = client.post(f"/api/v1/organisations/{org_id}/groups", json={"name": "g2"}).json()["id"]
+    session.add(Minion(id="m1", hostname="m1")); session.commit()
+
+    r1 = client.post(f"/api/v1/organisations/groups/{g1}/members", json={"minion_id": "m1"})
+    assert r1.status_code == 200 and r1.json()["added"] is True
+
+    # second group → refused; minion stays in exactly one group
+    r2 = client.post(f"/api/v1/organisations/groups/{g2}/members", json={"minion_id": "m1"})
+    assert r2.status_code == 409
+
+    # re-adding to the same group is a harmless no-op
+    r3 = client.post(f"/api/v1/organisations/groups/{g1}/members", json={"minion_id": "m1"})
+    assert r3.status_code == 200 and r3.json()["added"] is False
+
+    members = session.exec(select(MinionGroupMember).where(MinionGroupMember.minion_id == "m1")).all()
+    assert len(members) == 1 and members[0].group_id == g1

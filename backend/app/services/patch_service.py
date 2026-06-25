@@ -33,16 +33,11 @@ def ps_quote(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def assign_minion_to_group(minion_id: str, org_id: str, group_id: str) -> None:
-    """Move minion to group_id, removing any prior membership within the same org (one group per org)."""
+    """Move minion to group_id. A minion belongs to at most one group, so ANY prior
+    membership (in this or any other org) is removed first."""
     async with AsyncSessionLocal() as db:
-        # Remove all existing memberships in this org
-        all_group_ids = [
-            g.id for g in (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all()
-        ]
         for old in (await db.exec(
-            select(MinionGroupMember)
-            .where(MinionGroupMember.minion_id == minion_id)
-            .where(MinionGroupMember.group_id.in_(all_group_ids))  # type: ignore[attr-defined]
+            select(MinionGroupMember).where(MinionGroupMember.minion_id == minion_id)
         )).all():
             await db.delete(old)
         db.add(MinionGroupMember(group_id=group_id, minion_id=minion_id))

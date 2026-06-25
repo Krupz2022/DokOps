@@ -3,6 +3,7 @@ export interface Blueprint {
   name: string;
   yaml_body: string;
   updated_at: string;
+  org_ids?: string[];   // orgs this blueprint resolves to (via assignments); used to group the list
 }
 
 export interface BlueprintSource {
@@ -10,6 +11,8 @@ export interface BlueprintSource {
   blueprint_id: string;
   name: string;
   content: string;
+  encoding?: "utf-8" | "base64";
+  size?: number;
 }
 
 export interface BlueprintAssignment {

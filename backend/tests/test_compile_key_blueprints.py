@@ -28,4 +28,4 @@ def test_compile_merges_key_blueprints_and_sources(isolated_session):
 
     resources, sources = asyncio.run(go())
     assert [r["id"] for r in resources] == ["iis-pkg", "cfg"]
-    assert sources == {"web.config": "<config/>"}
+    assert sources == {"web.config": {"encoding": "utf-8", "content": "<config/>"}}

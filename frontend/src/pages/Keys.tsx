@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
+import { KeyRound, ChevronUp, ChevronDown, Trash2, RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import type { ActivationKey, CreatedKey } from "../types/activationKey";
 import type { Blueprint } from "../types/blueprint";
+import { Button } from "../components/ui/Button";
+import {
+  FleetPage, FleetStat, Surface, CopyBlock, Eyebrow, fieldCls,
+} from "../components/fleet/FleetPage";
 
 interface Org { id: string; name: string; }
 interface Group { id: string; name: string; }
@@ -82,68 +87,69 @@ export default function Keys() {
     : "";
 
   return (
-    <div className="p-6 w-full max-w-[100rem] mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Activation Keys</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          A key attaches blueprints to onboarding. Install a machine with <code>-Key &lt;value&gt;</code> and,
-          if "run on attach" is on, its blueprints apply once. <code>-Token</code> still handles enrollment auth.
-        </p>
-      </div>
-
-      {/* Global enrollment token (the --token auto-accept key every minion installs with) */}
-      <div className="mb-6 bg-card border border-border rounded-xl p-4">
-        <h2 className="text-sm font-semibold text-foreground">Enrollment token</h2>
-        <p className="text-xs text-muted-foreground mt-1 mb-2 max-w-2xl">
-          The shared <code>-Token</code> every minion installs with — a matching token auto-accepts the machine on connect. Set it once; it's stored hashed, so copy it for your install commands.
+    <FleetPage
+      icon={KeyRound}
+      title="Activation keys"
+      subtitle="A key attaches blueprints to onboarding. Install with -Key <value>; if “run on attach” is on, its blueprints apply once."
+      vitals={
+        <>
+          <FleetStat value={keys.length} label="keys" tone="cyan" />
+          <FleetStat value={blueprints.length} label="blueprints" tone="purple" />
+        </>
+      }
+    >
+      {/* Enrollment token */}
+      <Surface className="p-4 mb-6">
+        <Eyebrow className="mb-1">Enrollment token</Eyebrow>
+        <p className="text-xs text-muted-foreground mb-3 max-w-2xl">
+          The shared <code>-Token</code> every minion installs with — a matching token auto-accepts the machine on connect.
+          Stored hashed, so copy it for your install commands.
         </p>
         <div className="flex gap-2 items-center max-w-2xl">
           <input value={tokenInput} onChange={e => setTokenInput(e.target.value)} placeholder="enrollment token value"
-            className="flex-1 bg-background border border-border rounded-lg px-3 py-2 font-mono text-xs text-foreground" />
-          <button onClick={genToken} className="text-xs px-2 py-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground">generate</button>
-          <button onClick={saveToken} disabled={!tokenInput.trim()}
-            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium disabled:opacity-50">Save</button>
-          {tokenSaved && <span className="text-xs text-green-400">saved</span>}
+            className={fieldCls + " flex-1 font-mono text-xs"} />
+          <Button variant="outline" size="sm" onClick={genToken}><RefreshCw className="w-3.5 h-3.5" /> Generate</Button>
+          <Button size="sm" onClick={saveToken} disabled={!tokenInput.trim()}>Save</Button>
+          {tokenSaved && <span className="text-xs text-emerald-400">saved</span>}
         </div>
-      </div>
+      </Surface>
 
       {created && (
-        <div className="mb-6 bg-card border border-primary/40 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold text-foreground">Key "{created.key.name}" created — copy the value now (shown once):</p>
-          <code className="block bg-background border border-border rounded px-3 py-2 text-xs text-foreground break-all">{created.value}</code>
-          <p className="text-xs text-muted-foreground">Windows install command:</p>
-          <code className="block bg-background border border-border rounded px-3 py-2 text-[11px] text-foreground break-all">{installPs}</code>
+        <Surface className="mb-6 p-4 border-primary/40 space-y-3">
+          <p className="text-sm font-semibold text-foreground">
+            Key “{created.key.name}” created — copy the value now (shown once):
+          </p>
+          <CopyBlock value={created.value} />
+          <CopyBlock label="Windows install command" value={installPs} />
           <button onClick={() => setCreated(null)} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
-        </div>
+        </Surface>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[20rem_1fr] gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[22rem_1fr] gap-6 items-start">
         {/* Create */}
-        <div className="bg-card border border-border rounded-xl p-5 space-y-3">
-          <h2 className="text-sm font-semibold text-foreground">New key</h2>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="key name (e.g. win-web)"
-            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground" />
-          <select value={orgId} onChange={e => { setOrgId(e.target.value); setGroupId(""); }}
-            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground">
+        <Surface className="p-5 space-y-3">
+          <Eyebrow>New key</Eyebrow>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="key name (e.g. win-web)" className={fieldCls} />
+          <select value={orgId} onChange={e => { setOrgId(e.target.value); setGroupId(""); }} className={fieldCls}>
             <option value="">org (optional)…</option>
             {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
-          <select value={groupId} onChange={e => setGroupId(e.target.value)}
-            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground">
+          <select value={groupId} onChange={e => setGroupId(e.target.value)} className={fieldCls}>
             <option value="">group (optional)…</option>
             {groups.filter(g => !orgId || (g as Group & { org_id?: string }).org_id === orgId)
                    .map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
           </select>
           <label className="flex items-center gap-2 text-sm text-foreground">
-            <input type="checkbox" checked={runOnAttach} onChange={e => setRunOnAttach(e.target.checked)} />
+            <input type="checkbox" className="accent-primary" checked={runOnAttach} onChange={e => setRunOnAttach(e.target.checked)} />
             Run blueprints on attach
           </label>
+
           <div>
-            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Blueprints</p>
+            <Eyebrow className="mb-1.5">Blueprints</Eyebrow>
             <div className="space-y-1 max-h-48 overflow-auto">
               {blueprints.map(b => (
                 <label key={b.id} className="flex items-center gap-2 text-sm text-foreground">
-                  <input type="checkbox" checked={picked.includes(b.id)} onChange={() => toggle(b.id)} />
+                  <input type="checkbox" className="accent-primary" checked={picked.includes(b.id)} onChange={() => toggle(b.id)} />
                   {b.name}
                 </label>
               ))}
@@ -151,46 +157,47 @@ export default function Keys() {
             </div>
             {picked.length > 0 && (
               <div className="mt-3">
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Run order (top runs first)</p>
+                <Eyebrow className="mb-1.5">Run order (top runs first)</Eyebrow>
                 <div className="space-y-1">
                   {picked.map((id, i) => (
-                    <div key={id} className="flex items-center gap-2 text-sm bg-background border border-border rounded px-2 py-1">
-                      <span className="text-muted-foreground w-5 text-right">{i + 1}.</span>
+                    <div key={id} className="flex items-center gap-2 text-sm bg-background border border-border rounded-lg px-2 py-1">
+                      <span className="text-muted-foreground font-mono w-5 text-right text-xs">{i + 1}</span>
                       <span className="flex-1 truncate text-foreground">{bpName(id)}</span>
-                      <button onClick={() => move(i, -1)} disabled={i === 0}
-                        title="move up" className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▲</button>
-                      <button onClick={() => move(i, 1)} disabled={i === picked.length - 1}
-                        title="move down" className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▼</button>
+                      <button onClick={() => move(i, -1)} disabled={i === 0} title="Move up"
+                        className="p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"><ChevronUp className="w-4 h-4" /></button>
+                      <button onClick={() => move(i, 1)} disabled={i === picked.length - 1} title="Move down"
+                        className="p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"><ChevronDown className="w-4 h-4" /></button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
           </div>
-          <button onClick={createKey} disabled={!name.trim()}
-            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium disabled:opacity-50">
-            Create key
-          </button>
-        </div>
+
+          <Button onClick={createKey} disabled={!name.trim()} className="w-full">Create key</Button>
+        </Surface>
 
         {/* List */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h2 className="text-sm font-semibold text-foreground mb-3">Keys ({keys.length})</h2>
+        <Surface className="p-5">
+          <Eyebrow className="mb-3">Keys ({keys.length})</Eyebrow>
           {keys.length === 0 ? <p className="text-sm text-muted-foreground">No keys yet.</p> : (
-            <div className="space-y-2">
+            <div className="divide-y divide-border/60">
               {keys.map(k => (
-                <div key={k.id} className="flex items-center gap-3 text-sm border-b border-border/50 last:border-0 py-2">
+                <div key={k.id} className="flex items-center gap-3 text-sm py-2.5 group">
                   <span className="font-medium text-foreground w-40 truncate">{k.name}</span>
-                  {k.run_on_attach && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">run-on-attach</span>}
-                  {!k.enabled && <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">disabled</span>}
+                  {k.run_on_attach && <span className="tag tag-amber">run-on-attach</span>}
+                  {!k.enabled && <span className="tag">disabled</span>}
                   <span className="text-xs text-muted-foreground flex-1">{k.blueprint_ids.length} blueprint(s)</span>
-                  <button onClick={() => removeKey(k.id)} className="text-xs text-muted-foreground hover:text-red-400">delete</button>
+                  <button onClick={() => removeKey(k.id)} title="Delete key"
+                    className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </Surface>
       </div>
-    </div>
+    </FleetPage>
   );
 }

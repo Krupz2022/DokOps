@@ -29,10 +29,12 @@ resources:
 
 
 def test_collect_only_referenced_sources():
+    from app.models.blueprint import BlueprintSource
     states = [{"id": "c", "type": "file", "source": "nginx.conf"}]
-    pool = {"nginx.conf": "data", "unused.conf": "x"}
+    pool = {"nginx.conf": BlueprintSource(blueprint_id="b", name="nginx.conf", content="data"),
+            "unused.conf": BlueprintSource(blueprint_id="b", name="unused.conf", content="x")}
     got = collect_referenced_sources(states, pool)
-    assert got == {"nginx.conf": "data"}
+    assert got == {"nginx.conf": {"encoding": "utf-8", "content": "data"}}
 
 
 def test_merge_ignores_empty_body():

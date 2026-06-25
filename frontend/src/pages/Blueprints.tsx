@@ -1,15 +1,27 @@
 import { useEffect, useState } from "react";
+import { ScrollText, Plus, ArrowLeft, ChevronRight, ChevronDown, Trash2, RefreshCw } from "lucide-react";
 import api from "../lib/api";
+import { cn } from "../lib/utils";
 import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { useAppContext } from "../context/AppContext";
 import type { Blueprint, BlueprintSource, BlueprintAssignment } from "../types/blueprint";
+import { Button } from "../components/ui/Button";
+import {
+  FleetPage, FleetStat, Surface, Eyebrow, fieldCls,
+} from "../components/fleet/FleetPage";
 
-interface Org { id: string; name: string; }
+interface Org { id: string; name: string; slug?: string; }
 interface Group { id: string; name: string; }
 interface MinionLite { id: string; hostname: string; }
 
 export default function Blueprints() {
   const { toast } = useToast();
+  const { confirm } = useConfirm();
+  const { isSuperuser } = useAppContext();
+  const [reseeding, setReseeding] = useState(false);
   const [list, setList] = useState<Blueprint[]>([]);
+  const [editing, setEditing] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [yamlBody, setYamlBody] = useState("resources: []");
@@ -20,6 +32,15 @@ export default function Blueprints() {
   const [minions, setMinions] = useState<MinionLite[]>([]);
   const [newScopeType, setNewScopeType] = useState<"org" | "group" | "minion">("minion");
   const [newScopeId, setNewScopeId] = useState("");
+  const [collapsedOrgs, setCollapsedOrgs] = useState<Set<string>>(new Set());
+
+  function toggleOrg(key: string) {
+    setCollapsedOrgs(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
 
   // Resolve a stored scope id to a human-readable name (falls back to the id).
   function scopeLabel(type: string, id: string): string {
@@ -28,7 +49,6 @@ export default function Blueprints() {
     if (type === "minion") return minions.find(m => m.id === id)?.hostname ?? id;
     return id;
   }
-  const [newSourceName, setNewSourceName] = useState("");
 
   async function loadList() {
     const r = await api.get("/blueprints");
@@ -53,6 +73,7 @@ export default function Blueprints() {
     setYamlBody(b.yaml_body);
     setSources(src.data as BlueprintSource[]);
     setAssignments(asn.data as BlueprintAssignment[]);
+    setEditing(true);
   }
 
   function newBlueprint() {
@@ -61,6 +82,44 @@ export default function Blueprints() {
     setYamlBody("resources: []");
     setSources([]);
     setAssignments([]);
+    setEditing(true);
+  }
+
+  function backToList() {
+    setEditing(false);
+    loadList();
+  }
+
+  async function reseed() {
+    setReseeding(true);
+    try {
+      const r = await api.post("/blueprints/reseed");
+      const removed = r.data?.removed ?? 0;
+      toast(`Re-seeded ${r.data?.seeded ?? 0} from folder${removed ? `, removed ${removed} stale` : ""}`, "success");
+      loadList();
+    } catch {
+      toast("Re-seed failed", "error");
+    } finally {
+      setReseeding(false);
+    }
+  }
+
+  async function deleteBlueprint(id: string) {
+    const ok = await confirm({
+      title: "Delete blueprint",
+      description: "Remove this blueprint, its sources, and assignments? If it was seeded from a blueprints/ folder, it will reappear on the next backend restart unless you also delete the folder.",
+      variant: "danger",
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
+    try {
+      await api.delete(`/blueprints/${id}`);
+      toast("Blueprint deleted", "success");
+      if (selectedId === id) setEditing(false);
+      loadList();
+    } catch {
+      toast("Delete failed", "error");
+    }
   }
 
   async function save() {
@@ -82,15 +141,6 @@ export default function Blueprints() {
     }
   }
 
-  async function saveSource(sourceName: string, content: string) {
-    if (!selectedId) { toast("Save the blueprint first", "error"); return; }
-    await api.put(`/blueprints/${selectedId}/sources/${encodeURIComponent(sourceName)}`, { content });
-    const src = await api.get(`/blueprints/${selectedId}/sources`);
-    setSources(src.data as BlueprintSource[]);
-    setNewSourceName("");
-    toast("Source saved", "success");
-  }
-
   async function addAssignment() {
     if (!selectedId || !newScopeId.trim()) return;
     await api.post(`/blueprints/${selectedId}/assignments`, { scope_type: newScopeType, scope_id: newScopeId.trim() });
@@ -103,127 +153,184 @@ export default function Blueprints() {
     setAssignments(assignments.filter(a => a.id !== id));
   }
 
-  return (
-    <div className="p-6 w-full max-w-[100rem] mx-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground leading-tight">Blueprints</h1>
-          <p className="text-sm text-muted-foreground mt-1 max-w-xl">
-            Declarative desired-state configs. Assign to an org, group, or minion and apply across your fleet.
-          </p>
-        </div>
-        <button onClick={newBlueprint}
-          className="shrink-0 px-3.5 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium">
-          + New blueprint
-        </button>
-      </div>
+  /* ── List view (grouped per org) ───────────────────────────────────────── */
+  if (!editing) {
+    const orgIdSet = new Set(orgs.map(o => o.id));
+    const unassigned = list.filter(b => !(b.org_ids ?? []).some(id => orgIdSet.has(id)));
+    const groupsToRender = [
+      ...orgs.map(o => ({ key: o.id, title: o.name, slug: o.slug ?? "", items: list.filter(b => (b.org_ids ?? []).includes(o.id)) })),
+      ...(unassigned.length ? [{ key: "__unassigned", title: "Unassigned", slug: "", items: unassigned }] : []),
+    ];
+    return (
+      <FleetPage
+        icon={ScrollText}
+        title="Blueprints"
+        subtitle="Declarative desired-state configs, grouped by org. Assign to an org, group, or minion and apply across your fleet."
+        vitals={<FleetStat value={list.length} label="blueprints" tone="purple" />}
+        actions={
+          <div className="flex items-center gap-2">
+            {isSuperuser && (
+              <Button variant="outline" size="sm" onClick={reseed} disabled={reseeding} title="Re-run the folder seed (picks up YAML added to backend/app/blueprints/ without a restart)">
+                <RefreshCw className={cn("w-3.5 h-3.5", reseeding && "animate-spin")} /> Re-seed
+              </Button>
+            )}
+            <Button size="sm" onClick={newBlueprint}><Plus className="w-3.5 h-3.5" /> New blueprint</Button>
+          </div>
+        }
+      >
+        {list.length === 0 ? (
+          <Surface className="p-12 text-center">
+            <ScrollText className="w-8 h-8 text-muted-foreground/40 mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">No blueprints yet — create one to get started.</p>
+          </Surface>
+        ) : (
+          <div className="space-y-3">
+            {groupsToRender.map(g => {
+              const open = !collapsedOrgs.has(g.key);
+              return (
+                <Surface key={g.key} className="overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-secondary/40 transition-colors" onClick={() => toggleOrg(g.key)}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {open ? <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
+                      <span className="font-medium text-foreground truncate">{g.title}</span>
+                      {g.slug && <span className="text-xs text-muted-foreground font-mono">{g.slug}</span>}
+                    </div>
+                    <span className="text-xs text-muted-foreground flex-shrink-0">{g.items.length} blueprint{g.items.length === 1 ? "" : "s"}</span>
+                  </div>
+                  {open && (
+                    <div className="border-t border-border/70 divide-y divide-border/70">
+                      {g.items.length === 0 ? (
+                        <p className="px-4 py-3 text-xs text-muted-foreground">No blueprints in this org yet.</p>
+                      ) : g.items.map(b => (
+                        <div key={b.id} onClick={() => selectBlueprint(b.id)}
+                          className="group w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/40 transition-colors cursor-pointer">
+                          <ScrollText className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
+                          <span className="font-medium text-foreground truncate flex-1" title={b.name}>{shortName(b.name)}</span>
+                          <span className="text-[11px] text-muted-foreground font-mono flex-shrink-0">
+                            {b.updated_at ? new Date(b.updated_at).toLocaleDateString() : "—"}
+                          </span>
+                          <button onClick={e => { e.stopPropagation(); deleteBlueprint(b.id); }} title="Delete blueprint"
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all flex-shrink-0">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary transition-colors flex-shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Surface>
+              );
+            })}
+          </div>
+        )}
+      </FleetPage>
+    );
+  }
 
-      <div className="grid grid-cols-1 lg:grid-cols-[15rem_1fr] gap-6 items-start">
-        {/* List */}
-        <aside className="bg-card border border-border rounded-xl p-2">
-          {list.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center px-3 py-8">No blueprints yet.<br />Create one to get started.</p>
+  /* ── Editor view ───────────────────────────────────────────────────────── */
+  return (
+    <FleetPage
+      icon={ScrollText}
+      title={selectedId ? name || "Blueprint" : "New blueprint"}
+      subtitle={selectedId ? "Set assignments and edit the desired-state YAML. Sources are seeded from the scope's files/ folder." : "Name it and save, then set assignments and edit the YAML."}
+      actions={
+        <div className="flex items-center gap-2">
+          {selectedId && (
+            <Button variant="outline" size="sm" onClick={() => deleteBlueprint(selectedId)}
+              className="text-red-400 hover:text-red-400 hover:bg-red-500/10 border-red-500/30">
+              <Trash2 className="w-3.5 h-3.5" /> Delete
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={backToList}><ArrowLeft className="w-3.5 h-3.5" /> All blueprints</Button>
+        </div>
+      }
+    >
+      {/* Name + save */}
+      <Surface className="p-4 mb-5">
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+          <div className="flex-1">
+            <Eyebrow className="mb-1">Name</Eyebrow>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. web-baseline" className={fieldCls} />
+          </div>
+          <Button onClick={save} disabled={!name.trim()}>{selectedId ? "Save changes" : "Create blueprint"}</Button>
+        </div>
+      </Surface>
+
+      {/* Sources + Assignments on top */}
+      <div className="grid lg:grid-cols-2 gap-5 items-start mb-5">
+        <Surface className="p-5">
+          <Eyebrow className="mb-3">Sources ({sources.length})</Eyebrow>
+          {sources.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No sources attached. Drop files in this scope's <code>files/</code> folder to ship them.
+            </p>
           ) : (
-            <div className="space-y-0.5">
-              {list.map(b => (
-                <button key={b.id} onClick={() => selectBlueprint(b.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${selectedId === b.id ? "bg-primary/10 text-primary font-medium" : "text-foreground hover:bg-muted/50"}`}>
-                  {b.name}
-                </button>
+            <div className="space-y-2">
+              {sources.map(s => (
+                <div key={s.id} className="border border-border rounded-lg px-3 py-2 bg-background/40 flex items-center gap-3">
+                  <span className="font-mono text-xs text-foreground flex-1 truncate" title={s.name}>{s.name}</span>
+                  <span className="text-xs text-muted-foreground flex-shrink-0">
+                    {s.encoding === "base64" ? "binary" : "text"} · {fmtSize(s.size ?? 0)}
+                  </span>
+                </div>
               ))}
             </div>
           )}
-        </aside>
+          <p className="text-[11px] text-muted-foreground mt-3">
+            Read-only — sources come from the scope's <code>files/</code> folder and are referenced by a resource's <code>source:</code>.
+          </p>
+        </Surface>
 
-        {/* Editor */}
-        <section className="space-y-5 min-w-0">
-          <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-            <div>
-              <label className="text-xs text-muted-foreground uppercase tracking-wider">Name</label>
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. web-baseline"
-                className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground uppercase tracking-wider">YAML</label>
-              <textarea value={yamlBody} onChange={e => setYamlBody(e.target.value)} rows={18} spellCheck={false}
-                className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 font-mono text-xs text-foreground leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={save} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium">
-                {selectedId ? "Save changes" : "Create blueprint"}
-              </button>
-              {selectedId && <span className="text-xs text-muted-foreground">Editing “{name}”</span>}
-            </div>
-          </div>
-
-          <div className="grid xl:grid-cols-2 gap-5 items-start">
-        {/* Sources */}
-        <details open className="bg-card border border-border rounded-xl p-5">
-          <summary className="text-sm font-semibold text-foreground cursor-pointer">Sources ({sources.length})</summary>
-          <div className="mt-3 space-y-3">
-            {sources.map(s => (
-              <SourceEditor key={s.id} source={s} onSave={(content) => saveSource(s.name, content)} />
-            ))}
-            <div className="flex gap-2">
-              <input value={newSourceName} onChange={e => setNewSourceName(e.target.value)} placeholder="new source name (e.g. nginx.conf)"
-                className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground" />
-              <button onClick={() => newSourceName.trim() && saveSource(newSourceName.trim(), "")}
-                className="text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20">Add</button>
-            </div>
-            <p className="text-[11px] text-muted-foreground">Source deletion isn't available in v1.</p>
-          </div>
-        </details>
-
-        {/* Assignments */}
-        <details open className="bg-card border border-border rounded-xl p-5">
-          <summary className="text-sm font-semibold text-foreground cursor-pointer">Assignments ({assignments.length})</summary>
-          <div className="mt-3 space-y-2">
+        <Surface className="p-5">
+          <Eyebrow className="mb-3">Assignments ({assignments.length})</Eyebrow>
+          <div className="space-y-2">
             {assignments.map(a => (
-              <div key={a.id} className="flex items-center gap-2 text-sm">
-                <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground w-14 text-center">{a.scope_type}</span>
+              <div key={a.id} className="flex items-center gap-2 text-sm group">
+                <span className="tag w-16 justify-center">{a.scope_type}</span>
                 <span className="text-foreground flex-1 truncate" title={a.scope_id}>{scopeLabel(a.scope_type, a.scope_id)}</span>
-                <button onClick={() => removeAssignment(a.id)} className="text-xs text-muted-foreground hover:text-red-400">remove</button>
+                <button onClick={() => removeAssignment(a.id)} className="text-xs text-muted-foreground hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">remove</button>
               </div>
             ))}
             <div className="flex gap-2 items-center pt-1">
               <select value={newScopeType}
                 onChange={e => { setNewScopeType(e.target.value as "org" | "group" | "minion"); setNewScopeId(""); }}
-                className="bg-background border border-border rounded px-2 py-1 text-xs text-foreground">
+                className={cn(fieldCls, "w-24 py-1.5 text-xs")}>
                 <option value="org">org</option>
                 <option value="group">group</option>
                 <option value="minion">minion</option>
               </select>
-              <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)}
-                className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground">
+              <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)} className={cn(fieldCls, "flex-1 w-auto py-1.5 text-xs")}>
                 <option value="">select {newScopeType}…</option>
                 {newScopeType === "org" && orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                 {newScopeType === "group" && groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                 {newScopeType === "minion" && minions.map(m => <option key={m.id} value={m.id}>{m.hostname || m.id}</option>)}
               </select>
-              <button onClick={addAssignment} disabled={!selectedId || !newScopeId.trim()}
-                className="text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50">Add</button>
+              <Button size="sm" variant="outline" onClick={addAssignment} disabled={!selectedId || !newScopeId.trim()}>Add</Button>
             </div>
             {!selectedId && <p className="text-[11px] text-muted-foreground">Save the blueprint before assigning.</p>}
           </div>
-        </details>
-          </div>
-        </section>
+        </Surface>
       </div>
-    </div>
+
+      {/* YAML editor — the workspace */}
+      <Surface className="p-5">
+        <Eyebrow className="mb-1">Desired-state YAML</Eyebrow>
+        <textarea value={yamlBody} onChange={e => setYamlBody(e.target.value)} rows={22} spellCheck={false}
+          className={fieldCls + " font-mono text-xs leading-relaxed resize-y"} />
+        <div className="flex items-center gap-3 mt-3">
+          <Button onClick={save} disabled={!name.trim()}>{selectedId ? "Save changes" : "Create blueprint"}</Button>
+        </div>
+      </Surface>
+    </FleetPage>
   );
 }
 
-function SourceEditor({ source, onSave }: { source: BlueprintSource; onSave: (content: string) => void }) {
-  const [content, setContent] = useState(source.content);
-  return (
-    <div className="border border-border rounded-lg p-2">
-      <div className="flex items-center justify-between mb-1">
-        <span className="font-mono text-xs text-foreground">{source.name}</span>
-        <button onClick={() => onSave(content)} className="text-xs text-primary hover:underline">save</button>
-      </div>
-      <textarea value={content} onChange={e => setContent(e.target.value)} rows={4} spellCheck={false}
-        className="w-full bg-background border border-border rounded px-2 py-1 font-mono text-xs text-foreground" />
-    </div>
-  );
+function fmtSize(n: number): string {
+  return n < 1024 ? `${n} B` : `${Math.ceil(n / 1024)} KB`;
+}
+
+// Seeded blueprints are path-encoded (e.g. "orgs/win/test.yaml"); under an org group
+// show just the leaf so the list reads cleanly. Full name stays in the row's title.
+function shortName(name: string): string {
+  return /^(orgs|groups|minions)\//.test(name) ? (name.split("/").pop() || name) : name;
 }

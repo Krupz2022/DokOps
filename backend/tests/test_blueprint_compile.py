@@ -48,6 +48,33 @@ def test_compile_merges_org_then_group(isolated_session, async_session):
     assert sources == {"nginx.conf": {"encoding": "utf-8", "content": "MUM"}}  # group source bundled (its file-state survived)
 
 
+def test_compile_global_is_overridable_base(isolated_session, async_session):
+    org = Organisation(name="acme", slug="acme")
+    isolated_session.add(org); isolated_session.commit(); isolated_session.refresh(org)
+    grp = MinionGroup(org_id=org.id, name="g1")
+    isolated_session.add(grp); isolated_session.commit(); isolated_session.refresh(grp)
+    m = Minion(id="web-01", hostname="web-01", status="active")
+    isolated_session.add(m); isolated_session.commit()
+    isolated_session.add(MinionGroupMember(group_id=grp.id, minion_id="web-01"))
+
+    # global: a base resource everyone gets + one the org overrides by id
+    sf_glob = Blueprint(name="common", yaml_body="resources:\n  - id: base\n    type: pkg\n    name: curl\n    ensure: present\n  - id: shared\n    type: pkg\n    name: vim\n    ensure: present")
+    sf_org = Blueprint(name="acme", yaml_body="resources:\n  - id: shared\n    type: pkg\n    name: vim\n    ensure: absent")
+    isolated_session.add(sf_glob); isolated_session.add(sf_org); isolated_session.commit()
+    isolated_session.refresh(sf_glob); isolated_session.refresh(sf_org)
+    isolated_session.add(BlueprintAssignment(blueprint_id=sf_glob.id, scope_type="global", scope_id="*"))
+    isolated_session.add(BlueprintAssignment(blueprint_id=sf_org.id, scope_type="org", scope_id=org.id))
+    isolated_session.commit()
+
+    async def run():
+        async with async_session() as db:
+            return await compile_blueprint("web-01", db)
+
+    states, _ = asyncio.run(run())
+    assert [s["id"] for s in states] == ["base", "shared"]  # base from global survives
+    assert next(s for s in states if s["id"] == "shared")["ensure"] == "absent"  # org overrode global
+
+
 def test_compile_unknown_minion_returns_empty(isolated_session, async_session):
     async def run():
         async with async_session() as db:

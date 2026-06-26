@@ -29,6 +29,8 @@ async def _resolve_scope(scope_kind: str, parts: list[str], db: AsyncSession) ->
         return ("group", grp.id) if grp else None
     if scope_kind == "minions":
         return ("minion", parts[0])
+    if scope_kind == "common":
+        return ("global", "*")
     return None
 
 
@@ -54,11 +56,11 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
     """
     seeded = 0
     seen: set[str] = set()
-    for scope_kind in ("orgs", "groups", "minions"):
+    for scope_kind in ("common", "orgs", "groups", "minions"):
         base = os.path.join(root, scope_kind)
         if not os.path.isdir(base):
             continue
-        depth = {"orgs": 1, "groups": 2, "minions": 1}[scope_kind]
+        depth = {"common": 0, "orgs": 1, "groups": 2, "minions": 1}[scope_kind]
         for dirpath, _dirs, files in os.walk(base):
             rel = os.path.relpath(dirpath, base).replace("\\", "/")
             parts = [] if rel == "." else rel.split("/")
@@ -71,7 +73,7 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
                 continue
             scope_type, scope_id = scope
             for fname in yaml_files:
-                name = f"{scope_kind}/{rel}/{fname}"
+                name = f"{scope_kind}/{fname}" if rel == "." else f"{scope_kind}/{rel}/{fname}"
                 seen.add(name)
                 with open(os.path.join(dirpath, fname), "r", encoding="utf-8") as fh:
                     sf = await _upsert_state_file(name, fh.read(), db)
@@ -111,7 +113,7 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
     pruned = 0
     if prune:
         for bp in (await db.exec(select(Blueprint))).all():
-            is_seeded = bp.name.split("/", 1)[0] in ("orgs", "groups", "minions")
+            is_seeded = bp.name.split("/", 1)[0] in ("common", "orgs", "groups", "minions")
             if is_seeded and bp.name not in seen:
                 for src in (await db.exec(select(BlueprintSource).where(
                         BlueprintSource.blueprint_id == bp.id))).all():

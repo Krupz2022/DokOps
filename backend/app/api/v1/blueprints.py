@@ -25,7 +25,7 @@ class SourceIn(BaseModel):
 
 
 class AssignmentIn(BaseModel):
-    scope_type: str  # org | group | minion
+    scope_type: str  # global | org | group | minion
     scope_id: str
 
 
@@ -40,6 +40,7 @@ async def list_blueprints(db: AsyncSession = Depends(get_async_db), _: User = De
             select(BlueprintAssignment).where(BlueprintAssignment.blueprint_id == bp.id)
         )).all()
         org_ids: set[str] = set()
+        is_global = any(a.scope_type == "global" for a in asns)
         for a in asns:
             if a.scope_type == "org":
                 org_ids.add(a.scope_id)
@@ -57,7 +58,7 @@ async def list_blueprints(db: AsyncSession = Depends(get_async_db), _: User = De
                         org_ids.add(grp.org_id)
         out.append({
             "id": bp.id, "name": bp.name, "yaml_body": bp.yaml_body,
-            "updated_at": bp.updated_at, "org_ids": sorted(org_ids),
+            "updated_at": bp.updated_at, "org_ids": sorted(org_ids), "is_global": is_global,
         })
     return out
 
@@ -192,9 +193,10 @@ async def add_assignment(blueprint_id: str, body: AssignmentIn,
                          _: User = Depends(get_current_active_superuser)):
     if not await db.get(Blueprint, blueprint_id):
         raise HTTPException(status_code=404, detail="Blueprint not found")
-    if body.scope_type not in ("org", "group", "minion"):
-        raise HTTPException(status_code=400, detail="scope_type must be org|group|minion")
-    asn = BlueprintAssignment(blueprint_id=blueprint_id, scope_type=body.scope_type, scope_id=body.scope_id)
+    if body.scope_type not in ("global", "org", "group", "minion"):
+        raise HTTPException(status_code=400, detail="scope_type must be global|org|group|minion")
+    scope_id = "*" if body.scope_type == "global" else body.scope_id
+    asn = BlueprintAssignment(blueprint_id=blueprint_id, scope_type=body.scope_type, scope_id=scope_id)
     db.add(asn)
     await db.commit()
     await db.refresh(asn)

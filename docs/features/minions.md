@@ -365,9 +365,9 @@ resources:
     require: [nginx-pkg]
 ```
 
-A minion's **blueprint** is the merge of all blueprints assigned to its organisation, its groups, and itself. Later, more-specific definitions win by `id`.
+A minion's **blueprint** is the merge of all blueprints assigned globally (the fleet-wide base layer), then to its organisation, its groups, and itself. Later, more-specific definitions win by `id`.
 
 - **Dry-run** (`POST /api/v1/minions/{id}/blueprint/run` with `{"test": true}`) shows what *would* change — open to any user.
 - **Apply** (`{"test": false}`) reconciles the minion and requires **God Mode**; it is audit-logged.
 
-Blueprints live in the DB (UI editor / REST), and can be seeded from `backend/app/blueprints/{orgs,groups,minions}/...` on startup.
+Blueprints live in the DB (UI editor / REST), and can be seeded from `backend/app/blueprints/{common,orgs,groups,minions}/...` on startup (`common/` applies to every minion).

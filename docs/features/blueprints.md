@@ -237,15 +237,16 @@ Binary sources ≤ 1 MB ship inline with the run; larger ones are downloaded by 
 
 ## Assignments & multi-tenancy
 
-A blueprint does nothing until it's **assigned**. Assign it at one of three scopes:
+A blueprint does nothing until it's **assigned**. Assign it at one of four scopes:
 
 | Scope | Targets |
 |-------|---------|
+| `global` | **every** minion in the fleet (the shared base layer) |
 | `org` | every minion in the organisation |
 | `group` | every minion in that group |
 | `minion` | one specific minion |
 
-A minion's **compiled blueprint** merges everything assigned to its org, then its groups, then itself — **later wins by `id`**. This is how you keep a common base and override per-tenant.
+A minion's **compiled blueprint** merges everything assigned at `global`, then its org, then its groups, then itself — **later wins by `id`**. `global` is the bottom layer: a resource you put there applies everywhere, and any org/group/minion assignment with the same `id` overrides it. This is how you keep one common base and override per-tenant.
 
 ### Worked multi-tenant example
 
@@ -324,6 +325,7 @@ Blueprints can be defined as files and loaded into the database on startup — u
 
 ```
 backend/app/blueprints/
+  common/<name>.yaml                  + files/<source>     → assigned to ALL minions (base layer)
   orgs/<org>/<name>.yaml              + files/<source>     → assigned to that org
   groups/<org>/<group>/<name>.yaml    + files/<source>     → assigned to that group
   minions/<minion-id>/<name>.yaml     + files/<source>     → assigned to that minion
@@ -333,6 +335,8 @@ Example:
 
 ```
 backend/app/blueprints/
+  common/baseline.yaml
+  common/files/ansible-bundle.zip
   orgs/acme/web.yaml
   orgs/acme/files/nginx.conf
   groups/acme/branch-mumbai/web.yaml

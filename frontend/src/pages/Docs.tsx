@@ -336,7 +336,7 @@ const FEATURES: Feature[] = [
         bullets: [
             "Resource types: pkg, service, file, cmd — idempotent, Linux + Windows",
             "Requisites: require (ordering) and watch (restart a service on config change)",
-            "Assign to org / group / minion; merged org → group → minion (later wins)",
+            "Assign to global / org / group / minion; merged global → org → group → minion (later wins)",
             "Dry-run shows what would change (open); apply requires God Mode + audit",
             "Author in the UI or seed from backend/app/blueprints/ on startup",
         ],

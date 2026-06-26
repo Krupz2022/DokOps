@@ -42,6 +42,27 @@ def test_seed_org_scope(tmp_path, isolated_session):
     assert src.name == "nginx.conf" and src.content == "server {}"
 
 
+def test_seed_common_scope(tmp_path, isolated_session):
+    d = tmp_path / "common"
+    (d / "files").mkdir(parents=True)
+    (d / "baseline.yaml").write_text("resources:\n  - id: pkg\n    type: pkg\n    name: curl")
+    (d / "files" / "motd").write_text("hello")
+
+    maker = _maker(isolated_session)
+
+    async def go():
+        async with maker() as db:
+            return await seed_blueprints_from_dir(str(tmp_path), db)
+
+    assert asyncio.run(go()) == (1, 0)
+    sf = isolated_session.exec(select(Blueprint)).first()
+    assert sf.name == "common/baseline.yaml"
+    asn = isolated_session.exec(select(BlueprintAssignment)).first()
+    assert asn.scope_type == "global" and asn.scope_id == "*"
+    src = isolated_session.exec(select(BlueprintSource)).first()
+    assert src.name == "motd" and src.content == "hello"
+
+
 def test_seed_is_idempotent(tmp_path, isolated_session):
     d = tmp_path / "minions" / "web-01"
     d.mkdir(parents=True)

@@ -30,7 +30,7 @@ export default function Blueprints() {
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [minions, setMinions] = useState<MinionLite[]>([]);
-  const [newScopeType, setNewScopeType] = useState<"org" | "group" | "minion">("minion");
+  const [newScopeType, setNewScopeType] = useState<"global" | "org" | "group" | "minion">("minion");
   const [newScopeId, setNewScopeId] = useState("");
   const [collapsedOrgs, setCollapsedOrgs] = useState<Set<string>>(new Set());
 
@@ -44,6 +44,7 @@ export default function Blueprints() {
 
   // Resolve a stored scope id to a human-readable name (falls back to the id).
   function scopeLabel(type: string, id: string): string {
+    if (type === "global") return "all orgs";
     if (type === "org") return orgs.find(o => o.id === id)?.name ?? id;
     if (type === "group") return groups.find(g => g.id === id)?.name ?? id;
     if (type === "minion") return minions.find(m => m.id === id)?.hostname ?? id;
@@ -156,8 +157,10 @@ export default function Blueprints() {
   /* ── List view (grouped per org) ───────────────────────────────────────── */
   if (!editing) {
     const orgIdSet = new Set(orgs.map(o => o.id));
-    const unassigned = list.filter(b => !(b.org_ids ?? []).some(id => orgIdSet.has(id)));
+    const globalItems = list.filter(b => b.is_global);
+    const unassigned = list.filter(b => !b.is_global && !(b.org_ids ?? []).some(id => orgIdSet.has(id)));
     const groupsToRender = [
+      ...(globalItems.length ? [{ key: "__global", title: "Global (all orgs)", slug: "", items: globalItems }] : []),
       ...orgs.map(o => ({ key: o.id, title: o.name, slug: o.slug ?? "", items: list.filter(b => (b.org_ids ?? []).includes(o.id)) })),
       ...(unassigned.length ? [{ key: "__unassigned", title: "Unassigned", slug: "", items: unassigned }] : []),
     ];
@@ -293,18 +296,21 @@ export default function Blueprints() {
             ))}
             <div className="flex gap-2 items-center pt-1">
               <select value={newScopeType}
-                onChange={e => { setNewScopeType(e.target.value as "org" | "group" | "minion"); setNewScopeId(""); }}
+                onChange={e => { const t = e.target.value as "global" | "org" | "group" | "minion"; setNewScopeType(t); setNewScopeId(t === "global" ? "*" : ""); }}
                 className={cn(fieldCls, "w-24 py-1.5 text-xs")}>
+                <option value="global">global</option>
                 <option value="org">org</option>
                 <option value="group">group</option>
                 <option value="minion">minion</option>
               </select>
-              <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)} className={cn(fieldCls, "flex-1 w-auto py-1.5 text-xs")}>
-                <option value="">select {newScopeType}…</option>
-                {newScopeType === "org" && orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                {newScopeType === "group" && groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                {newScopeType === "minion" && minions.map(m => <option key={m.id} value={m.id}>{m.hostname || m.id}</option>)}
-              </select>
+              {newScopeType === "global"
+                ? <span className="flex-1 text-xs text-muted-foreground self-center">all orgs (base layer)</span>
+                : <select value={newScopeId} onChange={e => setNewScopeId(e.target.value)} className={cn(fieldCls, "flex-1 w-auto py-1.5 text-xs")}>
+                    <option value="">select {newScopeType}…</option>
+                    {newScopeType === "org" && orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    {newScopeType === "group" && groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                    {newScopeType === "minion" && minions.map(m => <option key={m.id} value={m.id}>{m.hostname || m.id}</option>)}
+                  </select>}
               <Button size="sm" variant="outline" onClick={addAssignment} disabled={!selectedId || !newScopeId.trim()}>Add</Button>
             </div>
             {!selectedId && <p className="text-[11px] text-muted-foreground">Save the blueprint before assigning.</p>}

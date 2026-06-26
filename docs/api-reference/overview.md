@@ -6,32 +6,45 @@ DokOps exposes a REST API at `http://localhost:8000/api/v1/`. Interactive Swagge
 
 ## Authentication
 
-All endpoints (except `/api/v1/auth/login/access-token` and `/api/v1/auth/register`) require a JWT bearer token:
+Most endpoints require a JWT bearer token. The handful that do **not** require a token are: `POST /api/v1/login/access-token`, `POST /api/v1/register`, `POST /api/v1/logout`, `POST /api/v1/system/setup` (first run only), the SSO routes under `/api/v1/auth/sso/*`, the activation routes under `/api/v1/activation/*`, and the inbound webhook routes (`POST /api/v1/alerts/webhook/{source}`, `POST /api/v1/workflows/webhook/{token}`).
+
+Send the token as a header:
 
 ```
 Authorization: Bearer <your-token>
 ```
 
+> **Note:** The login endpoint also sets the token in an `httpOnly` cookie named `access_token`. Browser-based clients are therefore authenticated automatically; script/API clients should use the `Authorization` header shown above. Either one works.
+
 ### Get a Token
 
+The correct login path is `/api/v1/login/access-token` (it is mounted at the API root, **not** under `/auth`).
+
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/login/access-token \
+curl -X POST http://localhost:8000/api/v1/login/access-token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=admin&password=yourpassword"
 
 # Response
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer"
+  "token_type": "bearer",
+  "username": "admin",
+  "is_superuser": true,
+  "role": "admin"
 }
 ```
 
 Store the token:
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login/access-token \
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/login/access-token \
   -d "username=admin&password=yourpassword" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 ```
+
+### God Mode
+
+Some destructive or infrastructure-changing endpoints additionally require **God Mode** — a temporary, opt-in elevation for the current superuser's session. Enable it with `POST /api/v1/system/mode` (`{"mode": "god"}`). If God Mode is required and not active, the API returns `403` with detail `"God Mode is not active for your session. Enable it from the header."` Endpoints that need it are marked **God Mode required** on their page.
 
 ---
 
@@ -167,12 +180,16 @@ curl http://localhost:8000/health
 
 Some endpoints use Server-Sent Events for streaming responses:
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /ai/diagnose/stream` | Stream AI diagnostic response |
-| `POST /ai/global/stream` | Stream AI chat response |
-| `GET /topology/stream` | Stream topology graph build |
-| `POST /minions/{id}/jobs` | Stream job output from a minion |
+| Endpoint | Description | How it authenticates |
+|----------|-------------|----------------------|
+| `POST /ai/diagnose/stream` | Stream AI diagnosis of one pod | Bearer header / cookie |
+| `POST /ai/global/stream` | Stream a cluster-wide AI answer | Bearer header / cookie |
+| `POST /ai/analyze/batch` | Stream AI analysis of several pods | Bearer header / cookie |
+| `POST /chat/conversations/{id}/message` | Stream an AI reply in a saved chat | Bearer header / cookie |
+| `GET /topology/stream` | Stream the topology graph (refreshes every 10s) | `token` query param |
+| `GET /minions/blueprint/runs/{run_id}/stream` | Stream a blueprint run's progress | `token` query param |
+| `GET /workflows/runs/{run_id}/stream` | Stream a workflow run's progress | `ticket` query param (get one from `POST /workflows/runs/{run_id}/stream-ticket`) |
+| `POST /v1/chat/completions` | OpenAI-compatible streaming (when `"stream": true`) | OpenAI-compat API key |
 
 SSE events are newline-delimited JSON:
 

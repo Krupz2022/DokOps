@@ -56,8 +56,9 @@ async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict
     if not minion:
         return [], {}
 
-    # Resolve the minion's scopes, in apply order.
-    scope_ids: list[tuple[str, str]] = []  # (scope_type, scope_id)
+    # Resolve the minion's scopes, in apply order. "global" is the base layer
+    # every minion gets; org/group/minion override it by resource id.
+    scope_ids: list[tuple[str, str]] = [("global", "*")]  # (scope_type, scope_id)
 
     group_ids = [
         m.group_id

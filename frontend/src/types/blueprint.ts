@@ -4,6 +4,7 @@ export interface Blueprint {
   yaml_body: string;
   updated_at: string;
   org_ids?: string[];   // orgs this blueprint resolves to (via assignments); used to group the list
+  is_global?: boolean;  // has a global assignment → applies to every minion
 }
 
 export interface BlueprintSource {
@@ -18,7 +19,7 @@ export interface BlueprintSource {
 export interface BlueprintAssignment {
   id: string;
   blueprint_id: string;
-  scope_type: "org" | "group" | "minion";
+  scope_type: "global" | "org" | "group" | "minion";
   scope_id: string;
 }
 

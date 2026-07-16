@@ -17,11 +17,11 @@ _rid_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_rid", default=No
 _fetch_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_fetch", default=None)
 
 
-def _run(cmd, shell: bool = False) -> tuple[int, str]:
+def _run(cmd, shell: bool = False, cwd: str | None = None) -> tuple[int, str]:
     emit = _emit_var.get()
     if emit is None:
         try:
-            p = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=300)
+            p = subprocess.run(cmd, shell=shell, cwd=cwd, capture_output=True, text=True, timeout=300)
             return p.returncode, (p.stdout or "") + (p.stderr or "")
         except Exception as e:  # noqa: BLE001 — surface failure as nonzero rc
             return 1, str(e)
@@ -30,7 +30,7 @@ def _run(cmd, shell: bool = False) -> tuple[int, str]:
     lines: list[str] = []
     try:
         p = subprocess.Popen(
-            cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, shell=shell, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
     except Exception as e:  # noqa: BLE001
@@ -53,10 +53,79 @@ def _sha_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:12]
 
 
+def _path(state: dict) -> str:
+    """Destination path — `path` preferred, `name` accepted (Salt/Uyuni style)."""
+    return state.get("path") or state["name"]
+
+
+def _chown(path: str, state: dict) -> str | None:
+    """Apply user/group ownership (Linux only). Returns error string or None."""
+    if IS_WINDOWS:
+        return None
+    user, group = state.get("user"), state.get("group")
+    if not (user or group):
+        return None
+    try:
+        shutil.chown(path, user=user, group=group)
+        return None
+    except (LookupError, OSError) as e:
+        return str(e)
+
+
+def _mode(v) -> int:
+    """Octal mode from YAML — accepts "0755" (string) or 0755 (YAML octal int)."""
+    return v if isinstance(v, int) else int(str(v), 8)
+
+
+def _source_bytes(entry) -> bytes:
+    """Resolve a sources-bundle entry to raw bytes (inline text, inline base64, or fetch ref)."""
+    if isinstance(entry, str):
+        return entry.encode("utf-8")
+    if entry.get("fetch"):
+        fetch = _fetch_var.get()
+        if fetch is None:
+            raise RuntimeError("no fetcher for large source")
+        b = fetch(entry["id"])
+        exp = entry.get("sha256")
+        if exp and hashlib.sha256(b).hexdigest() != exp:
+            raise RuntimeError("checksum mismatch on fetched source")
+        return b
+    if entry.get("encoding") == "base64":
+        return base64.b64decode(entry.get("content", ""))
+    return entry.get("content", "").encode("utf-8")
+
+
+def _file_attrs_only(state: dict, path: str, test: bool) -> dict:
+    """file/file.managed with no source — enforce mode/ownership, never touch content."""
+    if not os.path.exists(path):
+        return {"result": False, "changes": {}, "comment": f"{path} does not exist (no source to create it)"}
+    changes: dict = {}
+    mode = state.get("mode")
+    if mode and not IS_WINDOWS:
+        cur = os.stat(path).st_mode & 0o777
+        if cur != _mode(mode):
+            changes["mode"] = {"old": oct(cur)[2:], "new": oct(_mode(mode))[2:]}
+    if test:
+        return {"result": None if changes else True, "changes": changes,
+                "comment": "would enforce attributes" if changes else "attributes in desired state"}
+    try:
+        if mode and not IS_WINDOWS:
+            os.chmod(path, _mode(mode))
+    except OSError as e:
+        return {"result": False, "changes": {}, "comment": str(e)}
+    err = _chown(path, state)  # ponytail: chown applied every run, drift not reported
+    if err:
+        return {"result": False, "changes": changes, "comment": f"chown failed: {err}"}
+    return {"result": True, "changes": changes,
+            "comment": "attributes enforced" if changes else "attributes in desired state"}
+
+
 def handle_file(state: dict, sources: dict, test: bool) -> dict:
-    path = state["path"]
+    path = _path(state)
     name = state.get("source")
-    if name and name not in sources:
+    if not name:
+        return _file_attrs_only(state, path, test)
+    if name not in sources:
         return {"result": False, "changes": {}, "comment": f"source '{name}' not in bundle"}
     entry = sources.get(name, {"encoding": "utf-8", "content": ""})
     if isinstance(entry, str):              # legacy / bare-string = utf-8 text
@@ -82,9 +151,12 @@ def handle_file(state: dict, sources: dict, test: bool) -> dict:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(desired)
             if not IS_WINDOWS and state.get("mode"):
-                os.chmod(path, int(str(state["mode"]), 8))
+                os.chmod(path, _mode(state["mode"]))
         except OSError as e:
             return {"result": False, "changes": {}, "comment": f"write failed: {e}"}
+        err = _chown(path, state)
+        if err:
+            return {"result": False, "changes": changes, "comment": f"chown failed: {err}"}
         return {"result": True, "changes": changes, "comment": "file updated"}
 
     # ── binary path ─────────────────────────────────────────────────────────
@@ -119,10 +191,167 @@ def handle_file(state: dict, sources: dict, test: bool) -> dict:
         with open(path, "wb") as f:
             f.write(desired_bytes)
         if not IS_WINDOWS and state.get("mode"):
-            os.chmod(path, int(str(state["mode"]), 8))
+            os.chmod(path, _mode(state["mode"]))
     except OSError as e:
         return {"result": False, "changes": {}, "comment": f"write failed: {e}"}
+    err = _chown(path, state)
+    if err:
+        return {"result": False, "changes": changes, "comment": f"chown failed: {err}"}
     return {"result": True, "changes": changes, "comment": "file updated"}
+
+
+def handle_directory(state: dict, sources: dict, test: bool) -> dict:
+    """file.directory — ensure dir exists (parents always created); clean empties it."""
+    path = _path(state)
+    if os.path.exists(path) and not os.path.isdir(path):
+        return {"result": False, "changes": {}, "comment": f"{path} exists and is not a directory"}
+    exists = os.path.isdir(path)
+    changes: dict = {}
+    if not exists:
+        changes["created"] = path
+    to_remove = sorted(os.listdir(path)) if (state.get("clean") and exists) else []
+    if to_remove:
+        changes["removed"] = to_remove
+    if test:
+        return {"result": None if changes else True, "changes": changes,
+                "comment": "would reconcile directory" if changes else "directory in desired state"}
+    try:
+        os.makedirs(path, exist_ok=True)
+        for child in to_remove:
+            full = os.path.join(path, child)
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+        if not IS_WINDOWS and state.get("mode"):
+            os.chmod(path, _mode(state["mode"]))
+    except OSError as e:
+        return {"result": False, "changes": {}, "comment": str(e)}
+    err = _chown(path, state)
+    if err:
+        return {"result": False, "changes": changes, "comment": f"chown failed: {err}"}
+    return {"result": True, "changes": changes,
+            "comment": "directory reconciled" if changes else "directory in desired state"}
+
+
+def handle_absent(state: dict, sources: dict, test: bool) -> dict:
+    """file.absent — delete a file, symlink, or directory tree."""
+    path = _path(state)
+    if not os.path.lexists(path):
+        return {"result": True, "changes": {}, "comment": "already absent"}
+    if test:
+        return {"result": None, "changes": {"removed": path}, "comment": "would remove"}
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    except OSError as e:
+        return {"result": False, "changes": {}, "comment": f"remove failed: {e}"}
+    return {"result": True, "changes": {"removed": path}, "comment": "removed"}
+
+
+def handle_symlink(state: dict, sources: dict, test: bool) -> dict:
+    """file.symlink — ensure a symlink points at target; force replaces non-links."""
+    path, target = _path(state), state["target"]
+    if os.path.islink(path):
+        if os.readlink(path) == target:
+            return {"result": True, "changes": {}, "comment": "symlink in desired state"}
+    elif os.path.lexists(path) and not state.get("force"):
+        return {"result": False, "changes": {},
+                "comment": f"{path} exists and is not a symlink (set force: true)"}
+    changes = {"link": f"{path} -> {target}"}
+    if test:
+        return {"result": None, "changes": changes, "comment": "would create symlink"}
+    try:
+        if os.path.lexists(path):
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        os.symlink(target, path)
+    except OSError as e:
+        return {"result": False, "changes": {}, "comment": f"symlink failed: {e}"}
+    return {"result": True, "changes": changes, "comment": "symlink created"}
+
+
+def handle_append(state: dict, sources: dict, test: bool) -> dict:
+    """file.append — ensure the given line(s) are present; appends missing ones."""
+    path = _path(state)
+    text = state.get("text", "")
+    lines = [str(line) for line in (text if isinstance(text, list) else [text])]
+    current = ""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                current = f.read()
+        except OSError as e:
+            return {"result": False, "changes": {}, "comment": f"read failed: {e}"}
+    have = set(current.splitlines())
+    missing = [line for line in lines if line not in have]
+    if not missing:
+        return {"result": True, "changes": {}, "comment": "all lines present"}
+    if test:
+        return {"result": None, "changes": {"appended": missing}, "comment": "would append"}
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            if current and not current.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(missing) + "\n")
+    except OSError as e:
+        return {"result": False, "changes": {}, "comment": f"append failed: {e}"}
+    return {"result": True, "changes": {"appended": missing}, "comment": "lines appended"}
+
+
+def handle_recurse(state: dict, sources: dict, test: bool) -> dict:
+    """file.recurse — deliver every source named `<source>/<rel>` to `<path>/<rel>`.
+
+    Sources are flat named blobs, so the tree lives in the source names
+    (e.g. source `prereq/bin/run.sh` → `<path>/bin/run.sh`). Empty dirs can't be
+    represented, so include_empty is accepted but a no-op.
+    """
+    dest = _path(state)
+    prefix = (state.get("source") or "").strip("/")
+    if not prefix:
+        return {"result": False, "changes": {}, "comment": "recurse needs a source prefix"}
+    matched = {n[len(prefix) + 1:]: e for n, e in sources.items() if n.startswith(prefix + "/")}
+    if not matched:
+        return {"result": False, "changes": {}, "comment": f"no sources under '{prefix}/'"}
+    changes: dict = {}
+    for rel in sorted(matched):
+        try:
+            desired = _source_bytes(matched[rel])
+        except Exception as e:  # noqa: BLE001 — bad bundle entry / fetch failure
+            return {"result": False, "changes": changes, "comment": f"source '{rel}': {e}"}
+        target = os.path.join(dest, *rel.split("/"))
+        try:
+            current = None
+            if os.path.exists(target):
+                with open(target, "rb") as f:
+                    current = f.read()
+            if current == desired:
+                continue
+            changes[rel] = {"old": _sha_bytes(current) if current is not None else "absent",
+                            "new": _sha_bytes(desired)}
+            if test:
+                continue
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(desired)
+            if not IS_WINDOWS and state.get("file_mode"):
+                os.chmod(target, _mode(state["file_mode"]))
+        except OSError as e:
+            return {"result": False, "changes": changes, "comment": f"'{rel}': {e}"}
+        err = _chown(target, state)
+        if err:
+            return {"result": False, "changes": changes, "comment": f"chown '{rel}': {err}"}
+    if test:
+        return {"result": None if changes else True, "changes": changes,
+                "comment": f"would deliver {len(changes)} file(s)" if changes else "tree in desired state"}
+    return {"result": True, "changes": changes,
+            "comment": f"{len(changes)} file(s) delivered" if changes else "tree in desired state"}
 
 
 def handle_cmd(state: dict, sources: dict, test: bool) -> dict:
@@ -142,7 +371,7 @@ def handle_cmd(state: dict, sources: dict, test: bool) -> dict:
     if test:
         return {"result": None, "changes": {"executed": name}, "comment": "would run command"}
 
-    rc, out = _run(name, shell=True)
+    rc, out = _run(name, shell=True, cwd=state.get("cwd"))
     if rc == 0:
         return {"result": True, "changes": {"executed": name}, "comment": "command ran", "output": out}
     return {"result": False, "changes": {}, "comment": f"exit {rc}", "output": out}
@@ -322,6 +551,12 @@ HANDLERS = {
     "pkg": lambda s, src, t: handle_pkg(s, src, t),
     "service": lambda s, src, t: handle_service(s, src, t),
     "file": lambda s, src, t: handle_file(s, src, t),
+    "file.managed": lambda s, src, t: handle_file(s, src, t),
+    "file.directory": lambda s, src, t: handle_directory(s, src, t),
+    "file.absent": lambda s, src, t: handle_absent(s, src, t),
+    "file.symlink": lambda s, src, t: handle_symlink(s, src, t),
+    "file.append": lambda s, src, t: handle_append(s, src, t),
+    "file.recurse": lambda s, src, t: handle_recurse(s, src, t),
     "cmd": lambda s, src, t: handle_cmd(s, src, t),
 }
 
@@ -363,9 +598,16 @@ def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None, fetc
         results: dict[str, dict] = {}
         failed: set[str] = set()
         changed: set[str] = set()
+        aborted = False
 
         for st in ordered:
             sid = st["id"]
+            if aborted:
+                res = {"id": sid, "result": False, "changes": {}, "comment": "aborted by failhard", "output": ""}
+                results[sid] = res
+                if emit is not None:
+                    emit({"kind": "resource_result", **res})
+                continue
             if emit is not None:
                 _rid_var.set(sid)
                 emit({"kind": "resource_start", "id": sid})
@@ -395,6 +637,8 @@ def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None, fetc
             results[sid] = res
             if res["result"] is False:
                 failed.add(sid)
+                if st.get("failhard"):
+                    aborted = True
             if res.get("changes"):
                 changed.add(sid)
             if emit is not None:

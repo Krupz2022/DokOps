@@ -3,7 +3,7 @@ from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "MCP Kubernetes Server"
+    PROJECT_NAME: str = "DokOps"
     API_V1_STR: str = "/api/v1"
     
     # CORS

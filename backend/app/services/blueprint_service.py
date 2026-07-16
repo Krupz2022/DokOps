@@ -45,9 +45,16 @@ def source_entry(src) -> dict:
 
 
 def collect_referenced_sources(states: list[dict], sources_by_name: dict) -> dict[str, dict]:
-    """Return entry objects for the sources referenced by a file-resource's `source`."""
-    wanted = {s.get("source") for s in states if s.get("type") == "file" and s.get("source")}
-    return {name: source_entry(src) for name, src in sources_by_name.items() if name in wanted}
+    """Return entry objects for the sources referenced by a file-resource's `source`.
+
+    `file` / `file.managed` reference one source by exact name; `file.recurse`
+    references every source under its `source` prefix (names carry the tree)."""
+    exact = {s.get("source") for s in states
+             if s.get("type") in ("file", "file.managed") and s.get("source")}
+    prefixes = {str(s.get("source")).strip("/") for s in states
+                if s.get("type") == "file.recurse" and s.get("source")}
+    return {name: source_entry(src) for name, src in sources_by_name.items()
+            if name in exact or any(name.startswith(p + "/") for p in prefixes)}
 
 
 async def compile_blueprint(minion_id: str, db: AsyncSession) -> tuple[list[dict], dict[str, str]]:

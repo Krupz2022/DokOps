@@ -200,13 +200,26 @@ async def delete_pipeline(
     pipeline = await db.get(PatchPipeline, pipeline_id)
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
-    # cascade delete stages, promotions, schedules
-    for stage in (await db.exec(select(PipelineStage).where(PipelineStage.pipeline_id == pipeline_id))).all():
-        await db.delete(stage)
-    for promo in (await db.exec(select(PatchPromotion).where(PatchPromotion.pipeline_id == pipeline_id))).all():
+    # Cascade in FK order: promotion results -> promotions/alerts/schedules (which
+    # reference stages) -> stages -> pipeline. Deleting stages first (the old order)
+    # violates the FK from promotions/schedules/alerts to pipelinestage on Postgres.
+    # Delete level by level with a flush between each — no ORM relationships exist to
+    # order cross-table deletes, so grandchildren must hit the DB before their parents.
+    promos = (await db.exec(select(PatchPromotion).where(PatchPromotion.pipeline_id == pipeline_id))).all()
+    for promo in promos:
+        for res in (await db.exec(select(PatchPromotionResult).where(PatchPromotionResult.promotion_id == promo.id))).all():
+            await db.delete(res)
+    await db.flush()  # promotion results before promotions
+    for promo in promos:
         await db.delete(promo)
+    for alert in (await db.exec(select(PatchAlertEvent).where(PatchAlertEvent.pipeline_id == pipeline_id))).all():
+        await db.delete(alert)
     for sched in (await db.exec(select(PatchSchedule).where(PatchSchedule.pipeline_id == pipeline_id))).all():
         await db.delete(sched)
+    await db.flush()  # promotions/alerts/schedules (which reference stages) before stages
+    for stage in (await db.exec(select(PipelineStage).where(PipelineStage.pipeline_id == pipeline_id))).all():
+        await db.delete(stage)
+    await db.flush()  # stages before the pipeline
     await db.delete(pipeline)
     await db.commit()
     return {"deleted": True}

@@ -102,6 +102,7 @@ async def delete_key(key_id: str, db: AsyncSession = Depends(get_async_db),
         raise HTTPException(status_code=404, detail="Key not found")
     for kb in (await db.exec(select(KeyBlueprint).where(KeyBlueprint.key_id == key_id))).all():
         await db.delete(kb)
+    await db.flush()  # push child deletes before removing the parent
     await db.delete(key)
     await db.commit()
     return {"deleted": True}

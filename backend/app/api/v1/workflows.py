@@ -514,6 +514,10 @@ async def delete_workflow(
     wf = await db.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    # Cascade delete runs — FK-enforced on Postgres, orphans otherwise
+    for run in (await db.exec(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow_id))).all():
+        await db.delete(run)
+    await db.flush()  # push child deletes before removing the parent
     await db.delete(wf)
     await db.commit()
     return {"message": "Deleted"}

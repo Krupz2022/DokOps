@@ -42,7 +42,7 @@ def test_cmd_unless_skips(monkeypatch):
 
 def test_cmd_runs_when_unless_fails(monkeypatch):
     calls = []
-    def fake_run(cmd, shell=False):
+    def fake_run(cmd, shell=False, cwd=None):
         calls.append(cmd)
         return (1, "") if "test -f" in str(cmd) else (0, "done")
     monkeypatch.setattr(h, "_run", fake_run)

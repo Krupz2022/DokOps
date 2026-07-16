@@ -44,13 +44,14 @@ async def set_portainer_config(minion_id: str, cfg: dict, db: AsyncSession) -> N
     await db.commit()
 
 
+# All services (running AND stopped) so the UI can offer Start on stopped ones.
 _WINDOWS_SERVICES_CMD = (
-    "Get-Service | Where-Object {$_.Status -eq 'Running'} | "
+    "Get-Service | "
     "Select-Object Name,DisplayName,@{N='Status';E={$_.Status.ToString()}} | "
     "ConvertTo-Json -Compress"
 )
 _LINUX_SERVICES_CMD = (
-    "systemctl list-units --type=service --state=running --no-pager --no-legend"
+    "systemctl list-units --type=service --all --no-pager --no-legend"
 )
 
 
@@ -76,9 +77,10 @@ def parse_services(os_id: str, stdout: str) -> list[dict[str, str]]:
         return out
 
     # Linux systemctl: "ssh.service loaded active running <description...>"
+    # With --all, failed/not-found units are prefixed with a "●" (or "*") marker.
     out = []
     for line in (stdout or "").splitlines():
-        parts = line.split(maxsplit=4)
+        parts = line.lstrip("●* ").split(maxsplit=4)
         if len(parts) < 4 or not parts[0].endswith(".service"):
             continue
         out.append({
@@ -159,27 +161,54 @@ def parse_docker_cli(stdout: str) -> dict:
     return {"containers": containers, "images": images, "volumes": volumes, "networks": networks}
 
 
-def container_logs_command(name: str) -> str:
+def clamp_tail(tail: int) -> int:
+    """Clamp a user-supplied log line count to a sane range."""
+    return max(10, min(int(tail), 5000))
+
+
+def container_logs_command(name: str, tail: int = 200) -> str:
     """`docker logs` for one container (id or name). Caller MUST validate `name` with
     valid_service_name() first — it is interpolated. Cross-platform (docker CLI).
     No `2>&1`: the agent already merges stderr into stdout at the process level, and on
     Windows an explicit `2>&1` makes PowerShell wrap docker's stderr as NativeCommandError."""
-    return f"docker logs --tail 200 --timestamps {name}"
+    return f"docker logs --tail {clamp_tail(tail)} --timestamps {name}"
 
 
-def service_logs_command(os_id: str, name: str) -> str:
+def service_logs_command(os_id: str, name: str, tail: int = 200) -> str:
     """Build a per-OS status+logs command for a single service.
     Caller MUST validate `name` with valid_service_name() first — it is interpolated."""
+    tail = clamp_tail(tail)
     if (os_id or "").lower() == "windows":
         return (
             f"Get-Service -Name '{name}' | Format-List Name,DisplayName,Status,StartType; "
             "Write-Output '===== recent Service Control Manager events ====='; "
             "Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager'} "
-            f"-MaxEvents 50 -ErrorAction SilentlyContinue | Where-Object {{$_.Message -like '*{name}*'}} "
+            f"-MaxEvents {min(tail, 200)} -ErrorAction SilentlyContinue | Where-Object {{$_.Message -like '*{name}*'}} "
             "| Format-List TimeCreated,Id,LevelDisplayName,Message"
         )
     return (
         f"systemctl status {name} --no-pager; "
         "echo; echo '===== recent logs ====='; "
-        f"journalctl -u {name} --no-pager -n 200"
+        f"journalctl -u {name} --no-pager -n {tail}"
     )
+
+
+# Destructive actions — every endpoint using these MUST gate on require_god_mode.
+CONTAINER_ACTIONS = ("restart", "stop", "start")
+SERVICE_ACTIONS = ("restart", "stop", "start")
+
+
+def container_action_command(action: str, name: str) -> str:
+    """`docker restart|stop|start` for one container. Caller MUST validate `name` with
+    valid_service_name() and `action` against CONTAINER_ACTIONS first."""
+    return f"docker {action} {name}"
+
+
+def service_action_command(os_id: str, action: str, name: str) -> str:
+    """restart|stop|start one service, per OS. Caller MUST validate `name` with
+    valid_service_name() and `action` against SERVICE_ACTIONS first."""
+    if (os_id or "").lower() == "windows":
+        # -Force lets Stop/Restart take down dependent services too; Start has no -Force.
+        force = " -Force" if action in ("restart", "stop") else ""
+        return f"{action.capitalize()}-Service -Name '{name}'{force}"
+    return f"systemctl {action} {name}"

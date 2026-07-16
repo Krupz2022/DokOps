@@ -92,6 +92,9 @@ AGENTS.md
 # Internal dev planning docs (keep locally, not on GitHub)
 docs/superpowers/
 
+# Video creation workspace (local only)
+saas-video/
+
 # Temp / migration backups
 backend/.async_migration_backup/
 

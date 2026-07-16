@@ -482,6 +482,39 @@ async def handle_messages(ws) -> None:
                     await ws.send(json.dumps({"type": "portainer_result", "req_id": req_id, "error": str(e)}))
             asyncio.ensure_future(_portainer())
 
+        elif t == "portainer_post":
+            # Generic POST to the local Portainer API. The master builds the full path,
+            # so new Portainer operations don't require an agent redeploy.
+            async def _portainer_post(_msg=msg):
+                req_id = _msg.get("req_id")
+                base = (_msg.get("base_url") or "").rstrip("/")
+                api_key = _msg.get("api_key") or ""
+                path = _msg.get("path") or ""
+
+                def _post():
+                    import urllib.request, ssl, json as _json
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE  # Portainer often uses a self-signed cert
+                    body = _json.dumps(_msg.get("body") or {}).encode()
+                    req = urllib.request.Request(
+                        f"{base}{path}", data=body, method="POST",
+                        headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=120, context=ctx) as r:
+                        raw = r.read().decode("utf-8", "replace")
+                    try:
+                        return _json.loads(raw) if raw.strip() else {}
+                    except ValueError:
+                        return {"raw": raw[:2000]}
+
+                try:
+                    data = await asyncio.to_thread(_post)
+                    await ws.send(json.dumps({"type": "portainer_result", "req_id": req_id, "data": data}))
+                except Exception as e:  # noqa: BLE001 — report failure back to the master
+                    await ws.send(json.dumps({"type": "portainer_result", "req_id": req_id, "error": str(e)}))
+            asyncio.ensure_future(_portainer_post())
+
 
 def build_ws_url(base_url: str, minion_id: str, token: Optional[str], key: str = "") -> str:
     base_url = base_url.rstrip("/")
@@ -587,8 +620,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
+    asyncio.run(main())

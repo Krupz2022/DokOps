@@ -142,7 +142,7 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
                   <div key={id} className={`flex items-center gap-3 text-sm py-1.5 px-2 rounded-lg border ${on ? "border-border bg-muted/20" : "border-transparent opacity-50"}`}>
                     <input type="checkbox" checked={on} onChange={() => toggle(id)} className="accent-primary shrink-0" />
                     <span className="text-muted-foreground font-mono text-xs w-5 text-right shrink-0">{i + 1}</span>
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground w-16 text-center shrink-0">{res.type}</span>
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground min-w-16 text-center whitespace-nowrap shrink-0">{res.type}</span>
                     <span className="font-mono text-foreground flex-1 truncate">{res.id}</span>
                     {typeof res.name === "string" && <span className="text-muted-foreground text-xs truncate">{res.name}</span>}
                     <div className="flex items-center shrink-0">

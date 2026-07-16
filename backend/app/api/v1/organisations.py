@@ -5,7 +5,8 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_async_db, get_current_user, require_god_mode
-from app.models.patch import MinionGroup, MinionGroupMember, Organisation
+from app.models.patch import MinionGroup, MinionGroupMember, Organisation, PatchPipeline, PipelineStage
+from app.models.activation_key import ActivationKey
 from app.models.user import User
 
 router = APIRouter()
@@ -109,6 +110,16 @@ async def delete_group(
     grp = await db.get(MinionGroup, group_id)
     if not grp:
         raise HTTPException(status_code=404)
+    # Block deletion while dependents exist rather than orphan/cascade them
+    blockers = []
+    if (await db.exec(select(MinionGroupMember).where(MinionGroupMember.group_id == group_id))).all():
+        blockers.append("minion members")
+    if (await db.exec(select(ActivationKey).where(ActivationKey.group_id == group_id))).all():
+        blockers.append("activation keys")
+    if (await db.exec(select(PipelineStage).where(PipelineStage.group_id == group_id))).all():
+        blockers.append("pipeline stages")
+    if blockers:
+        raise HTTPException(status_code=400, detail=f"Group is in use by: {', '.join(blockers)}. Remove them first.")
     await db.delete(grp)
     await db.commit()
     return {"deleted": True}
@@ -213,6 +224,16 @@ async def delete_org(
     org = await db.get(Organisation, org_id)
     if not org:
         raise HTTPException(status_code=404)
+    # Block deletion while dependents exist rather than orphan/cascade them
+    blockers = []
+    if (await db.exec(select(MinionGroup).where(MinionGroup.org_id == org_id))).all():
+        blockers.append("groups")
+    if (await db.exec(select(PatchPipeline).where(PatchPipeline.org_id == org_id))).all():
+        blockers.append("pipelines")
+    if (await db.exec(select(ActivationKey).where(ActivationKey.org_id == org_id))).all():
+        blockers.append("activation keys")
+    if blockers:
+        raise HTTPException(status_code=400, detail=f"Organisation is in use by: {', '.join(blockers)}. Remove them first.")
     await db.delete(org)
     await db.commit()
     return {"deleted": True}

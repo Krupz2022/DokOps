@@ -21,7 +21,7 @@ from app.models.blueprint import BlueprintRun, ResourceResult
 from app.core.db import AsyncSessionLocal
 from app.models.audit import AuditLog
 from app.models.minion import Minion, MinionJob
-from app.models.patch import MinionGroupMember, MinionPatch
+from app.models.patch import MinionGroupMember, MinionPatch, PatchPromotionResult
 from app.models.service_diag import DiscoveredService
 from app.models.user import User
 from app.services.minion_service import (
@@ -110,11 +110,21 @@ async def delete_minion(
     m = await db.get(Minion, minion_id)
     if not m:
         raise HTTPException(status_code=404, detail="Minion not found")
-    # Cascade: remove patches and group memberships (SQLite FK enforcement is off)
-    for patch in (await db.exec(select(MinionPatch).where(MinionPatch.minion_id == minion_id))).all():
-        await db.delete(patch)
-    for membership in (await db.exec(select(MinionGroupMember).where(MinionGroupMember.minion_id == minion_id))).all():
-        await db.delete(membership)
+    # Cascade delete every child row that references this minion. FK enforcement is
+    # off on SQLite but enforced on Postgres — and orphaned rows are wrong either way.
+    # Delete level by level with a flush between each — the models have no ORM
+    # relationships, so the unit-of-work won't order cross-table deletes itself.
+    runs = (await db.exec(select(BlueprintRun).where(BlueprintRun.minion_id == minion_id))).all()
+    for run in runs:
+        for rr in (await db.exec(select(ResourceResult).where(ResourceResult.run_id == run.id))).all():
+            await db.delete(rr)
+    await db.flush()  # resource results before their runs
+    for run in runs:
+        await db.delete(run)
+    for model in (MinionJob, DiscoveredService, PatchPromotionResult, MinionPatch, MinionGroupMember):
+        for row in (await db.exec(select(model).where(model.minion_id == minion_id))).all():
+            await db.delete(row)
+    await db.flush()  # all children before the parent
     await db.delete(m)
     db.add(AuditLog(
         actor=current_user.username,
@@ -337,6 +347,7 @@ async def live_services(
 async def live_service_logs(
     minion_id: str,
     name: str,
+    tail: int = 200,
     db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
@@ -353,7 +364,7 @@ async def live_service_logs(
     except (ValueError, TypeError):
         grains = {}
     os_id = grains.get("os", "")
-    cmd = live_resources.service_logs_command(os_id, name)
+    cmd = live_resources.service_logs_command(os_id, name, tail)
     # Built from a validated name (no shell metachars) — trusted dispatch, bypasses allowlist.
     # Note: `systemctl status` exits non-zero for a stopped unit, so we don't treat exit_code
     # as an error here — the output itself is what the user wants to see.
@@ -406,6 +417,7 @@ async def live_docker(
 async def live_container_logs(
     minion_id: str,
     container: str,
+    tail: int = 200,
     db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
@@ -416,9 +428,125 @@ async def live_container_logs(
         raise HTTPException(status_code=404, detail="Minion not found")
     if not manager.is_connected(minion_id):
         raise HTTPException(status_code=503, detail="Minion is not connected")
-    cmd = live_resources.container_logs_command(container)  # built from validated name
+    cmd = live_resources.container_logs_command(container, tail)  # built from validated name
     result = await manager.dispatch_job(minion_id, cmd, actor="ui_container_logs", timeout=30, god_mode=True)
     return {"output": result.get("stdout", "")}
+
+
+@router.post("/{minion_id}/resources/docker/{container}/action/{action}")
+async def container_action(
+    minion_id: str,
+    container: str,
+    action: str,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_god_mode),
+):
+    if action not in live_resources.CONTAINER_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+    if not live_resources.valid_service_name(container):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    cmd = live_resources.container_action_command(action, container)  # validated inputs
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_container_action", timeout=60, god_mode=True)
+    ok = result.get("exit_code", 0) == 0
+    db.add(AuditLog(
+        actor=current_user.username,
+        action=f"container_{action}",
+        resource=f"minion/{minion_id}/container/{container}",
+        result="SUCCESS" if ok else "FAILURE",
+        mode="GOD",
+        source="SYSTEM",
+    ))
+    await db.commit()
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"docker {action} failed: {result.get('stdout', '').strip()[:500]}")
+    return {"ok": True, "output": result.get("stdout", "")}
+
+
+@router.post("/{minion_id}/resources/docker/{container}/recreate")
+async def recreate_container(
+    minion_id: str,
+    container: str,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_god_mode),
+):
+    """Recreate = Portainer-only (it rebuilds the container from its stored config).
+    Uses Portainer's own recreate API via the agent; unavailable in docker-CLI mode."""
+    if not live_resources.valid_service_name(container):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    cfg = await live_resources.get_portainer_config(minion_id, db)
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Recreate requires Portainer to be configured for this minion")
+    try:
+        await manager.post_portainer(
+            minion_id, cfg["base_url"], cfg["api_key"],
+            f"/api/docker/{cfg['endpoint_id']}/containers/{container}/recreate",
+            {"PullImage": False},
+        )
+        ok = True
+        err = ""
+    except Exception as e:  # noqa: BLE001 — surface agent/Portainer failure to UI
+        ok = False
+        err = str(e)
+    db.add(AuditLog(
+        actor=current_user.username,
+        action="container_recreate",
+        resource=f"minion/{minion_id}/container/{container}",
+        result="SUCCESS" if ok else "FAILURE",
+        mode="GOD",
+        source="SYSTEM",
+    ))
+    await db.commit()
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Recreate failed: {err[:500]}")
+    return {"ok": True}
+
+
+@router.post("/{minion_id}/resources/services/{name}/action/{action}")
+async def service_action(
+    minion_id: str,
+    name: str,
+    action: str,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_god_mode),
+):
+    if action not in live_resources.SERVICE_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+    if not live_resources.valid_service_name(name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    m = await db.get(Minion, minion_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Minion not found")
+    if not manager.is_connected(minion_id):
+        raise HTTPException(status_code=503, detail="Minion is not connected")
+    try:
+        grains = json.loads(m.grains or "{}")
+    except (ValueError, TypeError):
+        grains = {}
+    cmd = live_resources.service_action_command(grains.get("os", ""), action, name)  # validated inputs
+    result = await manager.dispatch_job(minion_id, cmd, actor="ui_service_action", timeout=60, god_mode=True)
+    ok = result.get("exit_code", 0) == 0
+    db.add(AuditLog(
+        actor=current_user.username,
+        action=f"service_{action}",
+        resource=f"minion/{minion_id}/service/{name}",
+        result="SUCCESS" if ok else "FAILURE",
+        mode="GOD",
+        source="SYSTEM",
+    ))
+    await db.commit()
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Service {action} failed: {result.get('stdout', '').strip()[:500]}")
+    return {"ok": True, "output": result.get("stdout", "")}
 
 
 @router.post("/{minion_id}/resources/docker/{container}/analyze")
@@ -518,6 +646,13 @@ async def run_blueprint_endpoint(
         states = [by_id[rid] for rid in only if rid in by_id]
         if not states:
             raise HTTPException(status_code=400, detail="no matching resources to run")
+        # Prune require/watch refs to deselected resources — the agent hard-errors on
+        # unknown requisite ids, and an unchecked requisite means "assume satisfied".
+        chosen = {s.get("id") for s in states}
+        states = [
+            {**s, **{k: [r for r in s[k] if r in chosen] for k in ("require", "watch") if s.get(k)}}
+            for s in states
+        ]
 
     run = BlueprintRun(minion_id=minion_id, actor=current_user.username, test=test, status="running")
     db.add(run)
@@ -583,6 +718,12 @@ async def minion_websocket(minion_id: str, ws: WebSocket, token: Optional[str] =
         if key_hash and verify_token(token, key_hash):
             m.status = "active"
             m.token_hash = key_hash
+
+        # A live WS connection means a previously-approved minion is back. Flip
+        # offline->active now so the welcome is accurate and discover_services fires,
+        # instead of showing "offline" for up to 30s until the first heartbeat.
+        if m.status == "offline":
+            m.status = "active"
 
         db.add(m)
         await db.commit()

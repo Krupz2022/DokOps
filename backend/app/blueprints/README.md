@@ -13,7 +13,7 @@ A minion's compiled blueprint merges these **global → org → group → minion
 
 ## Sources (files referenced by `file` resources)
 
-Put the file content in a sibling `files/` dir. Text is stored as-is; non-text (zips, archives) is auto-detected and stored binary. A `file` resource references it by name:
+Put the file content in a sibling `files/` dir. Text is stored as-is; non-text (zips, archives) is auto-detected and stored binary. Subfolders become source names with `/` (e.g. `files/prereq/run.sh` → source `prereq/run.sh`) — that's how `file.recurse` trees are seeded. A `file` resource references it by name:
 
 ```yaml
 resources:

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import ReactDOM from "react-dom";
-import { Copy, Download, WrapText, Search, X, ArrowDown, Check } from "lucide-react";
+import { Copy, Download, WrapText, Search, X, ArrowDown, Check, Play, Pause } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 interface LogsTerminalProps {
@@ -9,7 +9,11 @@ interface LogsTerminalProps {
   podName: string;
   namespace?: string;
   logs: string;
+  /** When set, enables live mode: polls onRefresh(tail) every 3s with pause + tail-count controls. */
+  onRefresh?: (tail: number) => void | Promise<void>;
 }
+
+const TAIL_OPTIONS = [100, 200, 500, 1000, 5000];
 
 type LogLevel = "error" | "warn" | "info" | "debug" | "plain";
 
@@ -51,14 +55,29 @@ function highlightMatch(text: string, query: string): React.ReactElement {
   );
 }
 
-export function LogsTerminal({ isOpen, onClose, podName, namespace, logs }: LogsTerminalProps) {
+export function LogsTerminal({ isOpen, onClose, podName, namespace, logs, onRefresh }: LogsTerminalProps) {
   const [filter, setFilter] = useState("");
   const [wrapLines, setWrapLines] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [live, setLive] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [tail, setTail] = useState(200);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Live mode: re-fetch the tail every 3s while open and not paused.
+  useEffect(() => {
+    if (!isOpen || !live || !onRefresh) return;
+    const id = setInterval(() => onRefresh(tail), 3000);
+    return () => clearInterval(id);
+  }, [isOpen, live, tail, onRefresh]);
+
+  // Follow the tail as new lines arrive, unless the user paused scrolling.
+  useEffect(() => {
+    if (isOpen && onRefresh && autoScroll) bottomRef.current?.scrollIntoView();
+  }, [logs, isOpen, onRefresh, autoScroll]);
 
   const lines = logs.split("\n");
 
@@ -163,15 +182,42 @@ export function LogsTerminal({ isOpen, onClose, podName, namespace, logs }: Logs
               </span>
             )}
             <div className="w-px h-4 bg-slate-700 mx-1" />
+            {onRefresh && (
+              <>
+                <select
+                  value={tail}
+                  onChange={e => { const t = Number(e.target.value); setTail(t); onRefresh(t); }}
+                  title="Lines to show"
+                  className="border border-slate-700 rounded text-[10px] font-mono text-slate-400 px-1 py-0.5 outline-none hover:border-slate-500 cursor-pointer"
+                  style={{ background: "#0D1117" }}
+                >
+                  {TAIL_OPTIONS.map(n => <option key={n} value={n}>{n} lines</option>)}
+                </select>
+                <ToolButton onClick={() => setLive(l => !l)} active={live} title={live ? "Pause live refresh" : "Resume live refresh"}>
+                  {live ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                </ToolButton>
+                <div className="w-px h-4 bg-slate-700 mx-1" />
+              </>
+            )}
             <ToolButton onClick={toggleSearch} active={showSearch} title="Search (Ctrl+F)">
               <Search className="w-3.5 h-3.5" />
             </ToolButton>
             <ToolButton onClick={() => setWrapLines(w => !w)} active={wrapLines} title="Wrap lines">
               <WrapText className="w-3.5 h-3.5" />
             </ToolButton>
-            <ToolButton onClick={scrollToBottom} title="Scroll to bottom">
-              <ArrowDown className="w-3.5 h-3.5" />
-            </ToolButton>
+            {onRefresh ? (
+              <ToolButton
+                onClick={() => { setAutoScroll(a => !a); if (!autoScroll) scrollToBottom(); }}
+                active={autoScroll}
+                title={autoScroll ? "Stop following (auto-scroll off)" : "Follow tail (auto-scroll on)"}
+              >
+                <ArrowDown className="w-3.5 h-3.5" />
+              </ToolButton>
+            ) : (
+              <ToolButton onClick={scrollToBottom} title="Scroll to bottom">
+                <ArrowDown className="w-3.5 h-3.5" />
+              </ToolButton>
+            )}
             <div className="w-px h-4 bg-slate-700 mx-1" />
             <ToolButton onClick={copyLogs} title="Copy all">
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -282,6 +328,12 @@ export function LogsTerminal({ isOpen, onClose, podName, namespace, logs }: Logs
           style={{ background: "#0A0E14", borderColor: "#1a2030" }}
         >
           <div className="flex items-center gap-3 text-[10px] font-mono">
+            {onRefresh && (
+              <span className={cn("flex items-center gap-1", live ? "text-emerald-400" : "text-slate-500")}>
+                <span className={cn("inline-block w-1.5 h-1.5 rounded-full", live ? "bg-emerald-400 animate-pulse" : "bg-slate-600")} />
+                {live ? "live" : "paused"}
+              </span>
+            )}
             <span className="text-slate-600">{lines.length} lines</span>
             {filter && (
               <span className="text-sky-500">{filteredLines.length} matching</span>

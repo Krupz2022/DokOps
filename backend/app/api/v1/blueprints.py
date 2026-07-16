@@ -10,6 +10,7 @@ from app.api.deps import get_async_db, get_current_user, get_current_active_supe
 from app.core.datetimes import utcnow
 from app.models.blueprint import BlueprintSource, BlueprintAssignment, Blueprint
 from app.models.patch import MinionGroup, MinionGroupMember
+from app.models.activation_key import KeyBlueprint
 from app.models.user import User
 
 router = APIRouter()
@@ -122,12 +123,15 @@ async def delete_blueprint(blueprint_id: str, db: AsyncSession = Depends(get_asy
         await db.delete(src)
     for asn in (await db.exec(select(BlueprintAssignment).where(BlueprintAssignment.blueprint_id == blueprint_id))).all():
         await db.delete(asn)
+    for kb in (await db.exec(select(KeyBlueprint).where(KeyBlueprint.blueprint_id == blueprint_id))).all():
+        await db.delete(kb)
+    await db.flush()  # push child deletes before removing the parent
     await db.delete(sf)
     await db.commit()
     return {"deleted": True}
 
 
-@router.put("/{blueprint_id}/sources/{name}")
+@router.put("/{blueprint_id}/sources/{name:path}")
 async def upsert_source(blueprint_id: str, name: str, body: SourceIn,
                         db: AsyncSession = Depends(get_async_db),
                         _: User = Depends(get_current_active_superuser)):
@@ -150,7 +154,7 @@ async def upsert_source(blueprint_id: str, name: str, body: SourceIn,
 _UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
-@router.post("/{blueprint_id}/sources/{name}/upload")
+@router.post("/{blueprint_id}/sources/{name:path}/upload")
 async def upload_source(
     blueprint_id: str,
     name: str,

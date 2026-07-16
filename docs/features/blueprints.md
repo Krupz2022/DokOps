@@ -29,7 +29,7 @@ Every blueprint is YAML with a top-level `resources:` list. Each resource has a 
 ```yaml
 resources:
   - id: nginx-pkg          # unique within the compiled blueprint
-    type: pkg              # pkg | service | file | cmd
+    type: pkg              # pkg | service | file | file.directory | file.recurse | file.absent | file.symlink | file.append | cmd
     name: nginx
     ensure: present
 ```
@@ -123,11 +123,84 @@ resources:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `path` | yes | absolute path on the minion |
-| `source` | yes | name of a source attached to this blueprint |
-| `mode` | no | octal string, Linux only |
+| `path` | yes | absolute path on the minion (`name` is accepted as an alias, Uyuni-style) |
+| `source` | no | name of a source attached to this blueprint; **omit it to manage only mode/ownership of an existing file** (content is never touched) |
+| `mode` | no | octal, quoted or not (`"0755"` / `0755`), Linux only |
+| `user` / `group` | no | ownership, Linux only |
 
-You attach the actual file content under the blueprint's **Sources** section (UI) or a sibling `files/` directory (seeding) — see [Sources](#sources).
+`file.managed` is accepted as an alias for `file`. You attach the actual file content under the blueprint's **Sources** section (UI) or a sibling `files/` directory (seeding) — see [Sources](#sources).
+
+### `file.directory` — managed directories
+
+Ensures a directory exists (parents are always created). `clean: true` empties everything inside it.
+
+```yaml
+resources:
+  - id: prereq-dir
+    type: file.directory
+    path: /opt/prereq
+    mode: "0755"           # Linux only
+    user: root             # Linux only
+    group: root
+
+  - id: wipe-tmp
+    type: file.directory
+    path: /opt/scratch
+    clean: true            # delete all current contents
+```
+
+### `file.recurse` — deliver a directory tree
+
+Writes every source whose name starts with `source/` under `path`, preserving the relative layout — the tree lives in the **source names**: a source named `prereq/bin/run.sh` lands at `<path>/bin/run.sh`. When seeding from disk, just use subfolders inside `files/` (e.g. `files/prereq/bin/run.sh`).
+
+```yaml
+resources:
+  - id: prereq-delivery
+    type: file.recurse
+    path: /opt/prereq
+    source: prereq         # every source named prereq/** is delivered
+    user: root             # Linux only
+    group: root
+    file_mode: "0644"      # Linux only
+```
+
+Each file is checksum-compared and only written when it differs. Empty directories can't be represented (sources are named blobs), so `include_empty` is a no-op.
+
+### `file.absent` — delete a path
+
+Removes a file, symlink, or entire directory tree. Idempotent — already-absent reports no change.
+
+```yaml
+resources:
+  - id: cleanup
+    type: file.absent
+    path: /opt/oldapp
+```
+
+### `file.symlink` — symbolic links
+
+```yaml
+resources:
+  - id: current-link
+    type: file.symlink
+    path: /opt/app/current
+    target: /opt/app/releases/v1.2
+    force: true            # replace an existing non-link at path
+```
+
+### `file.append` — ensure lines in a file
+
+Appends only the lines that aren't already present (exact-line match).
+
+```yaml
+resources:
+  - id: hosts-entry
+    type: file.append
+    path: /etc/hosts
+    text:
+      - "10.0.0.5 registry.internal"
+      - "10.0.0.6 git.internal"
+```
 
 ### `cmd` — commands (escape hatch)
 
@@ -153,6 +226,7 @@ resources:
 | `name` | yes | the command to run |
 | `unless` | no | probe command; if it exits 0, the resource is **skipped** (already satisfied) |
 | `onlyif` | no | probe command; the main command runs only if it exits 0 |
+| `cwd` | no | working directory for the command |
 
 > Reach for typed resources (`pkg`/`service`/`file`) first — they report precise changes. Use `cmd` only when nothing else fits.
 
@@ -187,6 +261,8 @@ resources:
 ```
 
 Resources run in dependency order regardless of how they're listed in the file. A cycle, or a `require`/`watch` pointing at an unknown id, is reported as an error.
+
+Any resource can also set **`failhard: true`** — if that resource fails, the entire run stops and every remaining resource is reported as `aborted by failhard` (`require` only skips dependents; `failhard` aborts everything).
 
 ---
 

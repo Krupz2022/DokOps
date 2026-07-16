@@ -107,6 +107,32 @@ def test_services_command_picks_os():
     assert services_command("windows").startswith("Get-Service")
 
 
+def test_action_command_builders():
+    from app.services.live_resources import (
+        CONTAINER_ACTIONS, SERVICE_ACTIONS, container_action_command, service_action_command,
+    )
+    assert set(CONTAINER_ACTIONS) == {"restart", "stop", "start"}
+    assert set(SERVICE_ACTIONS) == {"restart", "stop", "start"}
+    assert container_action_command("restart", "web-1") == "docker restart web-1"
+    assert service_action_command("ubuntu", "restart", "ssh") == "systemctl restart ssh"
+    assert service_action_command("ubuntu", "start", "ssh") == "systemctl start ssh"
+    assert service_action_command("windows", "restart", "Spooler") == "Restart-Service -Name 'Spooler' -Force"
+    assert service_action_command("windows", "stop", "Spooler") == "Stop-Service -Name 'Spooler' -Force"
+    assert service_action_command("windows", "start", "Spooler") == "Start-Service -Name 'Spooler'"
+
+
+def test_parse_services_linux_all_units():
+    from app.services.live_resources import parse_services
+    out = parse_services("ubuntu", (
+        "ssh.service loaded active running OpenBSD Secure Shell server\n"
+        "cron.service loaded inactive dead Regular background program processing daemon\n"
+        "● failed-thing.service loaded failed failed Something broken\n"
+    ))
+    assert [s["name"] for s in out] == ["ssh", "cron", "failed-thing"]
+    assert out[1]["status"] == "dead"
+    assert out[2]["status"] == "failed"
+
+
 def test_parse_services_linux():
     out = (
         "ssh.service loaded active running OpenBSD Secure Shell server\n"

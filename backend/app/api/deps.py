@@ -86,11 +86,11 @@ async def require_god_mode(
 
 async def get_optional_current_user(
     db: AsyncSession = Depends(get_async_db),
-    token: Optional[str] = Depends(OAuth2PasswordBearer(
-        tokenUrl=f"{settings.API_V1_STR}/login/access-token",
-        auto_error=False,
-    )),
+    token_from_header: Optional[str] = Depends(reusable_oauth2),
+    access_token: Optional[str] = Cookie(default=None),
 ) -> Optional[User]:
+    # Mirror get_current_user: accept httpOnly cookie first, then header
+    token = access_token or token_from_header
     if token is None:
         return None
     try:

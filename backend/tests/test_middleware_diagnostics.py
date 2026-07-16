@@ -70,6 +70,17 @@ def test_render_command_docker_redis_info():
     assert cmd == "docker exec -e REDISCLI_AUTH=secret redis-1 redis-cli --no-auth-warning info"
 
 
+def test_render_command_redis_no_password_skips_auth():
+    # Passwordless Redis rejects AUTH "" — the env prefix must be dropped entirely
+    for cred in (None, {"username": None, "password": None}, {"username": "", "password": ""}):
+        native = render_command("redis", "slowlog", "native", cred, 6379)
+        docker = render_command("redis", "slowlog", "docker", cred, 6379, container="redis-1")
+        assert "REDISCLI_AUTH" not in native
+        assert "REDISCLI_AUTH" not in docker
+    assert render_command("redis", "slowlog", "native", None, 6379) == \
+        "redis-cli --no-auth-warning slowlog get 20"
+
+
 def test_render_command_native_couchdb_server_info():
     cred = {"username": "admin", "password": "couchpass"}
     cmd = render_command("couchdb", "server_info", "native", cred, 5984)

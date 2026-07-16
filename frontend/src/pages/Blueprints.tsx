@@ -52,8 +52,13 @@ export default function Blueprints() {
   }
 
   async function loadList() {
-    const r = await api.get("/blueprints");
-    setList(r.data as Blueprint[]);
+    try {
+      const r = await api.get("/blueprints");
+      setList(r.data as Blueprint[]);
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      toast(`Failed to load blueprints${err.response?.status ? ` (HTTP ${err.response.status})` : ""}: ${err.response?.data?.detail ?? "network error"}`, "error");
+    }
   }
   useEffect(() => {
     loadList();

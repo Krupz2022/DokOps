@@ -2,8 +2,9 @@ import { useEffect, useState, useCallback, type ReactNode } from "react";
 import api from "../../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
 import { EmptyState } from "../ui/EmptyState";
-import { Box, Layers, HardDrive, Network as NetworkIcon, Server, Search, RefreshCw, FileText, Sparkles, RotateCw, X } from "lucide-react";
+import { Box, Layers, HardDrive, Network as NetworkIcon, Server, Search, RefreshCw, FileText, Sparkles, RotateCw, X, Play, Square, Recycle } from "lucide-react";
 import { LogsTerminal } from "../ui/LogsTerminal";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import ReactMarkdown from "react-markdown";
 
 interface DockerData {
@@ -33,11 +34,15 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   const [showCfg, setShowCfg] = useState(false);
   const [logName, setLogName] = useState<string | null>(null);
   const [logKind, setLogKind] = useState("");
+  const [logUrl, setLogUrl] = useState<string | null>(null);
   const [logOut, setLogOut] = useState("");
   const [logLoading, setLogLoading] = useState(false);
   const [aiName, setAiName] = useState<string | null>(null);
   const [aiOut, setAiOut] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [actBusy, setActBusy] = useState<string | null>(null);
+  const [actErr, setActErr] = useState<string | null>(null);
+  const [pendingAct, setPendingAct] = useState<{ name: string; label: string; url: string } | null>(null);
 
   const detail = (e: unknown): string =>
     (e as { response?: { data?: { detail?: string } } }).response?.data?.detail ?? "failed";
@@ -81,14 +86,42 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
   }
 
   async function openLogs(name: string, kind: string, url: string) {
-    setLogName(name); setLogKind(kind); setLogOut(""); setLogLoading(true);
+    setLogName(name); setLogKind(kind); setLogUrl(url); setLogOut(""); setLogLoading(true);
     try {
-      const r = await api.get(url);
+      const r = await api.get(url, { params: { tail: 200 } });
       setLogOut(r.data.output || "(no output)");
     } catch (e: unknown) {
       setLogOut(`Error: ${detail(e)}`);
     } finally {
       setLogLoading(false);
+    }
+  }
+
+  // Silent re-fetch for the terminal's live mode — keep the last good output on failure.
+  const refreshLogs = useCallback(async (tail: number) => {
+    if (!logUrl) return;
+    try {
+      const r = await api.get(logUrl, { params: { tail } });
+      setLogOut(r.data.output || "(no output)");
+    } catch { /* transient refresh error — keep showing current logs */ }
+  }, [logUrl]);
+
+  function runAction(name: string, label: string, url: string) {
+    setPendingAct({ name, label, url });
+  }
+
+  async function execAction() {
+    if (!pendingAct) return;
+    const { name, label, url } = pendingAct;
+    setPendingAct(null);
+    setActBusy(name); setActErr(null);
+    try {
+      await api.post(url, {});
+      await poll();
+    } catch (e: unknown) {
+      setActErr(`${label} "${name}" failed: ${detail(e)}`);
+    } finally {
+      setActBusy(null);
     }
   }
 
@@ -137,6 +170,9 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
           empty={<EmptyState icon={Box} title="No containers" description="No containers on this host." />}
           rows={rows.map(c => {
             const name = cname(c);
+            const running = (c.State ?? "").toLowerCase() === "running";
+            const act = (action: string, label: string) => () => runAction(name, label,
+              `/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/action/${action}`);
             return {
               key: c.Id || name,
               cells: [
@@ -148,6 +184,19 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
                   <LogBtn onClick={() => openLogs(name, "container",
                     `/minions/${minionId}/resources/docker/${encodeURIComponent(name)}/logs`)} />
                   <AiBtn onClick={() => analyzeContainer(name)} />
+                  {running ? (
+                    <>
+                      <ActBtn icon={RotateCw} title="Restart container" busy={actBusy === name} onClick={act("restart", "Restart")} />
+                      <ActBtn icon={Square} title="Stop container" busy={actBusy === name} onClick={act("stop", "Stop")} danger />
+                    </>
+                  ) : (
+                    <ActBtn icon={Play} title="Start container" busy={actBusy === name} onClick={act("start", "Start")} />
+                  )}
+                  {docker?.source === "portainer" && (
+                    <ActBtn icon={Recycle} title="Recreate container (Portainer)" busy={actBusy === name}
+                      onClick={() => runAction(name, "Recreate",
+                        `/minions/${minionId}/resources/docker/${encodeURIComponent(c.Id || name)}/recreate`)} />
+                  )}
                 </div>,
               ],
             };
@@ -208,19 +257,35 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
     const rows = services.filter(s => match(s.name) || match(s.display_name));
     return (
       <DataTable
-        headers={["Name", "Description", ""]}
-        empty={<EmptyState icon={Server} title="No running services" description="No running services were reported." />}
-        rows={rows.map(s => ({
-          key: s.name,
-          cells: [
-            <span className="flex items-center gap-2 text-foreground">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />{s.name}
-            </span>,
-            <span className="text-xs text-muted-foreground truncate">{s.display_name}</span>,
-            <LogBtn onClick={() => openLogs(s.name, "service",
-              `/minions/${minionId}/resources/services/${encodeURIComponent(s.name)}/logs`)} />,
-          ],
-        }))}
+        headers={["Name", "Description", "Status", ""]}
+        empty={<EmptyState icon={Server} title="No services" description="No services were reported." />}
+        rows={rows.map(s => {
+          const running = s.status.toLowerCase() === "running";
+          const act = (action: string, label: string) => () => runAction(s.name, label,
+            `/minions/${minionId}/resources/services/${encodeURIComponent(s.name)}/action/${action}`);
+          return {
+            key: s.name,
+            cells: [
+              <span className="flex items-center gap-2 text-foreground">
+                <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${running ? "bg-green-400" : "bg-slate-400"}`} />{s.name}
+              </span>,
+              <span className="text-xs text-muted-foreground truncate">{s.display_name}</span>,
+              <span className={`text-xs ${running ? "text-green-400" : "text-muted-foreground"}`}>{s.status || "—"}</span>,
+              <div className="flex gap-1.5">
+                <LogBtn onClick={() => openLogs(s.name, "service",
+                  `/minions/${minionId}/resources/services/${encodeURIComponent(s.name)}/logs`)} />
+                {running ? (
+                  <>
+                    <ActBtn icon={RotateCw} title="Restart service" busy={actBusy === s.name} onClick={act("restart", "Restart")} />
+                    <ActBtn icon={Square} title="Stop service" busy={actBusy === s.name} onClick={act("stop", "Stop")} danger />
+                  </>
+                ) : (
+                  <ActBtn icon={Play} title="Start service" busy={actBusy === s.name} onClick={act("start", "Start")} />
+                )}
+              </div>,
+            ],
+          };
+        })}
       />
     );
   }
@@ -299,6 +364,7 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
                 placeholder={`Filter ${tab}…`} value={filter} onChange={e => setFilter(e.target.value)} />
             </div>
           )}
+          {actErr && <p className="text-sm text-red-400 mb-3">{actErr}</p>}
           {body()}
         </CardContent>
       </Card>
@@ -306,10 +372,22 @@ export default function ResourcesTab({ minionId }: { minionId: string }) {
       {/* Logs terminal (shared macOS-style viewer, same as K8s) */}
       <LogsTerminal
         isOpen={!!logName}
-        onClose={() => setLogName(null)}
+        onClose={() => { setLogName(null); setLogUrl(null); }}
         podName={logName ?? ""}
         namespace={logKind}
         logs={logLoading ? "Loading…" : logOut}
+        onRefresh={refreshLogs}
+      />
+
+      {/* Action confirmation (God Mode) */}
+      <ConfirmDialog
+        isOpen={!!pendingAct}
+        title={`${pendingAct?.label ?? ""} ${pendingAct?.name ?? ""}`}
+        description={`This will ${pendingAct?.label.toLowerCase() ?? ""} "${pendingAct?.name ?? ""}" on this host. God Mode is required.`}
+        variant={pendingAct?.label === "Stop" ? "danger" : "warning"}
+        confirmLabel={pendingAct?.label}
+        onConfirm={execAction}
+        onCancel={() => setPendingAct(null)}
       />
 
       {/* AI analysis modal */}
@@ -360,6 +438,20 @@ function StateDot({ state }: { state?: string }) {
       <span className={`inline-block w-1.5 h-1.5 rounded-full ${running ? "bg-green-400" : "bg-slate-400"}`} />
       <span className={running ? "text-green-400" : "text-muted-foreground"}>{state || "—"}</span>
     </span>
+  );
+}
+
+function ActBtn({ icon: Icon, title, onClick, busy, danger }: {
+  icon: typeof RotateCw; title: string; onClick: () => void; busy?: boolean; danger?: boolean;
+}) {
+  return (
+    <button onClick={onClick} title={`${title} (God Mode)`} disabled={busy}
+      className={`inline-flex items-center px-2 py-1 text-xs rounded-md border transition-colors disabled:opacity-50 ${
+        danger
+          ? "border-red-400/30 text-red-400 hover:bg-red-400/10"
+          : "border-border text-muted-foreground hover:text-primary hover:border-primary/40"}`}>
+      <Icon className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} />
+    </button>
   );
 }
 

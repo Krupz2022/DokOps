@@ -90,7 +90,7 @@ async def list_pods(
 async def get_pod_logs(
     namespace: str,
     pod_name: str,
-    tail_lines: int = Query(100, ge=1, le=1000),
+    tail_lines: int = Query(100, ge=1, le=5000),
     current_user: User = Depends(deps.get_current_user),
     cluster_context: Optional[str] = Header(None, alias="X-Cluster-Context")
 ) -> Dict[str, str]:

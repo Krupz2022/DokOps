@@ -80,10 +80,13 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
                 # sources from a sibling files/ dir
                 files_dir = os.path.join(dirpath, "files")
                 if os.path.isdir(files_dir):
-                    for src_name in os.listdir(files_dir):
+                    # walk subdirs too: files/prereq/x.zip → source "prereq/x.zip" (file.recurse trees)
+                    src_names = [
+                        os.path.relpath(os.path.join(d, f), files_dir).replace("\\", "/")
+                        for d, _sd, fs in os.walk(files_dir) for f in fs
+                    ]
+                    for src_name in src_names:
                         src_path = os.path.join(files_dir, src_name)
-                        if not os.path.isfile(src_path):
-                            continue
                         try:
                             with open(src_path, "r", encoding="utf-8") as sfh:
                                 content = sfh.read()

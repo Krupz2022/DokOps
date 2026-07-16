@@ -84,6 +84,35 @@ def test_run_with_resource_ids_filters_and_orders(admin_client, session):
     assert [s["id"] for s in captured["states"]] == ["vault-un"]
 
 
+def test_run_subset_prunes_requires_to_deselected(admin_client, session):
+    # Deselecting a requisite must not ship a dangling require id (agent hard-errors on it).
+    yaml_body = (
+        "resources:\n"
+        "  - id: cleanup\n    type: file.directory\n    name: /opt/prereq\n"
+        "  - id: deliver\n    type: cmd\n    name: echo hi\n"
+        "    require: [cleanup]\n"
+    )
+    bp = Blueprint(name="prereq", yaml_body=yaml_body)
+    session.add(bp)
+    session.commit()
+    session.refresh(bp)
+    session.add(BlueprintAssignment(blueprint_id=bp.id, scope_type="minion", scope_id="web-01"))
+    session.commit()
+
+    captured = {}
+    async def fake_dispatch(minion_id, run_id, states, sources, test, timeout=300):
+        captured["states"] = states
+        return {"results": []}
+    with patch("app.services.minion_service.manager.dispatch_blueprint", side_effect=fake_dispatch):
+        with patch("app.services.minion_service.manager.is_connected", return_value=True):
+            resp = admin_client.post(
+                "/api/v1/minions/web-01/blueprint/run",
+                json={"test": True, "resource_ids": ["deliver"]},
+            )
+    assert resp.status_code == 200
+    assert captured["states"][0]["require"] == []
+
+
 def test_preview_returns_states(admin_client):
     resp = admin_client.get("/api/v1/minions/web-01/blueprint")
     assert resp.status_code == 200

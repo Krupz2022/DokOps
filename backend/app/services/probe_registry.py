@@ -114,17 +114,19 @@ PROBES: dict = {
         },
     },
     "mssql": {
+        # -C trusts the server certificate — ODBC Driver 18 sqlcmd defaults to
+        # Encrypt=yes and fails on SQL Server's default self-signed cert
         "status": {
-            "native": "sqlcmd -S localhost,{port} -U {user} -P {password} -Q 'SELECT @@VERSION' -l 10",
-            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -S localhost -U {user} -P {password} -Q \"SELECT @@VERSION\" -l 10'",
+            "native": "sqlcmd -C -S localhost,{port} -U {user} -P {password} -Q 'SELECT @@VERSION' -l 10",
+            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -C -S localhost -U {user} -P {password} -Q \"SELECT @@VERSION\" -l 10'",
         },
         "processlist": {
-            "native": "sqlcmd -S localhost,{port} -U {user} -P {password} -Q 'SELECT session_id, status, LEFT(text,80) AS query FROM sys.dm_exec_requests CROSS APPLY sys.dm_exec_sql_text(sql_handle)' -l 10",
-            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -S localhost -U {user} -P {password} -Q \"SELECT session_id, status, LEFT(text,80) AS query FROM sys.dm_exec_requests CROSS APPLY sys.dm_exec_sql_text(sql_handle)\" -l 10'",
+            "native": "sqlcmd -C -S localhost,{port} -U {user} -P {password} -Q 'SELECT session_id, status, LEFT(text,80) AS query FROM sys.dm_exec_requests CROSS APPLY sys.dm_exec_sql_text(sql_handle)' -l 10",
+            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -C -S localhost -U {user} -P {password} -Q \"SELECT session_id, status, LEFT(text,80) AS query FROM sys.dm_exec_requests CROSS APPLY sys.dm_exec_sql_text(sql_handle)\" -l 10'",
         },
         "databases": {
-            "native": "sqlcmd -S localhost,{port} -U {user} -P {password} -Q 'SELECT name, state_desc, recovery_model_desc FROM sys.databases ORDER BY name' -l 10",
-            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -S localhost -U {user} -P {password} -Q \"SELECT name, state_desc, recovery_model_desc FROM sys.databases ORDER BY name\" -l 10'",
+            "native": "sqlcmd -C -S localhost,{port} -U {user} -P {password} -Q 'SELECT name, state_desc, recovery_model_desc FROM sys.databases ORDER BY name' -l 10",
+            "docker": "docker exec {container} bash -c 'SQLCMD=$(ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -1); $SQLCMD -C -S localhost -U {user} -P {password} -Q \"SELECT name, state_desc, recovery_model_desc FROM sys.databases ORDER BY name\" -l 10'",
         },
         "logs": {
             "native": "journalctl -u mssql-server --no-pager -n 150",
@@ -206,6 +208,12 @@ def render_command(
         raise ValueError(f"Unknown install_type: {install_type!r}")
 
     import shlex
+    # Empty REDISCLI_AUTH still makes redis-cli send AUTH "" — a passwordless Redis
+    # rejects that, so drop the env prefix entirely when there is no password.
+    if not (cred and cred.get("password")):
+        template = (template
+                    .replace("-e REDISCLI_AUTH={password} ", "")
+                    .replace("REDISCLI_AUTH={password} ", ""))
     # Credentials are shell-quoted to prevent injection; port/container are not user-supplied
     replacements = {
         "{user}":      shlex.quote((cred["username"] or "") if cred else ""),

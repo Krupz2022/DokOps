@@ -227,6 +227,31 @@ class MinionConnectionManager:
             raise RuntimeError(result["error"])
         return result.get("data", {})
 
+    async def post_portainer(
+        self, minion_id: str, base_url: str, api_key: str, path: str, body: dict | None = None,
+        timeout: int = 60,
+    ) -> dict:
+        """Ask the agent to POST to its LOCAL Portainer API (e.g. container recreate).
+        `path` is the full API path (`/api/...`). Caller MUST gate on God Mode."""
+        ws = self._connections.get(minion_id)
+        if not ws:
+            raise RuntimeError(f"Minion {minion_id} is not connected")
+        req_id = str(uuid4())
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_portainer[req_id] = future
+        await ws.send_json({
+            "type": "portainer_post", "req_id": req_id,
+            "base_url": base_url, "api_key": api_key, "path": path, "body": body or {},
+        })
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_portainer.pop(req_id, None)
+            raise RuntimeError("Agent did not respond in time (older agents may need an update for Portainer actions)")
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        return result.get("data", {})
+
     def handle_portainer_result(self, req_id: str, payload: dict) -> None:
         future = self._pending_portainer.pop(req_id, None)
         if future and not future.done():
@@ -388,10 +413,19 @@ async def mark_offline_loop() -> None:
                     Minion.last_seen < threshold,
                 )
             )).all()
+            # A live WS connection is authoritative — don't flap a connected minion
+            # offline just because last_seen jittered past the threshold (heartbeat is
+            # 30s and blocks ~1s on psutil, so the margin is thin). Only reap minions
+            # with no live connection. ponytail: single-process manager; if the backend
+            # ever runs multiple workers, move this check to a shared connection registry.
+            changed = False
             for m in stale:
+                if manager.is_connected(m.id):
+                    continue
                 m.status = "offline"
                 db.add(m)
-            if stale:
+                changed = True
+            if changed:
                 await db.commit()
 
 

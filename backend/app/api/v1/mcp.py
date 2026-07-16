@@ -157,6 +157,7 @@ async def delete_server(
         tools = (await session.exec(select(MCPTool).where(MCPTool.server_id == server_id))).all()
         for t in tools:
             await session.delete(t)
+        await session.flush()  # push child deletes before removing the parent
         await session.delete(server)
         await session.commit()
     return {"deleted": True}

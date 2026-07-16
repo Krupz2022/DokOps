@@ -42,7 +42,7 @@ const SERVICE_ICONS: Record<string, string> = {
   postgres: "/service-icons/postgres.svg",
   mongodb: "/service-icons/mongodb.svg",
   mysql: "/service-icons/mysql.svg",
-  mssql: "🗄️",
+  mssql: "/service-icons/mssqlserver.svg",
 };
 
 const SERVICE_PROBES: Record<string, string[]> = {

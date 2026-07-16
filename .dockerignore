@@ -55,3 +55,6 @@ Thumbs.db
 # Docs & local vector stores
 docs/
 chroma/
+
+# Video creation workspace
+saas-video/

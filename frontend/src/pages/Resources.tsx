@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -481,6 +481,15 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
         } catch (err) { toast("Failed to fetch logs", "error"); }
     };
 
+    // Silent re-fetch for the terminal's live mode — keep the last good output on failure.
+    const refreshLogs = useCallback(async (tail: number) => {
+        if (!selectedPod) return;
+        try {
+            const res = await api.get(`/k8s/namespaces/${namespace}/pods/${selectedPod}/logs`, { params: { tail_lines: tail } });
+            setLogs(res.data.logs);
+        } catch { /* transient refresh error — keep showing current logs */ }
+    }, [selectedPod, namespace]);
+
     const deletePod = async (podName: string) => {
         const ok = await confirm({
             title: "Delete Pod",
@@ -608,6 +617,7 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
                 podName={selectedPod ?? ""}
                 namespace={namespace}
                 logs={logs}
+                onRefresh={refreshLogs}
             />
             <Modal isOpen={aiModalOpen} onClose={() => setAiModalOpen(false)} title={`AI Analysis: ${selectedPod}`} className="max-w-4xl">
                 <div className="space-y-4 max-h-[70vh] flex flex-col">

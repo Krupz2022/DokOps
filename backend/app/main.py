@@ -242,7 +242,9 @@ async def lifespan(app: FastAPI):
     await async_engine.dispose()
 
 app = FastAPI(
-    title=settings.PROJECT_NAME, 
+    title=settings.PROJECT_NAME,
+    version="1.2",
+    description="DokOps — Kubernetes MCP Server & DevOps platform. Autonomous troubleshooting with full human visibility (Normal Mode) and authorized deep control (God Mode).",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     lifespan=lifespan
 )
@@ -252,6 +254,25 @@ from app.core.activation_middleware import ActivationMiddleware
 from app.core.middleware import AuditMiddleware
 app.add_middleware(AuditMiddleware)
 app.add_middleware(ActivationMiddleware)
+
+
+@app.middleware("http")
+async def relative_redirects(request, call_next):
+    """Rewrite self-referencing absolute redirect Locations to relative paths.
+
+    Behind TLS-terminating proxies the app only sees http, so FastAPI's
+    trailing-slash 307s carry an http:// Location that HTTPS pages block as
+    mixed content. A relative Location keeps the browser on its own origin and
+    scheme. External redirects (e.g. SSO to the IdP) have a different host and
+    are left untouched."""
+    response = await call_next(request)
+    loc = response.headers.get("location")
+    if loc and "://" in loc:
+        from urllib.parse import urlsplit
+        u = urlsplit(loc)
+        if u.netloc == request.headers.get("host"):
+            response.headers["location"] = (u.path or "/") + (f"?{u.query}" if u.query else "")
+    return response
 
 # CORS
 if settings.BACKEND_CORS_ORIGINS:

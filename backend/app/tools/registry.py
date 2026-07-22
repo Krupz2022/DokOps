@@ -73,31 +73,36 @@ async def _fix_image_pull_tool(pod_name: str, namespace: str) -> Dict[str, Any]:
     a clear error if no valid tag was found.
     """
     try:
-        # 1. Describe the pod to get the broken image and owner
-        pod_info = await k8s_tools.describe_pod(pod_name, namespace)
-        if not pod_info.get("success"):
-            return {"success": False, "error": f"Could not describe pod: {pod_info.get('error')}", "source": "fix_image_pull"}
+        # 1. Read the pod directly from the API. (describe_pod is unusable here:
+        # its data payload is a human-readable string, and calling .get() on it
+        # was this tool's long-standing "'str' object has no attribute 'get'".)
+        from app.services.k8s_service import k8s_service as _k8s
+        core_api = _k8s._get_api("CoreV1Api")
+        if core_api is None:
+            return {"success": False, "error": "No reachable cluster (mock mode or kubeconfig not loaded).", "source": "fix_image_pull"}
+        try:
+            pod = await core_api.read_namespaced_pod(pod_name, namespace)
+        except Exception as e:
+            return {"success": False, "error": f"Could not read pod {pod_name} in {namespace}: {e}", "source": "fix_image_pull"}
 
-        pod_data = pod_info.get("data", {})
-        containers = pod_data.get("containers", [])
+        containers = pod.spec.containers or []
         if not containers:
             return {"success": False, "error": "Pod has no containers.", "source": "fix_image_pull"}
 
-        broken_image = containers[0].get("image", "")
+        broken_image = containers[0].image or ""
+        container_name = containers[0].name or "app"
         if not broken_image:
             return {"success": False, "error": "Could not determine broken image.", "source": "fix_image_pull"}
 
-        owner_refs = pod_data.get("owner_references", [])
         deployment_name = None
-        for ref in owner_refs:
-            if ref.get("kind") == "ReplicaSet":
+        for ref in (pod.metadata.owner_references or []):
+            if ref.kind == "ReplicaSet":
                 # Strip the hash suffix from ReplicaSet name to get Deployment name
-                rs_name = ref.get("name", "")
-                parts = rs_name.rsplit("-", 1)
-                deployment_name = parts[0] if len(parts) == 2 else rs_name
+                parts = ref.name.rsplit("-", 1)
+                deployment_name = parts[0] if len(parts) == 2 else ref.name
                 break
-            if ref.get("kind") == "Deployment":
-                deployment_name = ref.get("name")
+            if ref.kind == "Deployment":
+                deployment_name = ref.name
                 break
 
         # 2. Search registries for a valid tag
@@ -172,7 +177,7 @@ async def _fix_image_pull_tool(pod_name: str, namespace: str) -> Dict[str, Any]:
                 f"  template:\n"
                 f"    spec:\n"
                 f"      containers:\n"
-                f"      - name: {containers[0].get('name', 'app')}\n"
+                f"      - name: {container_name}\n"
                 f"        image: {fixed_image}\n"
             )
             return {

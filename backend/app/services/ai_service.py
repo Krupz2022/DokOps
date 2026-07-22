@@ -179,6 +179,15 @@ Do NOT produce a final answer until all plan steps are checked.
 PHASE 3 — EVIDENCE GATE:
 Before answering, verify: can you point to a specific tool result for every claim?
 If a claim has no tool evidence, either call another tool or mark it as [INFERRED].
+Two specific gates you must pass before answering:
+- A CrashLoopBackOff, Error or restarting container is NOT explained until you have called
+  get_pod_logs on it and quoted the error line. "Investigate the logs to determine the
+  cause" is not an answer — you have that tool, call it. A missing readiness probe never
+  causes a crash, so never offer it as the reason for one.
+- A Service with zero endpoints is NOT explained until you have compared its selector
+  against the labels of the pods that should back it. Call get_resource_yaml or
+  describe_pod to get both, and name the exact mismatch. Do not assume its backing pods
+  are unhealthy — check, because a selector typo leaves healthy pods stranded.
 
 PHASE 4 — TERMINAL CONDITION:
 Never end your turn with a question you have a tool to answer. Before you write

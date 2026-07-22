@@ -97,6 +97,19 @@ def test_phase_1_5_demands_endpoints_per_service():
     assert "functional or healthy without having seen its endpoints" in prompt
 
 
+def test_evidence_gate_blocks_unexplained_crash_and_endpoints():
+    """Base-prompt rules proved weaker than protocol phases in live testing.
+
+    Regression: a DIAGNOSE RULE addition in _AGENT_BASE asking for logs after a
+    diagnosis was ignored — the agent ran diagnose_pod four times and still wrote
+    "investigate the logs". The same class of instruction placed in
+    _INVESTIGATION_PROTOCOL was followed. These gates live in PHASE 3.
+    """
+    prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
+    assert "is not an answer — you have that tool, call it" in prompt
+    assert "against the labels of the pods that should back it" in prompt
+
+
 def test_diagnose_rule_demands_logs_after_diagnosis():
     """The DIAGNOSE RULE must not read as making diagnose_pod terminal.
 

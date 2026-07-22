@@ -458,7 +458,20 @@ class ScheduleUpdate(BaseModel):
 
 @router.get("/schedules/")
 async def list_schedules(db: AsyncSession = Depends(get_async_db), _: User = Depends(get_current_user)):
-    return (await db.exec(select(PatchSchedule))).all()
+    # next_run_at is never written to the DB, so the UI's "next run" column was always
+    # empty. Read it from the live scheduler instead of persisting a value that goes
+    # stale after every fire.
+    from app.main import scheduler
+
+    rows = (await db.exec(select(PatchSchedule))).all()
+    out = []
+    for sched in rows:
+        data = sched.model_dump()
+        job = scheduler.get_job(f"patch_sched_{sched.id}")
+        next_run = getattr(job, "next_run_time", None) if job else None
+        data["next_run_at"] = next_run.isoformat() if next_run else None
+        out.append(data)
+    return out
 
 
 @router.post("/schedules/")

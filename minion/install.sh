@@ -44,8 +44,10 @@ fi
 
 echo "[dokops-minion] Using $PYTHON ($(${PYTHON} --version))"
 
-# Install Python deps
-$PYTHON -m pip install --quiet websockets psutil
+# Install Python deps. PEP 668 distros (Ubuntu 23.04+, Debian 12+, Fedora 38+) refuse
+# a system-wide pip install; retry with the documented override rather than aborting.
+$PYTHON -m pip install --quiet websockets psutil \
+  || $PYTHON -m pip install --quiet --break-system-packages websockets psutil
 
 # Download agent
 mkdir -p /etc/dokops-minion

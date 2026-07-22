@@ -297,6 +297,34 @@ async def test_block_states_it_is_not_the_whole_investigation():
 
 
 @pytest.mark.asyncio
+async def test_reports_blocked_container_with_the_exact_missing_key():
+    """Regression: asked to fix a missing ConfigMap, the agent created it keyed
+    on the env var name (SMTP_HOST) instead of the referenced key (smtp_host).
+    The fix applied cleanly, was reported as success, and the pod stayed broken.
+    The kubelet event names the real key — surface it."""
+    container = SimpleNamespace(
+        name="app", restart_count=0,
+        state=SimpleNamespace(waiting=SimpleNamespace(reason="CreateContainerConfigError")),
+    )
+    core = _fake_core(
+        endpoints=[], services=[],
+        pods=[_pod("notify-svc-78bfbf86d4-4lwcq", {"app": "notify-svc"}, container)],
+    )
+    core.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=[
+        SimpleNamespace(
+            type="Warning", reason="Failed",
+            involved_object=SimpleNamespace(name="notify-svc-78bfbf86d4-4lwcq"),
+            message="Error: couldn't find key smtp_host in ConfigMap dokops-chaos/notify-config",
+        )
+    ]))
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "blocked before start" in out
+    assert "couldn't find key smtp_host" in out
+
+
+@pytest.mark.asyncio
 async def test_reports_crash_log_line():
     container = _crashing_container()
     core = _fake_core(

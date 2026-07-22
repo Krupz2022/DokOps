@@ -126,9 +126,15 @@ MINION RULE (on-premise devices — NOT Kubernetes):
 
 _FRAG_DEPLOY = """
 
-DEPLOYMENT GUIDE — when user asks to deploy/install/create any application:
+DEPLOYMENT GUIDE — ONLY when the user asks to deploy or install a new APPLICATION
+(a running workload from a container image) into a namespace that does not exist yet:
 1. Call create_namespace with the target namespace.
-2. Then call deploy_application with name, image, namespace, replicas, port."""
+2. Then call deploy_application with name, image, namespace, replicas, port.
+This flow does NOT apply to creating an individual resource — a ConfigMap, Secret,
+Service, PVC or similar. Create those with apply_manifest inside the namespace they
+belong to. The argument to create_namespace is a NAMESPACE name: never pass it the
+name of a ConfigMap, Secret or other object, and never call it to "create" something
+that is not a namespace."""
 
 _FRAG_HEALTH_FOLLOWUP = """
 

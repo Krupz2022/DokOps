@@ -236,6 +236,46 @@ async def _replicaset_failures(core, apps, namespace: str) -> list[str]:
     return lines
 
 
+_BLOCKED_REASONS = (
+    "CreateContainerConfigError", "CreateContainerError",
+    "InvalidImageName", "InvalidValue",
+)
+
+
+async def _blocked_containers(core, namespace: str) -> list[str]:
+    """Containers that never started because of a config reference.
+
+    These have no logs — the container was never created — so the crash-log sweep
+    cannot see them, and the kubelet event carries the only precise detail. That
+    detail matters: asked to fix a missing ConfigMap, the agent created it with the
+    key named after the env var (SMTP_HOST) instead of the referenced key
+    (smtp_host). The event says "couldn't find key smtp_host" outright.
+    """
+    pods = await core.list_namespaced_pod(namespace)
+    blocked = {}
+    for pod in pods.items:
+        for status in (pod.status.container_statuses or []):
+            waiting = status.state.waiting if status.state else None
+            reason = getattr(waiting, "reason", None)
+            if reason in _BLOCKED_REASONS:
+                blocked[pod.metadata.name] = (status.name, reason)
+    if not blocked:
+        return []
+
+    events = await core.list_namespaced_event(namespace)
+    messages: dict[str, str] = {}
+    for event in events.items:
+        name = getattr(event.involved_object, "name", None)
+        if name in blocked and event.type == "Warning" and event.message:
+            messages[name] = event.message  # keep the most recent
+
+    lines = []
+    for pod_name, (container, reason) in blocked.items():
+        detail = messages.get(pod_name, "")
+        lines.append(f"  - {pod_name}/{container} {reason}: {detail}".rstrip(": "))
+    return lines
+
+
 async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> list[str]:
     """Tail logs for containers that are crashing — the error line the agent
     otherwise reports as 'investigate the logs to determine the cause'."""
@@ -304,6 +344,13 @@ async def build_presweep(
             sections.extend(stalled)
     except Exception as e:
         logger.debug("presweep: replicaset check failed for %s: %s", namespace, e)
+
+    try:
+        if blocked := await _blocked_containers(core, namespace):
+            sections.append("Containers blocked before start (no logs exist — the event is the evidence):")
+            sections.extend(blocked)
+    except Exception as e:
+        logger.debug("presweep: blocked-container check failed for %s: %s", namespace, e)
 
     try:
         if logs := await _crash_logs(core, namespace, max_log_pods, tail_lines):

@@ -38,6 +38,17 @@ def test_investigation_protocol_requires_non_pod_sweep():
         assert tool in prompt, f"{tool} not named in the discovery sweep"
 
 
+def test_deployment_guide_does_not_fire_on_creating_a_resource():
+    """Regression: asked to fix a CreateContainerConfigError "by creating what it
+    needs", the agent correctly created the ConfigMap and then proposed
+    create_namespace named 'notify-config' — feeding a ConfigMap's name in as a
+    namespace. The DEPLOYMENT GUIDE fired on the word "create" and is always-on.
+    """
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
+    assert "ONLY when the user asks to deploy or install a new APPLICATION" in prompt
+    assert "never pass it the" in prompt and "name of a ConfigMap" in prompt
+
+
 def test_image_pull_rule_has_diagnostic_fallback():
     """When fix_image_pull errors the user must still get a root cause.
 

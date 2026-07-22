@@ -35,3 +35,14 @@ def test_investigation_protocol_requires_non_pod_sweep():
     prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
     for tool in ("list_services", "get_endpoints", "list_deployments"):
         assert tool in prompt, f"{tool} not named in the discovery sweep"
+
+
+def test_image_pull_rule_has_diagnostic_fallback():
+    """When fix_image_pull errors the user must still get a root cause.
+
+    Regression: the rule forbids describe_pod first, so a failing fix tool left
+    the user with no diagnosis whatsoever.
+    """
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
+    assert "get_pod_events" in prompt
+    assert "Never tell the user only that the fix tool failed" in prompt

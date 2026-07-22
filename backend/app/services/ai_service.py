@@ -103,6 +103,10 @@ IMAGE PULL FIX RULE — follow this EXACTLY, no deviations:
 3. NEVER call restart_pod for ImagePullBackOff. restart_pod is blocked for this case — the tool will refuse and redirect you to fix_image_pull.
 4. After apply_manifest is approved, call get_deployment_status to verify. Report the outcome.
 5. If fix_image_pull returns success=false with action_required: follow the action_required instruction exactly (usually ask the user for the correct image).
+6. If fix_image_pull returns success=false for any other reason (an error, not action_required):
+   do NOT stop there. Fall back to describe_pod and get_pod_events for that pod and report the
+   real pull error from the events (e.g. "manifest unknown", "unauthorized", "no such host").
+   Never tell the user only that the fix tool failed — they still need the diagnosis.
 ENFORCEMENT: restart_pod on an ImagePullBackOff pod returns an error. fix_image_pull is the only correct first step."""
 
 _FRAG_MINION = """

@@ -92,7 +92,9 @@ def collect_grains(org: str = "", env: str = "") -> dict:
         "arch": platform.machine(),
         "kernel": platform.release(),
         "python": platform.python_version(),
-        "docker": _cmd("docker version --format '{{.Server.Version}}'") or None,
+        # double quotes, not single: cmd.exe strips those, so the quotes don't
+        # leak into the rendered template on Windows ("'28.5.1'")
+        "docker": _cmd('docker version --format "{{.Server.Version}}"') or None,
         "ansible": _cmd("ansible --version") or None,
         "systemctl": False if IS_WINDOWS else shutil.which("systemctl") is not None,
     }

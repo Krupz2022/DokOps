@@ -2251,6 +2251,10 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 )
                             elif not _root_cause:
                                 _confidence = "inconclusive"
+                            # Coverage is mechanical: never drop a swept finding the
+                            # model was holding but omitted from its write-up.
+                            from app.services.presweep import append_missing_findings
+                            _answer = append_missing_findings(_presweep, _answer)
                             yield {
                                 "type": "result",
                                 "message": _answer,
@@ -2262,7 +2266,8 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 },
                             }
                             return
-                    yield {"type": "result", "message": text}
+                    from app.services.presweep import append_missing_findings
+                    yield {"type": "result", "message": append_missing_findings(_presweep, text)}
                     return
 
             yield {"type": "result", "message": "Agent reached max iterations without a final answer."}

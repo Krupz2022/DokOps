@@ -50,6 +50,37 @@ def extract_namespace(query: str) -> Optional[str]:
     return None
 
 
+# A sweep bullet: "  - web-frontend: 0 endpoints…", "  - order-worker-x/worker (…)".
+# The subject is the resource name, up to the first ':', '/' or ' ('.
+_BULLET = re.compile(r"^\s+- (\S+?)(?=[:/]|\s\()")
+
+
+def append_missing_findings(presweep: str, answer: str) -> str:
+    """Append any pre-flight finding the drafted answer failed to mention.
+
+    Discovery being deterministic is not enough on its own: with the sweep in
+    context the model still reported only the Service in one run and only the
+    pods in the next, dropping findings it was holding. Coverage is mechanical,
+    so it is enforced here rather than asked for in the prompt.
+    """
+    if not presweep or not answer:
+        return answer
+
+    lowered = answer.lower()
+    missing = [
+        line for line in presweep.splitlines()
+        if (m := _BULLET.match(line)) and m.group(1).lower() not in lowered
+    ]
+    if not missing:
+        return answer
+
+    return (
+        f"{answer.rstrip()}\n\n"
+        "**Also found by the pre-flight sweep, not covered above:**\n"
+        + "\n".join(f"- {line.strip().lstrip('- ')}" for line in missing)
+    )
+
+
 async def _zero_endpoint_services(core, namespace: str) -> list[str]:
     """Services with no ready backend addresses, with their selector and the pod
     labels actually present — enough for the model to name a selector mismatch."""

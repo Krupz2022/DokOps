@@ -10,7 +10,48 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.services.presweep import build_presweep, extract_namespace
+from app.services.presweep import (
+    append_missing_findings, build_presweep, extract_namespace,
+)
+
+
+# ── answer coverage ──────────────────────────────────────────────────────────
+
+_SWEEP = """PRE-FLIGHT SWEEP of namespace 'dokops-chaos' — verified facts.
+Services with NO ready endpoints (broken even if their pods are Running):
+  - web-frontend: 0 endpoints. selector={app=web-fronted}
+  pod labels present in this namespace: app=web-frontend
+Logs from crashing containers:
+  - order-worker-qzfjg/worker (CrashLoopBackOff):
+      FATAL: could not connect to postgres
+"""
+
+
+def test_omitted_finding_is_appended():
+    """The exact regression: four pod diagnoses, Service silently dropped."""
+    answer = "Pod order-worker-qzfjg is crashlooping against postgres."
+    out = append_missing_findings(_SWEEP, answer)
+
+    assert "Also found by the pre-flight sweep" in out
+    assert "web-frontend: 0 endpoints" in out
+    assert out.startswith(answer)          # original answer preserved verbatim
+
+
+def test_covered_findings_are_not_appended():
+    answer = "web-frontend has 0 endpoints; order-worker-qzfjg cannot reach postgres."
+    assert append_missing_findings(_SWEEP, answer) == answer
+
+
+def test_continuation_and_context_lines_are_not_treated_as_findings():
+    """Only bullets are findings — log bodies and the pod-labels note are not."""
+    answer = "web-frontend and order-worker-qzfjg are both covered here."
+    out = append_missing_findings(_SWEEP, answer)
+
+    assert out == answer, "a non-bullet line was mistaken for a finding"
+
+
+def test_no_sweep_returns_answer_unchanged():
+    assert append_missing_findings("", "some answer") == "some answer"
 
 
 # ── namespace extraction ─────────────────────────────────────────────────────

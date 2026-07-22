@@ -74,27 +74,43 @@ class TestRunFinalReview:
         assert result == {"answer": self.draft}
 
     @pytest.mark.asyncio
-    async def test_uses_tier_fast(self):
+    async def test_uses_tier_full(self):
+        """Verification/correction is a reasoning task and must run on the strong
+        ("full") model tier — running it on "fast" would summarize away the
+        specifics it's supposed to check (see comment above the complete() call)."""
         mock = MagicMock()
         mock.complete = AsyncMock(return_value=(self._review_json(), None))
         await self.svc._run_final_review(self.query, self.obs, self.draft, mock)
         call_kwargs = mock.complete.call_args[1]
-        assert call_kwargs.get("tier") == "fast"
+        assert call_kwargs.get("tier") == "full"
 
     @pytest.mark.asyncio
-    async def test_observations_capped_at_10(self):
-        """Only first 10 observations are forwarded to keep the review prompt small."""
+    async def test_selects_error_observations_and_backfills_with_most_recent(self):
+        """_select_evidence prioritises observations carrying a failure signal —
+        even an old one — then fills the remaining slots with the most recent
+        observations. A naive head-of-list slice (the old behaviour) would drop
+        the early error entirely; this asserts it survives while unremarkable,
+        non-recent observations in between are the ones dropped."""
         mock = MagicMock()
         mock.complete = AsyncMock(return_value=(self._review_json(), None))
-        many_obs = [f"obs {i}" for i in range(20)]
-        await self.svc._run_final_review(self.query, many_obs, self.draft, mock)
+        observations = (
+            ["obs 0: early OOMKill detected"]
+            + [f"obs {i}: nothing notable" for i in range(1, 15)]
+        )
+        await self.svc._run_final_review(self.query, observations, self.draft, mock)
         call_args = mock.complete.call_args[0]
         messages_sent = call_args[0]  # first positional arg is the messages list
         user_message = next(m for m in messages_sent if m.get("role") == "user")
         user_content = user_message["content"]
-        # obs 10-19 must NOT appear in the prompt
-        assert "obs 10" not in user_content
-        assert "obs 9" in user_content
+        # the old error-bearing observation is kept despite being far from the tail
+        assert "obs 0: early OOMKill" in user_content
+        # unremarkable observations that are neither error-bearing nor recent
+        # are dropped to make room
+        for i in range(1, 6):
+            assert f"obs {i}:" not in user_content
+        # the most recent observations fill the remaining slots
+        for i in range(6, 15):
+            assert f"obs {i}:" in user_content
 
 # ── Integration: hooks 1 + 2 ─────────────────────────────────────────────────
 
@@ -226,7 +242,7 @@ class TestInvestigationModeHooks:
         assert "INVESTIGATION MODE" not in system_content
 
     @pytest.mark.asyncio
-    async def test_classify_investigation_called_at_loop_start(self):
+    async def test_classify_complexity_called_at_loop_start(self):
         """classify_complexity must be called once per loop invocation."""
         patches = _build_loop_patches(classify_result=False)
         classify_mock = _AsMock(return_value="simple")

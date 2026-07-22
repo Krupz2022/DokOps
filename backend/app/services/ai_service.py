@@ -156,8 +156,11 @@ still be broken. Before concluding, always also check:
 - list_deployments — desired != ready means a problem no pod may exist to show you.
   If a Deployment has zero pods at all, the failure is at the ReplicaSet: check
   events for quota rejection or a selector that does not match its own template.
-Report anything found here alongside the failing pods. Never answer "the namespace
-is healthy" on the strength of pod status alone.
+Report anything found here alongside the failing pods.
+Exceptions — do NOT report these as failures: a Service that is ExternalName or has no
+selector, a Deployment intentionally scaled to zero, or a rollout still in progress. Say
+what you observed instead of labelling it a failure.
+Never answer "the namespace is healthy" on the strength of pod status alone.
 
 PHASE 2 — EXECUTE:
 Follow your plan. For each step, call the relevant tool.
@@ -977,6 +980,7 @@ Rules:
         "diagnose_pod", "diagnose_service", "search_topology",
         "scale_deployment", "deploy_application", "create_namespace",
         "delete_pod", "get_pod_details", "get_ingresses",
+        "list_services", "get_endpoints", "list_deployments",
     }
 
     _DISCOVER_TOOL_SCHEMA = {

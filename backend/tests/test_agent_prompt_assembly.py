@@ -44,5 +44,7 @@ def test_image_pull_rule_has_diagnostic_fallback():
     the user with no diagnosis whatsoever.
     """
     prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
-    assert "get_pod_events" in prompt
+    # Both tools are named elsewhere in the base prompt, so assert the rule-6
+    # phrasing that pairs them — a bare "get_pod_events" check passes regardless.
+    assert "describe_pod and get_pod_events" in prompt
     assert "Never tell the user only that the fix tool failed" in prompt

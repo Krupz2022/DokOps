@@ -11,8 +11,11 @@ PROBES: dict = {
             "docker": "docker exec {container} rabbitmqctl status",
         },
         "queues": {
-            "native": "rabbitmqctl list_vhosts name | tail -n +4 | grep -v '^$' | while IFS= read -r vh; do echo \"=== vhost: $vh ===\"; rabbitmqctl list_queues -p \"$vh\" name messages consumers memory 2>/dev/null; done",
-            "docker": "docker exec {container} bash -c 'rabbitmqctl list_vhosts name | tail -n +4 | grep -v \"^$\" | while IFS= read -r vh; do echo \"=== vhost: $vh ===\"; rabbitmqctl list_queues -p \"$vh\" name messages consumers memory 2>/dev/null; done'",
+            # -q --no-table-headers, not `tail -n +4`: rabbitmqctl prints only a
+            # banner and a header line, so +4 skipped past the first vhost and the
+            # probe returned nothing at all.
+            "native": "rabbitmqctl -q --no-table-headers list_vhosts name | grep -v '^$' | while IFS= read -r vh; do echo \"=== vhost: $vh ===\"; rabbitmqctl list_queues -p \"$vh\" name messages consumers memory 2>/dev/null; done",
+            "docker": "docker exec {container} bash -c 'rabbitmqctl -q --no-table-headers list_vhosts name | grep -v \"^$\" | while IFS= read -r vh; do echo \"=== vhost: $vh ===\"; rabbitmqctl list_queues -p \"$vh\" name messages consumers memory 2>/dev/null; done'",
         },
         "cluster": {
             "native": "rabbitmqctl cluster_status",

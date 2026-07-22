@@ -50,6 +50,25 @@ def test_continuation_and_context_lines_are_not_treated_as_findings():
     assert out == answer, "a non-bullet line was mistaken for a finding"
 
 
+@pytest.mark.parametrize("query", [
+    "Why is api-gateway not running in dokops-chaos?",
+    "the checkout pod is stuck in namespace shop",
+    "no pods in namespace batch",
+])
+def test_failure_signals_floor_these_to_investigate(query):
+    """These phrasings scored SIMPLE, which skipped the whole investigation.
+
+    Regression: "why is api-gateway not running in dokops-chaos" was classified
+    simple on one run and investigate on the next; the simple run answered "the
+    pod does not exist, it may have been removed" after four tool calls.
+    """
+    from app.services.ai_service import AIService
+
+    assert any(sig in query.lower() for sig in AIService._FAILURE_SIGNALS), (
+        "query would not be floored to investigate"
+    )
+
+
 def test_no_sweep_returns_answer_unchanged():
     assert append_missing_findings("", "some answer") == "some answer"
 

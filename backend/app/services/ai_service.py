@@ -720,6 +720,10 @@ Rules:
     _FAILURE_SIGNALS = (
         "not working", "failing", "failed", "broken", "crash", "crashloop",
         "oomkill", "not ready", "won't start", "wont start", "cannot start",
+        # "not running"/"no pods" scored SIMPLE and skipped the investigation
+        # entirely, answering "the pod does not exist, maybe it was removed".
+        "not running", "not starting", "not up", "no pods", "won't run",
+        "wont run", "not coming up", "stuck", "pending",
         "can't reach", "cant reach", "unreachable", "errimagepull",
         "imagepullbackoff", "what's wrong", "whats wrong", "troubleshoot",
         "diagnose", "root cause", "rca",
@@ -1876,15 +1880,20 @@ ELASTICSEARCH QUERY RULES:
             # Deterministic pre-flight. The agent follows a discovery checklist
             # unreliably (three identical runs each checked a different subset), so
             # the judgement-free lookups are done here and handed over as facts.
+            # Deliberately NOT gated on investigation_mode: the classifier is itself
+            # unreliable ("why is api-gateway not running" scored investigate once and
+            # simple the next time, and the simple run then had no facts to work from).
+            # The sweep is a handful of read-only API calls and returns "" when the
+            # namespace is healthy, so running it whenever a namespace is named costs
+            # little and removes a dependency on a coin-flip.
             _presweep = ""
-            if investigation_mode:
-                from app.services.presweep import build_presweep, extract_namespace
-                if _ns := extract_namespace(query):
-                    try:
-                        _presweep = await build_presweep(_ns)
-                    except Exception as e:  # never let a sweep break the turn
-                        _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
-                    _agent_log.info("[AGENT] presweep ns=%s chars=%d", _ns, len(_presweep))
+            from app.services.presweep import build_presweep, extract_namespace
+            if _ns := extract_namespace(query):
+                try:
+                    _presweep = await build_presweep(_ns)
+                except Exception as e:  # never let a sweep break the turn
+                    _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
+                _agent_log.info("[AGENT] presweep ns=%s chars=%d", _ns, len(_presweep))
 
             _dynamic_context = f"""{_unavailability_block}
 {_presweep}

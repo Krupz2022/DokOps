@@ -85,17 +85,31 @@ def append_missing_findings(presweep: str, answer: str) -> str:
         return answer
 
     lowered = answer.lower()
-    missing = [
-        line for line in presweep.splitlines()
-        if (m := _BULLET.match(line)) and not _is_covered(line, m.group(1), lowered)
-    ]
+    lines = presweep.splitlines()
+    missing: list[str] = []
+    for i, line in enumerate(lines):
+        match = _BULLET.match(line)
+        if not match or _is_covered(line, match.group(1), lowered):
+            continue
+        missing.append(f"- {line.strip().lstrip('- ')}")
+        # Carry the bullet's continuation lines (a crash log's body lives there;
+        # appending the header alone produced "pod/app (CrashLoopBackOff):" with
+        # no error message, which is worse than useless).
+        indent = len(line) - len(line.lstrip())
+        for follow in lines[i + 1:]:
+            if not follow.strip() or _BULLET.match(follow):
+                break
+            if len(follow) - len(follow.lstrip()) <= indent:
+                break
+            missing.append(f"  {follow.strip()}")
+
     if not missing:
         return answer
 
     return (
         f"{answer.rstrip()}\n\n"
         "**Also found by the pre-flight sweep, not covered above:**\n"
-        + "\n".join(f"- {line.strip().lstrip('- ')}" for line in missing)
+        + "\n".join(missing)
     )
 
 

@@ -98,6 +98,16 @@ def test_omitted_finding_is_appended():
     assert out.startswith(answer)          # original answer preserved verbatim
 
 
+def test_appended_crash_bullet_carries_its_log_body():
+    """Regression: appending only the bullet produced
+    "billing-x/app (CrashLoopBackOff):" with no error message — the log body
+    lives on the indented continuation line and was dropped."""
+    out = append_missing_findings(_SWEEP, "Only postgres is discussed here.")
+
+    assert "order-worker-qzfjg/worker (CrashLoopBackOff):" in out
+    assert "FATAL: could not connect to postgres" in out
+
+
 def test_naming_the_resource_is_not_reporting_the_finding():
     """Scenario 02 regression: the answer said "api-gateway is not creating pods"
     and the quota rejection counted as covered purely because the name appeared.

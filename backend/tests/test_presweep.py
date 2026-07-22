@@ -37,6 +37,22 @@ async def test_resolves_namespace_named_without_the_word_namespace():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "Three services are down in dokops-chaos. Find the cause.",   # trailing period
+    "Three services are down in dokops-chaos?",                   # trailing question mark
+    "check dokops-chaos, something is broken",                    # trailing comma
+    "look at dokops-chaos",                                       # no punctuation
+])
+async def test_trailing_punctuation_does_not_break_resolution(query):
+    """Regression: the token pattern must allow '.' for names like team-a.prod,
+    so it swallowed sentence-ending periods — "dokops-chaos." never matched and
+    the sweep silently produced nothing. The '?' form worked, the '.' form did not."""
+    core = _ns_lister("default", "dokops-chaos")
+    with patch("app.services.presweep.k8s_service._get_api", return_value=core):
+        assert await resolve_namespace(query) == "dokops-chaos"
+
+
+@pytest.mark.asyncio
 async def test_longest_namespace_match_wins():
     core = _ns_lister("dokops", "dokops-chaos")
     with patch("app.services.presweep.k8s_service._get_api", return_value=core):

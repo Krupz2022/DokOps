@@ -121,7 +121,15 @@ async def resolve_namespace(query: str) -> Optional[str]:
         logger.debug("presweep: could not list namespaces: %s", e)
         return None
 
-    tokens = set(re.findall(r"[a-z0-9][a-z0-9.\-]*", (query or "").lower()))
+    # Strip trailing punctuation: the token class has to allow '.' and '-' for
+    # names like "team-a.prod", which makes it swallow sentence-ending periods —
+    # "dokops-chaos." then failed to match the namespace and the sweep silently
+    # produced nothing. A query ending in '?' worked; the same one ending in '.'
+    # did not.
+    tokens = {
+        t.strip(".-")
+        for t in re.findall(r"[a-z0-9][a-z0-9.\-]*", (query or "").lower())
+    }
     # Longest first so "dokops-chaos" wins over a hypothetical "dokops".
     for name in sorted(existing, key=len, reverse=True):
         if name.lower() in tokens:

@@ -81,3 +81,29 @@ def test_phase_1_5_tools_are_actually_offered_to_the_model():
     selected_names = {t["function"]["name"] for t in selected}
     missing = [name for name in _PHASE_1_5_TOOLS if name not in selected_names]
     assert not missing, f"PHASE 1.5 names tools never offered to the model: {missing}"
+
+
+def test_phase_1_5_demands_endpoints_per_service():
+    """Listing services must not read as satisfying the endpoint check.
+
+    Regression: given the sweep, the agent called list_services, saw the Service
+    existed, and reported it "functional with ClusterIP and port 80/TCP" — while it
+    had zero endpoints. It never called get_endpoints. A confident false negative is
+    worse than the silent miss it replaced.
+    """
+    prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
+    assert "call get_endpoints for EVERY Service it returned" in prompt
+    # Phrase chosen to sit within one wrapped line of the constant.
+    assert "functional or healthy without having seen its endpoints" in prompt
+
+
+def test_diagnose_rule_demands_logs_after_diagnosis():
+    """The DIAGNOSE RULE must not read as making diagnose_pod terminal.
+
+    Regression: the rule forbade fetching logs BEFORE a diagnosis but never asked
+    for them after, so the agent ran diagnose_pod three times, fetched no logs, and
+    misattributed a CrashLoopBackOff to a missing readiness probe.
+    """
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
+    assert "AFTER the\ndiagnosis, DO fetch them" in prompt
+    assert "never blame a crash on a missing readiness probe" in prompt

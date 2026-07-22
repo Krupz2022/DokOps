@@ -75,8 +75,6 @@ SCOPE RULE:
 - "which pods are failing" / "find failing pods" / "any unhealthy pods" → call search_pods("failing") — this returns ALL non-running pods including ImagePullBackOff, ErrImagePull, OOMKilled, Evicted, Pending, etc. Do NOT call search_pods("crash") for this — that only finds CrashLoopBackOff.
 - search_pods status field contains the real container-level reason (e.g. "ImagePullBackOff"), NOT just pod phase. Use this for diagnosis.
 
-HEALTH FOLLOW-UP RULE: When responding to a cluster health check, list any failed/pending pods and ask "Would you like me to investigate any of these?" If fully healthy, do NOT ask the follow-up.
-
 NAMESPACE RULE: Do NOT inject a namespace unless the user explicitly stated one. All tools that accept namespace are optional — omitting triggers cluster-wide search.
 
 DIAGNOSE RULE: For any vague troubleshooting query ("can't reach", "not working", "failing", "broken", "something is wrong", "investigate", "what's wrong"), call diagnose_pod or diagnose_service FIRST before any other tool. Use the findings to decide which targeted tools to call next. Never skip to get_pod_logs or get_pod_events before running a diagnosis.
@@ -122,6 +120,10 @@ _FRAG_DEPLOY = """
 DEPLOYMENT GUIDE — when user asks to deploy/install/create any application:
 1. Call create_namespace with the target namespace.
 2. Then call deploy_application with name, image, namespace, replicas, port."""
+
+_FRAG_HEALTH_FOLLOWUP = """
+
+HEALTH FOLLOW-UP RULE: When responding to a cluster health check, list any failed/pending pods and ask "Would you like me to investigate any of these?" If fully healthy, do NOT ask the follow-up."""
 
 # Always-on core = base ruleset + the two protocols that must NOT be gated:
 # image-pull is triggered by tool *results* (an ImagePullBackOff discovered mid-loop,
@@ -202,6 +204,8 @@ def build_agent_system_prompt(*, investigation: bool, selected_tools: list) -> s
         parts.append(_FRAG_MINION)
     if investigation:
         parts.append(f"\n\n{_INVESTIGATION_PROTOCOL}")
+    else:
+        parts.append(_FRAG_HEALTH_FOLLOWUP)
     return "".join(parts)
 
 

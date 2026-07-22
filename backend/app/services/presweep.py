@@ -171,6 +171,10 @@ async def build_presweep(
         return ""
     body = "\n".join(sections)
     return (
-        f"PRE-FLIGHT SWEEP of namespace '{namespace}' (already gathered for you — "
-        f"do NOT re-fetch these with tools; treat as verified evidence):\n{body}\n"
+        f"PRE-FLIGHT SWEEP of namespace '{namespace}' — verified facts, already gathered "
+        f"for you. Do not re-fetch these with tools.\n"
+        f"This is a HEAD START, NOT the scope of your investigation. It covers only "
+        f"service endpoints, deployment readiness and crash logs. You must STILL "
+        f"investigate every failing pod yourself and report those findings alongside "
+        f"these — an answer that covers only what appears below is incomplete.\n{body}\n"
     )

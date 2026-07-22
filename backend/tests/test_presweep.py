@@ -92,6 +92,23 @@ async def test_reports_zero_endpoint_service_with_selector_and_pod_labels():
 
 
 @pytest.mark.asyncio
+async def test_block_states_it_is_not_the_whole_investigation():
+    """Regression: with the sweep present, the agent reported ONLY the swept
+    findings and dropped four failing pods it had previously caught. The block
+    must read as a head start, not as the scope of the investigation."""
+    core = _fake_core(
+        endpoints=[SimpleNamespace(metadata=SimpleNamespace(name="web"), subsets=None)],
+        services=[_svc("web", {"app": "typo"})],
+        pods=[_pod("web-1", {"app": "web"})],
+    )
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "NOT the scope of your investigation" in out
+    assert "investigate every failing pod yourself" in out
+
+
+@pytest.mark.asyncio
 async def test_reports_crash_log_line():
     container = _crashing_container()
     core = _fake_core(

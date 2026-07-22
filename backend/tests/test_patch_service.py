@@ -119,6 +119,19 @@ def test_build_patch_cmd_security(engine):
     assert "security" in _build_patch_cmd("apt", "security", None)
     assert "security" in _build_patch_cmd("dnf", "security", None)
 
+
+def test_build_patch_cmd_security_never_upgrades_everything(engine):
+    """`apt-get upgrade -y $EMPTY` == upgrade the whole box.
+
+    A security-only run on a host with no security updates pending must be a no-op,
+    not a full distro upgrade, so the package list has to be guarded before use.
+    """
+    cmd = _build_patch_cmd("apt", "security", None)
+    # the upgrade must never be reachable with an unguarded/empty package list
+    assert 'if [ -n "$PKGS" ]' in cmd
+    assert "apt-get upgrade -y $PKGS" in cmd
+    assert "apt-get upgrade -y $(" not in cmd
+
 def test_build_patch_cmd_all(engine):
     cmd = _build_patch_cmd("apt", "all", None)
     assert "upgrade" in cmd

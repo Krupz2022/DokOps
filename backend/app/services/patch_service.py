@@ -186,11 +186,15 @@ def _build_patch_cmd(pkg_manager: str, scope: str, custom_packages: Optional[str
     if scope == "security":
         if pkg_manager in ("dnf", "yum"):
             return f"{pkg_manager} upgrade --security -y"
+        # The package list MUST be guarded: `apt-get upgrade -y $EMPTY` is just
+        # `apt-get upgrade -y`, so a security-only run on a host with no security
+        # updates pending used to upgrade every outdated package on the box.
         return (
-            "apt-get upgrade -y "
-            "$(apt list --upgradable 2>/dev/null "
+            "PKGS=$(apt list --upgradable 2>/dev/null "
             "| grep -E '\\-security|\\-ESM' "
-            "| cut -d/ -f1 | tr '\\n' ' ')"
+            "| cut -d/ -f1 | tr '\\n' ' '); "
+            "if [ -n \"$PKGS\" ]; then apt-get upgrade -y $PKGS; "
+            "else echo 'No security updates pending'; fi"
         )
     if scope == "all":
         if pkg_manager in ("dnf", "yum"):

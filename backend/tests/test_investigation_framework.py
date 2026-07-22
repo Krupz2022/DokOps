@@ -12,63 +12,6 @@ def _mock_client(response):
     return mock
 
 
-# ── classify_investigation ───────────────────────────────────────────────────
-
-class TestClassifyInvestigation:
-    def setup_method(self):
-        self.svc = AIService()
-
-    @pytest.mark.asyncio
-    async def test_investigate_query_returns_true(self):
-        result = await self.svc.classify_investigation(
-            "why is sample-api crashing?", _mock_client("INVESTIGATE")
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_simple_query_returns_false(self):
-        result = await self.svc.classify_investigation(
-            "get cluster health", _mock_client("SIMPLE")
-        )
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_case_insensitive_match(self):
-        result = await self.svc.classify_investigation(
-            "what is wrong", _mock_client("investigate")
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_model_error_returns_false(self):
-        broken = MagicMock()
-        broken.complete = AsyncMock(side_effect=Exception("timeout"))
-        result = await self.svc.classify_investigation("why is pod failing?", broken)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_unexpected_response_returns_false(self):
-        result = await self.svc.classify_investigation(
-            "get logs", _mock_client("UNKNOWN_WORD")
-        )
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_none_response_returns_false(self):
-        result = await self.svc.classify_investigation(
-            "investigate pod", _mock_client(None)
-        )
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_uses_tier_fast(self):
-        mock = MagicMock()
-        mock.complete = AsyncMock(return_value=("SIMPLE", None))
-        await self.svc.classify_investigation("get health", mock)
-        call_kwargs = mock.complete.call_args[1]
-        assert call_kwargs.get("tier") == "fast"
-
-
 # ── _run_final_review ────────────────────────────────────────────────────────
 
 class TestRunFinalReview:

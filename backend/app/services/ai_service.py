@@ -693,29 +693,6 @@ Rules:
                 "message": f"Failed to understand intent: {str(e)}"
             }
 
-    async def classify_investigation(self, query: str, caching_client) -> bool:
-        """Returns True if query is problem-focused. Defaults to False on any failure."""
-        prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You classify DevOps queries. Reply with exactly one word: "
-                    "INVESTIGATE or SIMPLE.\n"
-                    "INVESTIGATE: diagnosing failures, root cause analysis, "
-                    "'what's wrong', 'why is X failing', 'investigate', 'not working', 'crashing'.\n"
-                    "SIMPLE: status checks, listing resources, scaling, restarting, deploying."
-                ),
-            },
-            {"role": "user", "content": query},
-        ]
-        try:
-            result, _ = await caching_client.complete(
-                prompt, [], tier="fast", disable_trimming=True, temperature=0
-            )
-            return "INVESTIGATE" in (result or "").upper()
-        except Exception:
-            return False
-
     # Deterministic failure signals. When present, the query is a diagnosis regardless of
     # what the fast classifier says — it must never be downgraded to 'simple' (which would
     # cut the step budget and skip the investigation protocol). Kept tight on purpose:

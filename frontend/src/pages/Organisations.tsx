@@ -104,7 +104,15 @@ export default function Organisations() {
     if (!minionId) return;
     const targetGroup = orgGroups[0];
     if (!targetGroup) { toast("Create a group first.", "error"); return; }
-    await api.post(`/organisations/${orgId}/assign`, { minion_id: minionId, group_id: targetGroup.id });
+    try {
+      await api.post(`/organisations/${orgId}/assign`, { minion_id: minionId, group_id: targetGroup.id });
+    } catch (err: unknown) {
+      // Assigning needs God Mode. Without this the 403 was swallowed and the click
+      // looked like it simply did nothing.
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      toast(status === 403 ? "Assigning a minion requires God Mode." : "Failed to assign minion.", "error");
+      return;
+    }
     setAddPick(prev => ({ ...prev, [orgId]: "" }));
     await refreshOrg(orgId);
   }

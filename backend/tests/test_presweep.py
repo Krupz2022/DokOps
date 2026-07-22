@@ -54,6 +54,24 @@ def test_no_sweep_returns_answer_unchanged():
     assert append_missing_findings("", "some answer") == "some answer"
 
 
+def test_presweep_survives_the_reviewer_evidence_cap():
+    """The final reviewer strips claims lacking tool evidence, so the sweep must
+    reach it as evidence AND survive _select_evidence's cap of 10.
+
+    Regression: the sweep contains no _ERR keyword ("0 endpoints" is not "error")
+    and is the oldest observation, so on busy investigations it was silently
+    dropped from the reviewer's evidence — and the reviewer then deleted the
+    swept findings from the draft as unverified.
+    """
+    from app.services.ai_service import AIService
+
+    sweep = _SWEEP.replace("FATAL: could not connect to postgres", "app cannot reach db")
+    filler = [f"tool result {i}: everything looks healthy" for i in range(14)]
+    kept = AIService._select_evidence([sweep] + filler, limit=10)
+
+    assert any(o.startswith("PRE-FLIGHT SWEEP") for o in kept)
+
+
 # ── namespace extraction ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("query,expected", [

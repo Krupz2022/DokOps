@@ -771,7 +771,10 @@ Rules:
         _ERR = ("error", "exception", "fail", "crash", "oom", "backoff",
                 "denied", "refused", "timeout", "traceback", "fatal", "panic")
         indexed = list(enumerate(observations))
-        err_idx = [i for i, o in indexed if any(k in o.lower() for k in _ERR)]
+        # The presweep is verified-fact evidence ("0 endpoints" matches no _ERR
+        # keyword) and, as the oldest observation, loses the recency fill — pin it.
+        err_idx = [i for i, o in indexed
+                   if any(k in o.lower() for k in _ERR) or o.startswith("PRE-FLIGHT SWEEP")]
         recent_idx = [i for i, _ in indexed[::-1]]  # newest first
         chosen: set = set()
         for i in err_idx:
@@ -1905,7 +1908,11 @@ CLUSTER TOPOLOGY SNAPSHOT:
             # Untrimmed tool observations kept for final synthesis/review. The copies in
             # `messages` get shrunk by trim_tool_result to fit the context budget; the
             # final answer must reason from the full evidence, not the lossy copy.
-            raw_observations: list[str] = []
+            # Seed with the presweep: the final reviewer strips any claim lacking
+            # tool evidence, and swept facts ARE evidence (gathered from the k8s
+            # API) — without this seed the reviewer deletes them from the draft
+            # whenever the model, correctly, didn't re-fetch them with a tool.
+            raw_observations: list[str] = [_presweep] if _presweep else []
             _agent_log.info("[AGENT] entering loop max_steps=%d messages=%d tools=%d", max_steps, len(messages), len(tools_schema))
 
             while current_step < max_steps:

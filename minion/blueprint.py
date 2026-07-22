@@ -712,7 +712,17 @@ def run_blueprint(states: list[dict], sources: dict, test: bool, emit=None, fetc
                 if not handler:
                     res = {"id": sid, "result": False, "changes": {}, "comment": f"unknown type '{st['type']}'"}
                 else:
-                    res = dict(handler(st, sources, test))
+                    try:
+                        res = dict(handler(st, sources, test))
+                    except Exception as e:  # noqa: BLE001 — a malformed resource must
+                        # fail that resource, not kill the run. A missing required key
+                        # used to raise straight out of run_blueprint, so the remaining
+                        # resources never ran and no history row was ever written.
+                        res = {
+                            "result": False,
+                            "changes": {},
+                            "comment": f"{type(e).__name__}: {e}",
+                        }
                     res["id"] = sid
                     watched = list(st.get("watch") or [])
                     if st["type"] == "service" and any(w in changed for w in watched):

@@ -99,6 +99,36 @@ def append_missing_findings(presweep: str, answer: str) -> str:
     )
 
 
+async def resolve_namespace(query: str) -> Optional[str]:
+    """Namespace for a query: the regex forms first, then any real namespace name
+    mentioned anywhere in it.
+
+    The regex only fires when the word "namespace" is present, so "why is
+    api-gateway not running in dokops-chaos?" resolved to None and the whole
+    sweep silently did not run — the agent then answered from speculation.
+    Matching against the cluster's actual namespaces removes the dependency on
+    how the user phrased it.
+    """
+    if namespace := extract_namespace(query):
+        return namespace
+
+    core = k8s_service._get_api("CoreV1Api")
+    if core is None:
+        return None
+    try:
+        existing = [ns.metadata.name for ns in (await core.list_namespace()).items]
+    except Exception as e:
+        logger.debug("presweep: could not list namespaces: %s", e)
+        return None
+
+    tokens = set(re.findall(r"[a-z0-9][a-z0-9.\-]*", (query or "").lower()))
+    # Longest first so "dokops-chaos" wins over a hypothetical "dokops".
+    for name in sorted(existing, key=len, reverse=True):
+        if name.lower() in tokens:
+            return name
+    return None
+
+
 async def _zero_endpoint_services(core, namespace: str) -> list[str]:
     """Services with no ready backend addresses, with their selector and the pod
     labels actually present — enough for the model to name a selector mismatch."""

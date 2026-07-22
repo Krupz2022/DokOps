@@ -11,8 +11,53 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.services.presweep import (
-    append_missing_findings, build_presweep, extract_namespace,
+    append_missing_findings, build_presweep, extract_namespace, resolve_namespace,
 )
+
+
+# ── namespace resolution against the live cluster ────────────────────────────
+
+def _ns_lister(*names):
+    core = SimpleNamespace()
+    core.list_namespace = AsyncMock(return_value=SimpleNamespace(
+        items=[SimpleNamespace(metadata=SimpleNamespace(name=n)) for n in names]
+    ))
+    return core
+
+
+@pytest.mark.asyncio
+async def test_resolves_namespace_named_without_the_word_namespace():
+    """Regression: "why is api-gateway not running in dokops-chaos?" never says
+    "namespace", so the regex returned None, the sweep silently did not run, and
+    the agent answered from speculation."""
+    core = _ns_lister("default", "kube-system", "dokops-chaos")
+    with patch("app.services.presweep.k8s_service._get_api", return_value=core):
+        got = await resolve_namespace("Why is api-gateway not running in dokops-chaos?")
+    assert got == "dokops-chaos"
+
+
+@pytest.mark.asyncio
+async def test_longest_namespace_match_wins():
+    core = _ns_lister("dokops", "dokops-chaos")
+    with patch("app.services.presweep.k8s_service._get_api", return_value=core):
+        got = await resolve_namespace("something broke in dokops-chaos today")
+    assert got == "dokops-chaos"
+
+
+@pytest.mark.asyncio
+async def test_regex_form_does_not_need_the_cluster():
+    """An explicit "namespace X" must resolve without an API call."""
+    with patch("app.services.presweep.k8s_service._get_api", return_value=None):
+        got = await resolve_namespace("what is broken in namespace payments-prod")
+    assert got == "payments-prod"
+
+
+@pytest.mark.asyncio
+async def test_unmatched_query_resolves_to_none():
+    core = _ns_lister("default", "dokops-chaos")
+    with patch("app.services.presweep.k8s_service._get_api", return_value=core):
+        got = await resolve_namespace("is my cluster healthy")
+    assert got is None
 
 
 # ── answer coverage ──────────────────────────────────────────────────────────

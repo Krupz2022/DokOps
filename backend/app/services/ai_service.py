@@ -1887,8 +1887,8 @@ ELASTICSEARCH QUERY RULES:
             # namespace is healthy, so running it whenever a namespace is named costs
             # little and removes a dependency on a coin-flip.
             _presweep = ""
-            from app.services.presweep import build_presweep, extract_namespace
-            if _ns := extract_namespace(query):
+            from app.services.presweep import build_presweep, resolve_namespace
+            if _ns := await resolve_namespace(query):
                 try:
                     _presweep = await build_presweep(_ns)
                 except Exception as e:  # never let a sweep break the turn

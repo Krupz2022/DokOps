@@ -190,15 +190,15 @@ async def postgres_table_sizes(cluster_id: Optional[str] = None,
     try:
         host, port, user, pwd, dbname = await asyncio.to_thread(_get_credential, cid, instance_name)
         sql = """
-            SELECT schemaname, tablename,
-                   pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
-                   pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) AS table_size,
-                   pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)
-                                  - pg_relation_size(schemaname||'.'||tablename)) AS index_size,
+            SELECT schemaname, relname AS tablename,
+                   pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+                   pg_size_pretty(pg_relation_size(relid)) AS table_size,
+                   pg_size_pretty(pg_total_relation_size(relid)
+                                  - pg_relation_size(relid)) AS index_size,
                    n_live_tup AS live_rows,
                    n_dead_tup AS dead_rows
             FROM pg_stat_user_tables
-            ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+            ORDER BY pg_total_relation_size(relid) DESC
             LIMIT 20
         """
         rows = await asyncio.to_thread(_query, host, port, user, pwd, dbname, sql)
@@ -214,7 +214,7 @@ async def postgres_index_usage(cluster_id: Optional[str] = None,
     try:
         host, port, user, pwd, dbname = await asyncio.to_thread(_get_credential, cid, instance_name)
         sql = """
-            SELECT schemaname, tablename, indexname,
+            SELECT schemaname, relname AS tablename, indexrelname AS indexname,
                    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
                    idx_scan, idx_tup_read, idx_tup_fetch
             FROM pg_stat_user_indexes
@@ -234,7 +234,7 @@ async def postgres_bloat_estimate(cluster_id: Optional[str] = None,
     try:
         host, port, user, pwd, dbname = await asyncio.to_thread(_get_credential, cid, instance_name)
         sql = """
-            SELECT schemaname, tablename, n_live_tup, n_dead_tup,
+            SELECT schemaname, relname AS tablename, n_live_tup, n_dead_tup,
                    CASE WHEN n_live_tup > 0
                         THEN round(100.0 * n_dead_tup / (n_live_tup + n_dead_tup), 1)
                         ELSE 0 END AS dead_pct,
@@ -279,7 +279,7 @@ async def postgres_cache_hit_ratio(cluster_id: Optional[str] = None,
     try:
         host, port, user, pwd, dbname = await asyncio.to_thread(_get_credential, cid, instance_name)
         sql = """
-            SELECT schemaname, tablename,
+            SELECT schemaname, relname AS tablename,
                    heap_blks_read, heap_blks_hit,
                    CASE WHEN (heap_blks_read + heap_blks_hit) > 0
                         THEN round(100.0 * heap_blks_hit / (heap_blks_read + heap_blks_hit), 2)

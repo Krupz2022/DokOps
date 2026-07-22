@@ -162,7 +162,7 @@ async def assign_minion(
     if not grp or grp.org_id != org_id:
         raise HTTPException(status_code=400, detail="Group does not belong to this org")
     from app.services.patch_service import assign_minion_to_group
-    assign_minion_to_group(body.minion_id, org_id, body.group_id)
+    await assign_minion_to_group(body.minion_id, org_id, body.group_id)
     return {"assigned": True, "minion_id": body.minion_id, "group_id": body.group_id}
 
 

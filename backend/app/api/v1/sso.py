@@ -120,7 +120,19 @@ async def sso_callback(
         "is_superuser": str(token_data["is_superuser"]).lower(),
     })
     frontend_url = settings.FRONTEND_URL.rstrip("/")
-    return RedirectResponse(url=f"{frontend_url}/auth-callback?{params}", status_code=302)
+    response = RedirectResponse(url=f"{frontend_url}/auth-callback?{params}", status_code=302)
+    # deps.get_current_user prefers the cookie over the Authorization header, so a
+    # stale cookie from an earlier password login would keep the browser signed in
+    # as *that* user (e.g. the setup admin). Overwrite it with the SSO user's token.
+    response.set_cookie(
+        key="access_token",
+        value=token_data["access_token"],
+        httponly=True,
+        secure=False,   # Set to True in production (requires HTTPS)
+        samesite="lax",
+        max_age=60 * 60,  # matches mint_dokops_token()
+    )
+    return response
 
 
 def _provider_label(name: str) -> str:

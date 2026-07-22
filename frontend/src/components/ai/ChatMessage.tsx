@@ -111,6 +111,31 @@ function MessageActions({
   );
 }
 
+/* ── Confidence badge — reflects the backend evidence gate ─── */
+function ConfidenceBadge({ structured }: { structured: NonNullable<ChatMessageData["structured"]> }) {
+  const confidence = structured.confidence;
+  if (!confidence) return null;
+  const cfg: Record<string, { label: string; cls: string }> = {
+    confirmed: { label: "Confirmed by evidence", cls: "text-green-300 bg-green-900/30 border-green-800/50" },
+    insufficient_evidence: { label: "Insufficient evidence", cls: "text-amber-300 bg-amber-900/30 border-amber-800/50" },
+    inconclusive: { label: "Inconclusive", cls: "text-slate-300 bg-slate-800/40 border-slate-700/50" },
+  };
+  const c = cfg[confidence] ?? cfg.inconclusive;
+  const evidenceCount = structured.evidence?.length ?? 0;
+  return (
+    <div className="flex items-center gap-2 mb-2 not-prose">
+      <span className={cn("text-[10px] px-2 py-0.5 rounded-full border font-mono font-medium", c.cls)}>
+        {c.label}
+      </span>
+      {evidenceCount > 0 && (
+        <span className="text-[10px] text-muted-foreground/50 font-mono">
+          {evidenceCount} tool finding{evidenceCount !== 1 ? "s" : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 interface ChatMessageProps {
   message: ChatMessageData;
   isLast?: boolean;
@@ -193,6 +218,7 @@ export function ChatMessage({ message, isLast, onRegenerate }: ChatMessageProps)
           <PendingOpCard raw={message.content} />
         ) : (
           <>
+            {message.structured && <ConfidenceBadge structured={message.structured} />}
             <div className={cn(
               "prose prose-sm dark:prose-invert max-w-none text-foreground",
               "[&_code:not(pre_code)]:bg-primary/10 [&_code:not(pre_code)]:text-primary",

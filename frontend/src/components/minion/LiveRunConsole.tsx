@@ -69,10 +69,13 @@ export default function LiveRunConsole({ runId, onDone }: { runId: string; onDon
           : resultChip(r.result, {});
         return (
           <div key={r.id} className="border border-border rounded-lg overflow-hidden">
+            {/* min-w-0 on the comment: `truncate` sets white-space:nowrap, and a flex
+                item's default min-width:auto then refuses to shrink below the full
+                text — widening the row and the whole page instead of ellipsising. */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-card">
-              <span className="font-mono text-xs text-foreground">{r.id}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded border ${TONE[chip.tone]}`}>{chip.label}</span>
-              {r.comment && <span className="text-xs text-muted-foreground truncate">{r.comment}</span>}
+              <span className="font-mono text-xs text-foreground shrink-0">{r.id}</span>
+              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${TONE[chip.tone]}`}>{chip.label}</span>
+              {r.comment && <span className="text-xs text-muted-foreground truncate min-w-0" title={r.comment}>{r.comment}</span>}
             </div>
             {r.lines.length > 0 && (
               <pre className="bg-background px-3 py-2 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all max-h-64 overflow-auto">{r.lines.join("\n")}</pre>

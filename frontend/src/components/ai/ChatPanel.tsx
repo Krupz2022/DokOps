@@ -105,9 +105,6 @@ export function ChatPanel() {
       i++;
     }
   }
-  const lastItemIsSteps =
-    renderItems.length > 0 && renderItems[renderItems.length - 1].kind === "step_group";
-
   const lastAssistantIdx = renderItems.reduce<number>((acc, item, idx) =>
     item.kind === "message" && item.msg.role === "assistant" && item.msg.message_type === "text" && item.msg.content
       ? idx
@@ -184,7 +181,9 @@ export function ChatPanel() {
               <StepGroup
                 key={`sg-${item.groupIndex}`}
                 steps={item.steps}
-                isActive={isStreaming && lastItemIsSteps && item.groupIndex === groupIndex - 1}
+                // ponytail: see AIChats — the trailing empty placeholder message meant a
+                // step group was never the last render item, so isActive never went true.
+                isActive={isStreaming && item.groupIndex === groupIndex - 1}
               />
             ) : (
               <ChatMessage

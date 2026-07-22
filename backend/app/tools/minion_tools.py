@@ -7,7 +7,7 @@ from sqlmodel import select
 
 from app.core.db import AsyncSessionLocal
 from app.models.minion import Minion
-from app.services.minion_service import is_read_allowed, manager
+from app.services.minion_service import is_read_allowed, is_investigate_allowed, manager
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,24 @@ async def minion_exec_read(minion_id: str, cmd: str, timeout: int = 60) -> Dict[
             "error": f"Command not allowed in read mode: {cmd!r}. Use minion_exec_write for write operations.",
         }
     return await _run_job(minion_id, cmd, actor="ai", timeout=timeout)
+
+
+async def minion_investigate(minion_id: str, cmd: str, timeout: int = 60) -> Dict[str, Any]:
+    """Read-only investigation on a minion: open files and run dry-run checkers to find
+    the root cause of a failure. Broader than minion_exec_read (any path) but still
+    non-mutating. Rejects anything that could write or chain a second command."""
+    if not (is_investigate_allowed(cmd) or is_read_allowed(cmd)):
+        return {
+            "success": False,
+            "data": None,
+            "error": (
+                f"Command not allowed for investigation: {cmd!r}. "
+                "Only read-only commands (cat, sed -n, head, tail, grep, stat, ls, find, "
+                "diff, yamllint, ansible-lint, ansible-playbook --syntax-check) with no "
+                "pipes, redirection, or chaining are permitted."
+            ),
+        }
+    return await _run_job(minion_id, cmd, actor="ai_troubleshoot", timeout=timeout)
 
 
 async def minion_exec_write(

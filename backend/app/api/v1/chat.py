@@ -298,6 +298,22 @@ async def _stream_and_save(
 
     collected: List[Dict] = []
 
+    # Runbook auto-match is a full LLM round-trip, and match_runbook_logic is sync.
+    # Run it here rather than in the endpoint: yielding an event first flushes the
+    # SSE headers so the UI starts moving immediately, and to_thread keeps the
+    # blocking client call off the event loop (it froze every other request).
+    if not runbook_id:
+        first = {"type": "step", "message": "Checking runbooks..."}
+        collected.append(first)
+        yield f"data: {json.dumps(first)}\n\n"
+        try:
+            from app.services.runbook_service import match_runbook_logic
+            match = await asyncio.to_thread(match_runbook_logic, query)
+            if match.get("confidence") in ("high", "medium") and match.get("matched_runbook_id"):
+                runbook_id = match["matched_runbook_id"]
+        except Exception:
+            pass  # Never block the chat stream due to runbook matching errors
+
     inner = ai_service.run_global_agentic_loop(
         query, context=cluster_context, runbook_id=runbook_id, history=history
     )
@@ -403,15 +419,10 @@ async def send_message(
     db.add(user_msg)
     await db.commit()
 
-    # Auto-match a runbook if none was explicitly provided
-    if not runbook_id:
-        try:
-            from app.services.runbook_service import match_runbook_logic
-            match = match_runbook_logic(content)
-            if match.get("confidence") in ("high", "medium") and match.get("matched_runbook_id"):
-                runbook_id = match["matched_runbook_id"]
-        except Exception:
-            pass  # Never block the chat stream due to runbook matching errors
+    # Runbook auto-matching used to run here. It is a full LLM round-trip, so it
+    # delayed the SSE response headers by seconds — the client saw nothing until
+    # the whole run finished. It now happens inside _stream_and_save, after the
+    # first event has flushed. See the note there.
 
     # Build history (summary + recent messages) — done before streaming starts
     history = []

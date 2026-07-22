@@ -88,12 +88,14 @@ class CachingAIClient:
         disable_trimming: bool = False,
         trim_keep: int = 10,
         trim_token_cap: int = 16000,
+        temperature: Optional[float] = None,
     ) -> tuple:
         """
         Send messages to the configured provider.
 
         tier="fast" uses the cheaper fast model when tiering is enabled.
         Falls back to the full model silently if the fast model call fails.
+        temperature=0 gives deterministic output (diagnosis should not vary run-to-run).
         """
         msgs = messages if disable_trimming else trim_messages(messages, trim_keep, trim_token_cap)
 
@@ -106,29 +108,39 @@ class CachingAIClient:
         client = self._fast_client if use_fast else self._client
 
         try:
-            return await self._dispatch(msgs, tools, client, model)
+            return await self._dispatch(msgs, tools, client, model, temperature)
         except Exception as exc:
             if use_fast:
                 _log.warning(
                     "Fast model %s failed (%s) — falling back to %s", model, exc, self._model
                 )
-                return await self._dispatch(msgs, tools, self._client, self._model)
+                return await self._dispatch(msgs, tools, self._client, self._model, temperature)
             raise
 
-    async def _dispatch(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
+    async def _dispatch(self, messages: list[dict[str, Any]], tools: list, client, model: str,
+                        temperature: Optional[float] = None) -> tuple:
         if self._provider == "GEMINI":
-            return await self._complete_gemini(messages, tools, client, model)
-        return await self._complete_openai(messages, tools, client, model)
+            return await self._complete_gemini(messages, tools, client, model, temperature)
+        return await self._complete_openai(messages, tools, client, model, temperature)
 
-    async def _complete_openai(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        # Reasoning models (o1, o3, o4, gpt-5.x) reject non-default temperature and tool_choice.
+        return any(m in model.lower() for m in ("o1", "o3", "o4", "gpt-5"))
+
+    async def _complete_openai(self, messages: list[dict[str, Any]], tools: list, client, model: str,
+                               temperature: Optional[float] = None) -> tuple:
         _TIMEOUT = 300  # seconds — prevents infinite hangs on slow/reasoning models
+        _reasoning = self._is_reasoning_model(model)
         try:
             kwargs: dict = {"model": model, "messages": messages}
+            if temperature is not None and not _reasoning:
+                kwargs["temperature"] = temperature
             if tools:
                 kwargs["tools"] = tools
                 # Some reasoning models (o1, o3, gpt-5.x) don't support tool_choice; omit it and
                 # let the model decide — "auto" is the default behaviour anyway.
-                if not any(m in model.lower() for m in ("o1", "o3", "o4", "gpt-5")):
+                if not _reasoning:
                     kwargs["tool_choice"] = "auto"
             _log.info("[OPENAI] POST chat/completions model=%s messages=%d tools=%d tool_choice=%s",
                       model, len(messages), len(tools), kwargs.get("tool_choice", "omitted"))
@@ -174,8 +186,11 @@ class CachingAIClient:
             err = str(exc).lower()
             if tools and any(k in err for k in ("tool", "function", "tool_choice", "context", "token", "length")):
                 _log.info("[OPENAI] retrying without tools model=%s", model)
+                _retry_kwargs: dict = {"model": model, "messages": messages}
+                if temperature is not None and not _reasoning:
+                    _retry_kwargs["temperature"] = temperature
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(client.chat.completions.create, model=model, messages=messages),
+                    asyncio.to_thread(client.chat.completions.create, **_retry_kwargs),
                     timeout=_TIMEOUT,
                 )
                 # Fire-and-forget token capture
@@ -202,7 +217,8 @@ class CachingAIClient:
                 return self._strip_tool_echo(response.choices[0].message.content or ""), None
             raise
 
-    async def _complete_gemini(self, messages: list[dict[str, Any]], tools: list, client, model: str) -> tuple:
+    async def _complete_gemini(self, messages: list[dict[str, Any]], tools: list, client, model: str,
+                               temperature: Optional[float] = None) -> tuple:
         from app.services import gemini_compat
         from app.tools.registry import build_gemini_tools_schema
 
@@ -214,7 +230,7 @@ class CachingAIClient:
         )
         try:
             response = await asyncio.to_thread(
-                gemini_compat.generate, client, model, text_prompt, gemini_tools
+                gemini_compat.generate, client, model, text_prompt, gemini_tools, temperature
             )
             normalized = gemini_compat.extract_function_calls(response)
             if normalized:
@@ -222,7 +238,9 @@ class CachingAIClient:
             return response.text, None
         except Exception as _gemini_exc:
             _log.warning("Gemini tool-calling failed (%s) — falling back to text-only", _gemini_exc)
-            response = await asyncio.to_thread(gemini_compat.generate, client, model, text_prompt)
+            response = await asyncio.to_thread(
+                gemini_compat.generate, client, model, text_prompt, None, temperature
+            )
             return response.text, None
 
     @staticmethod

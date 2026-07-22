@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { ChevronUp, ChevronDown } from "lucide-react";
+import { ChevronUp, ChevronDown, Sparkles } from "lucide-react";
 import api from "../../lib/api";
 import { useAppContext } from "../../context/AppContext";
 import { useToast } from "../../context/ToastContext";
 import { useConfirm } from "../../context/ConfirmContext";
 import BlueprintResultTable from "./BlueprintResultTable";
+import BlueprintTroubleshootPanel from "./BlueprintTroubleshootPanel";
 import LiveRunConsole from "./LiveRunConsole";
 import { dryRunWarning } from "../../lib/blueprintView";
 import type { CompiledBlueprint, ResourceResult, BlueprintRun, RunResponse } from "../../types/blueprint";
@@ -20,6 +21,7 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
   const [running, setRunning] = useState(false);
   const [hasDryRun, setHasDryRun] = useState(false);
   const [liveRunId, setLiveRunId] = useState<string | null>(null);
+  const [troubleshootRunId, setTroubleshootRunId] = useState<string | null>(null);
   // Run-order + selection: `order` holds resource ids in run order, `checked` which run.
   const [order, setOrder] = useState<string[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -197,6 +199,11 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
         </div>
       )}
 
+      {/* AI troubleshooter */}
+      {troubleshootRunId && (
+        <BlueprintTroubleshootPanel runId={troubleshootRunId} onClose={() => setTroubleshootRunId(null)} />
+      )}
+
       {/* Run history */}
       <div className="bg-card border border-border rounded-xl p-4">
         <h2 className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Run History</h2>
@@ -205,16 +212,24 @@ export default function BlueprintTab({ minionId }: { minionId: string }) {
         ) : (
           <div className="space-y-1">
             {runs.map((run) => (
-              <button
-                key={run.id}
-                onClick={() => fetchRunResults(run.id)}
-                className="w-full flex items-center gap-3 text-sm py-1 hover:bg-muted/40 rounded px-1 text-left"
-              >
-                <span className={`text-xs px-1.5 py-0.5 rounded ${run.status === "done" ? "bg-green-500/20 text-green-400" : run.status === "failed" ? "bg-red-500/20 text-red-400" : "bg-muted text-muted-foreground"}`}>{run.status}</span>
-                <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{run.test ? "dry-run" : "apply"}</span>
-                <span className="text-muted-foreground text-xs flex-1">{new Date(run.created_at).toLocaleString()}</span>
-                <span className="text-muted-foreground text-xs">{run.actor}</span>
-              </button>
+              <div key={run.id} className="flex items-center gap-3 text-sm py-1 hover:bg-muted/40 rounded px-1">
+                <button onClick={() => fetchRunResults(run.id)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${run.status === "done" ? "bg-green-500/20 text-green-400" : run.status === "failed" ? "bg-red-500/20 text-red-400" : "bg-muted text-muted-foreground"}`}>{run.status}</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{run.test ? "dry-run" : "apply"}</span>
+                  <span className="text-muted-foreground text-xs flex-1 truncate">{new Date(run.created_at).toLocaleString()}</span>
+                  <span className="text-muted-foreground text-xs">{run.actor}</span>
+                </button>
+                {run.status === "failed" && (
+                  <button
+                    onClick={() => setTroubleshootRunId(run.id)}
+                    disabled={!godModeActive}
+                    title={godModeActive ? "Investigate this failure with AI" : "Enable God Mode to troubleshoot"}
+                    className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40 shrink-0"
+                  >
+                    <Sparkles className="w-3 h-3" /> Troubleshoot
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}

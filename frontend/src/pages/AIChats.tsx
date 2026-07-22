@@ -225,9 +225,6 @@ export default function AIChats() {
     return { items, gi };
   }, [messages]);
 
-  const lastIsSteps = renderItems.items.length > 0 &&
-    renderItems.items[renderItems.items.length - 1].kind === "step_group";
-
   const lastAssistantIdx = renderItems.items.reduce<number>((acc, item, idx) =>
     item.kind === "message" &&
     item.msg.role === "assistant" &&
@@ -484,7 +481,10 @@ export default function AIChats() {
                   <StepGroup
                     key={`sg-${item.groupIndex}`}
                     steps={item.steps}
-                    isActive={isStreaming && lastIsSteps && item.groupIndex === renderItems.gi - 1}
+                    // ponytail: no "is it the last render item" check — ChatContext keeps an
+                    // empty placeholder message after the steps, so it never was, and the
+                    // group never went live. While streaming, the newest group is the live one.
+                    isActive={isStreaming && item.groupIndex === renderItems.gi - 1}
                   />
                 ) : (
                   <ChatMessage

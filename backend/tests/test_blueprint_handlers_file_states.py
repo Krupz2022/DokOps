@@ -1,5 +1,6 @@
 # New Uyuni-style file states: directory / absent / symlink / append / recurse,
 # plus failhard abort and cmd cwd.
+import asyncio
 import os
 import sys
 
@@ -133,11 +134,12 @@ def test_collect_sources_prefix_match():
     class Src:
         def __init__(self, name):
             self.name, self.encoding, self.content = name, "utf-8", "x"
+            self.origin = "inline"
 
     pool = {n: Src(n) for n in ("prereq/a.sh", "prereq/bin/b", "other/c", "single.conf")}
     states = [
         {"type": "file.recurse", "source": "prereq", "path": "/opt/prereq"},
         {"type": "file.managed", "source": "single.conf", "path": "/etc/x"},
     ]
-    out = collect_referenced_sources(states, pool)
+    out = asyncio.run(collect_referenced_sources(states, pool))
     assert set(out) == {"prereq/a.sh", "prereq/bin/b", "single.conf"}

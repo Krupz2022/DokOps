@@ -1,3 +1,5 @@
+import asyncio
+
 from app.services.blueprint_service import merge_blueprints, collect_referenced_sources
 
 
@@ -33,7 +35,7 @@ def test_collect_only_referenced_sources():
     states = [{"id": "c", "type": "file", "source": "nginx.conf"}]
     pool = {"nginx.conf": BlueprintSource(blueprint_id="b", name="nginx.conf", content="data"),
             "unused.conf": BlueprintSource(blueprint_id="b", name="unused.conf", content="x")}
-    got = collect_referenced_sources(states, pool)
+    got = asyncio.run(collect_referenced_sources(states, pool))
     assert got == {"nginx.conf": {"encoding": "utf-8", "content": "data"}}
 
 

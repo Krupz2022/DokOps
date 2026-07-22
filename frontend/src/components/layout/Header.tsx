@@ -18,7 +18,7 @@ export function Header({
   sidebarCollapsed, setSidebarCollapsed,
 }: HeaderProps) {
   const isGod = godModeActive;
-  const { isStreaming, setPanelOpen } = useChatContext();
+  const { anyStreaming, setPanelOpen } = useChatContext();
 
   return (
     <div className="flex items-center gap-2.5 w-full">
@@ -56,7 +56,7 @@ export function Header({
       <ClusterContextSelector />
 
       {/* AI streaming indicator — visible from any page */}
-      {isStreaming && (
+      {anyStreaming && (
         <button
           onClick={() => {
             if (window.location.pathname === "/ai-chats") return;

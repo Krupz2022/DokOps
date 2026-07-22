@@ -228,11 +228,23 @@ async def list_sources(blueprint_id: str, db: AsyncSession = Depends(get_async_d
     )).all()
     result = []
     for src in rows:
-        if src.encoding == "base64":
+        if src.origin == "disk":
+            # Size comes off the row; decoding a multi-GB artifact to measure it
+            # would make opening this tab as expensive as a full reseed.
+            result.append({
+                "id": src.id,
+                "name": src.name,
+                "origin": "disk",
+                "encoding": "binary",
+                "size": src.size,
+                "content": "",
+            })
+        elif src.encoding == "base64":
             raw = base64.b64decode(src.content or "")
             result.append({
                 "id": src.id,
                 "name": src.name,
+                "origin": "inline",
                 "encoding": src.encoding,
                 "size": len(raw),
                 "content": "",
@@ -242,6 +254,7 @@ async def list_sources(blueprint_id: str, db: AsyncSession = Depends(get_async_d
             result.append({
                 "id": src.id,
                 "name": src.name,
+                "origin": "inline",
                 "encoding": src.encoding,
                 "size": len(text.encode("utf-8")),
                 "content": text,

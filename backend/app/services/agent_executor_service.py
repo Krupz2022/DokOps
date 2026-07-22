@@ -57,6 +57,9 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+_BASELINE_TOOLS = ["search_pods"]
+
+
 async def _ask_ai_for_tools(goal: str) -> List[Dict[str, Any]]:
     """Ask the AI which tools from the live catalog are needed for this goal."""
     from app.services.ai_service import ai_service
@@ -85,6 +88,10 @@ async def _ask_ai_for_tools(goal: str) -> List[Dict[str, Any]]:
     except Exception:
         import re
         names = re.findall(r'"([a-z][a-z0-9_]{2,40})"', raw)
+
+    # ponytail: the picker LLM routinely forgets an enumerator, leaving the agent
+    # with only name-keyed tools and no way to discover names. Always include it.
+    names = list(names) + [n for n in _BASELINE_TOOLS if n not in names]
 
     result = []
     for name in names:

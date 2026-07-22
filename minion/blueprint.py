@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,93 @@ _rid_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_rid", default=No
 _fetch_var: "contextvars.ContextVar" = contextvars.ContextVar("bp_fetch", default=None)
 
 
+# CSI sequences (colour, cursor moves), OSC (title sets), and lone two-char escapes.
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"          # CSI  e.g. \x1b[32m
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC  e.g. \x1b]0;title\x07
+    r"|\x1b[@-Z\\-_]"                      # Fe   e.g. \x1bM
+)
+
+
+def _clean_line(line: str) -> str:
+    """Render one PTY line the way a terminal would display it.
+
+    Progress bars redraw by carriage-returning over themselves, so only the text
+    after the last CR is what a user would actually see. Colour codes are stripped
+    because the log view shows plain text — left in, they'd read as literal junk.
+    """
+    line = line.rstrip("\r")
+    if "\r" in line:
+        line = line.rsplit("\r", 1)[-1]
+    return _ANSI_RE.sub("", line)
+
+
+def _run_pty(cmd, shell: bool, cwd: str | None, emit, rid) -> tuple[int, str]:
+    """Run with a pseudo-terminal so the child line-buffers as it would in a shell.
+
+    PYTHONUNBUFFERED only helps Python children. Anything using C stdio — unzip,
+    tar, curl — block-buffers the moment stdout is a pipe, so output arrives in 4KB
+    lumps. A PTY makes isatty() true and stdio reverts to line buffering.
+    """
+    import pty
+
+    master, slave = pty.openpty()
+    try:
+        p = subprocess.Popen(
+            cmd, shell=shell, cwd=cwd, env=_stream_env(),
+            stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+        )
+    except Exception as e:  # noqa: BLE001 — surface failure as nonzero rc
+        os.close(master)
+        os.close(slave)
+        emit({"kind": "log", "id": rid, "line": str(e)})
+        return 1, str(e)
+
+    # The parent must drop its copy of the slave, or the master never sees EOF.
+    os.close(slave)
+
+    lines: list[str] = []
+    buf = ""
+
+    def _push(raw: str) -> None:
+        line = _clean_line(raw)
+        lines.append(line)
+        emit({"kind": "log", "id": rid, "line": line})
+
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break  # Linux raises EIO on the master once the child is gone
+            if not chunk:
+                break
+            buf += chunk.decode("utf-8", "replace")
+            *ready, buf = buf.split("\n")
+            for raw in ready:
+                _push(raw)
+    finally:
+        os.close(master)
+
+    if buf.strip():
+        _push(buf)
+
+    p.wait()
+    return (p.returncode or 0), "\n".join(lines)
+
+
+def _stream_env() -> dict:
+    """Env for streamed commands: make Python children flush per line, not per 4KB block.
+
+    bufsize=1 only affects how the parent *reads*. A child writing to a pipe (not a
+    TTY) switches to block buffering, so ansible-playbook and friends emit output in
+    lumps instead of the smooth flow you get in a terminal. PYTHONUNBUFFERED fixes
+    that for Python children, which covers ansible. A non-Python child that
+    block-buffers would need a PTY — not worth it until something needs it.
+    """
+    return {**os.environ, "PYTHONUNBUFFERED": "1"}
+
+
 def _run(cmd, shell: bool = False, cwd: str | None = None) -> tuple[int, str]:
     emit = _emit_var.get()
     if emit is None:
@@ -27,11 +115,16 @@ def _run(cmd, shell: bool = False, cwd: str | None = None) -> tuple[int, str]:
             return 1, str(e)
     # streaming path: read line-by-line and emit log events as they arrive
     rid = _rid_var.get()
+    if not IS_WINDOWS:
+        # PTY: the only way to get unbuffered output from arbitrary programs.
+        return _run_pty(cmd, shell, cwd, emit, rid)
+    # Windows has no pty module; ConPTY is a much bigger lift. Python children still
+    # stream thanks to PYTHONUNBUFFERED; other programs may arrive in lumps.
     lines: list[str] = []
     try:
         p = subprocess.Popen(
             cmd, shell=shell, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, env=_stream_env(),
         )
     except Exception as e:  # noqa: BLE001
         emit({"kind": "log", "id": rid, "line": str(e)})

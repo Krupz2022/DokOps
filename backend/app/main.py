@@ -89,7 +89,20 @@ async def _run_patch_migrations() -> None:
         _col("minion", "bootstrapped", "INTEGER NOT NULL DEFAULT 0"),
         _col("resourceresult", "output", "TEXT NOT NULL DEFAULT ''"),
         _col("blueprintsource", "encoding", "TEXT NOT NULL DEFAULT 'utf-8'"),
+        _col("blueprintsource", "origin", "TEXT NOT NULL DEFAULT 'inline'"),
+        _col("blueprintsource", "rel_path", "TEXT NOT NULL DEFAULT ''"),
+        _col("blueprintsource", "size", "BIGINT NOT NULL DEFAULT 0"),
+        _col("blueprintsource", "mtime_ns", "BIGINT NOT NULL DEFAULT 0"),
+        _col("blueprintsource", "sha256", "TEXT"),
+        _col("ai_token_usage", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ]
+    if is_postgres:
+        # Widen if an earlier build created these as int4: mtime_ns (~1.8e18) and
+        # artifacts over 2GB both overflow int32. No-op when already bigint.
+        migrations += [
+            "ALTER TABLE blueprintsource ALTER COLUMN size TYPE BIGINT",
+            "ALTER TABLE blueprintsource ALTER COLUMN mtime_ns TYPE BIGINT",
+        ]
     async with async_engine.connect() as conn:
         for sql in migrations:
             try:
@@ -152,10 +165,14 @@ async def lifespan(app: FastAPI):
     from pathlib import Path as _Path_seed
     _blueprints_dir = str(_Path_seed(__file__).resolve().parent / "blueprints")
     if _os_seed.path.isdir(_blueprints_dir):
-        from app.core.blueprint_seed import seed_blueprints_from_dir
+        from app.core.blueprint_seed import seed_blueprints_from_dir, backfill_disk_sources
         from app.core.db import AsyncSessionLocal as _AsyncSessionLocal_seed
         try:
             async with _AsyncSessionLocal_seed() as _db_seed:
+                # Legacy rows still holding base64 artifact bytes → disk references.
+                _c = await backfill_disk_sources(_blueprints_dir, _db_seed)
+                if _c:
+                    logging.getLogger(__name__).info("Backfilled %d source(s) to disk-backed", _c)
                 _n, _ = await seed_blueprints_from_dir(_blueprints_dir, _db_seed)
                 logging.getLogger(__name__).info("Seeded %d blueprint(s) from %s", _n, _blueprints_dir)
         except Exception as _e:  # noqa: BLE001 — seeding must never block startup
@@ -367,6 +384,19 @@ async def serve_source(
     src = await db.get(BlueprintSource, source_id)
     if not src:
         raise _HTTPException(status_code=404, detail="Source not found")
+
+    if src.origin == "disk":
+        # rel_path comes from the DB and reaches the filesystem — confine it.
+        from app.core.blueprint_files import resolve_source_path
+        try:
+            path = resolve_source_path(src.rel_path)
+        except ValueError:
+            raise _HTTPException(status_code=403, detail="Invalid source path")
+        if not path.is_file():
+            raise _HTTPException(status_code=404, detail="Source file missing on disk")
+        # FileResponse streams: constant memory no matter how large the artifact.
+        return FileResponse(path, media_type="application/octet-stream")
+
     if src.encoding == "base64":
         content = _b64.b64decode(src.content or "")
     else:

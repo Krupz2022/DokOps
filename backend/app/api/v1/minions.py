@@ -591,6 +591,16 @@ async def get_blueprint_run(
     return {"run": run, "results": results}
 
 
+# nginx buffers proxied responses by default, which holds SSE events in its buffer until
+# the run ends — the log then arrives all at once instead of live. X-Accel-Buffering: no
+# disables that per-response, so it works without depending on the proxy's config.
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
 @router.get("/blueprint/runs/{run_id}/stream")
 async def stream_blueprint_run(run_id: str, token: Optional[str] = Query(None)):
     # EventSource can't set headers — authenticate via the token query param.
@@ -607,7 +617,66 @@ async def stream_blueprint_run(run_id: str, token: Optional[str] = Query(None)):
         async for event in run_hub.subscribe(run_id):
             yield f"data: {_json.dumps(event)}\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.get("/blueprint/runs/{run_id}/troubleshoot")
+async def troubleshoot_blueprint_run(run_id: str, token: Optional[str] = Query(None)):
+    """SSE: run the AI troubleshooter over a FAILED blueprint run. God-Mode-gated.
+
+    Seeds the agentic loop with the run's failed resources (their comments + captured
+    output) and pins the minion, so the agent can open the offending file/line via the
+    read-only minion_investigate tool and report a root cause + fix."""
+    # EventSource can't set headers — authenticate via the token query param (mirrors
+    # stream_blueprint_run), then resolve the user to enforce the God Mode gate.
+    if not token:
+        raise HTTPException(status_code=401, detail="token required")
+    try:
+        payload = jwt.decode(token, settings.AUTH_SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    async with AsyncSessionLocal() as db:
+        user = (await db.exec(select(User).where(User.username == payload.get("sub")))).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="unknown user")
+        if not _deps.is_god_mode_active(user.id):
+            raise HTTPException(status_code=403, detail="God Mode required to run the AI troubleshooter")
+
+        run = await db.get(BlueprintRun, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        results = (await db.exec(select(ResourceResult).where(ResourceResult.run_id == run_id))).all()
+        minion = await db.get(Minion, run.minion_id)
+
+    failed = [r for r in results if r.result is False]
+    if not failed:
+        raise HTTPException(status_code=400, detail="Run has no failed resources to troubleshoot")
+
+    host = (minion.hostname if minion else None) or run.minion_id
+    evidence = "\n\n".join(
+        f"[resource {r.resource_id}] {r.comment}\n{(r.output or '').strip() or '(no output captured)'}"
+        for r in failed
+    )
+    query = (
+        f"A DokOps blueprint run on minion '{host}' (minion_id: {run.minion_id}) failed. "
+        f"Find the root cause of the failed resource(s) below and give a concrete fix. "
+        f"Use minion_investigate against minion_id '{run.minion_id}' to open the exact file "
+        f"and line any error points to, and to run dry-run syntax checks. "
+        f"Failed resource ids: {', '.join(r.resource_id for r in failed)}."
+    )
+
+    import json as _json
+    from app.services.ai_service import ai_service  # lazy — avoids import cost when AI unused
+
+    async def gen():
+        try:
+            async for event in ai_service.run_global_agentic_loop(query, evidence_context=evidence):
+                yield f"data: {_json.dumps(event)}\n\n"
+        except Exception as e:  # noqa: BLE001 — surface loop failure to the client stream
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.get("/{minion_id}/blueprint")
@@ -616,7 +685,12 @@ async def preview_blueprint(
     db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_user),
 ):
-    states, sources = await compile_blueprint(minion_id, db)
+    try:
+        states, sources = await compile_blueprint(minion_id, db)
+    except ValueError as e:
+        # Bad blueprint content (invalid YAML, undefined ${var}, missing id) is a
+        # user-fixable authoring error — report it, don't dump a 500.
+        raise HTTPException(status_code=400, detail=str(e))
     return {"resources": states, "sources": sources}
 
 
@@ -636,7 +710,10 @@ async def run_blueprint_endpoint(
     if not manager.is_connected(minion_id):
         raise HTTPException(status_code=503, detail="Minion is not connected")
 
-    states, sources = await compile_blueprint(minion_id, db)
+    try:
+        states, sources = await compile_blueprint(minion_id, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Optional: run an ordered subset of resources (UI selection + reorder).
     # Omitted/empty → run the full compiled set in compiled order (unchanged behaviour).

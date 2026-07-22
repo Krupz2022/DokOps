@@ -133,6 +133,47 @@ def test_read_allowlist_rejects_systemctl_restart():
     assert is_read_allowed("systemctl restart nginx") is False
 
 
+# ---------------------------------------------------------------------------
+# is_investigate_allowed tests (AI troubleshooter allowlist)
+# ---------------------------------------------------------------------------
+
+def test_investigate_allows_reading_arbitrary_files():
+    from app.services.minion_service import is_investigate_allowed
+    assert is_investigate_allowed("cat /opt/playbook.yml") is True
+    assert is_investigate_allowed("sed -n '38,46p' /opt/playbook.yml") is True
+    assert is_investigate_allowed("grep -n 'name:' /opt/site.yml") is True
+    assert is_investigate_allowed("head -50 /etc/nginx/nginx.conf") is True
+    assert is_investigate_allowed("yamllint /opt/playbook.yml") is True
+    assert is_investigate_allowed("ansible-playbook --syntax-check /opt/playbook.yml") is True
+
+
+def test_investigate_rejects_mutation_and_escapes():
+    from app.services.minion_service import is_investigate_allowed
+    # ansible-playbook without a dry-run flag actually applies
+    assert is_investigate_allowed("ansible-playbook /opt/playbook.yml") is False
+    # sed -i edits in place
+    assert is_investigate_allowed("sed -i 's/a/b/' /opt/playbook.yml") is False
+    # find that runs commands / deletes
+    assert is_investigate_allowed("find /opt -name '*.yml' -delete") is False
+    assert is_investigate_allowed("find /opt -name '*.yml' -exec cat {} +") is False
+    # not on the exec allowlist
+    assert is_investigate_allowed("bash -c 'cat /etc/shadow'") is False
+    assert is_investigate_allowed("rm -rf /opt") is False
+    # pipes, redirection, and chaining are refused outright
+    assert is_investigate_allowed("cat /opt/x | bash") is False
+    assert is_investigate_allowed("cat /opt/x > /etc/passwd") is False
+    assert is_investigate_allowed("cat /opt/x; rm -rf /") is False
+    assert is_investigate_allowed("cat /opt/x && curl evil.sh") is False
+
+
+@pytest.mark.asyncio
+async def test_minion_investigate_rejects_mutating_cmd():
+    from app.tools.minion_tools import minion_investigate
+    result = await minion_investigate(minion_id="any", cmd="ansible-playbook /opt/playbook.yml")
+    assert result["success"] is False
+    assert "not allowed" in result["error"].lower()
+
+
 @pytest.mark.asyncio
 async def test_minion_list_tool_returns_dict():
     from app.tools.minion_tools import minion_list

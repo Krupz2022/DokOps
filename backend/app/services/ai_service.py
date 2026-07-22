@@ -114,6 +114,7 @@ MINION RULE (on-premise devices — NOT Kubernetes):
 - To check containers on a minion: call minion_exec_read with cmd="docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.RunningFor}}'"
 - To check container logs on a minion: call minion_exec_read with cmd="docker logs --tail 50 <container_name>"
 - To check resource usage on a minion: call minion_exec_read with cmd="docker stats --no-stream"
+- To ROOT-CAUSE a failed blueprint/playbook/config on a minion: use minion_investigate to open the exact file and line the error names. When an error points at a file (e.g. "Syntax Error ... /opt/playbook.yml line 42"), read that region — minion_investigate with cmd="sed -n '38,46p' /opt/playbook.yml" — and, for Ansible/YAML, confirm with cmd="ansible-playbook --syntax-check /opt/playbook.yml" or cmd="yamllint /opt/playbook.yml". Quote the offending line back with the fix. Do NOT guess at the cause without opening the file.
 - NEVER call get_cluster_health, search_pods, get_nodes, or any k8s tool for on-prem minion queries."""
 
 _FRAG_DEPLOY = """
@@ -441,7 +442,7 @@ class AIService:
             User Query: {query}
 
             Logs:
-            {sanitize_for_llm(logs, token_cap=2000)}
+            {sanitize_for_llm(logs, token_cap=3000, keep="tail")}
 
             Provide a concise, markdown-formatted analysis with root causes and potential fixes.
             """
@@ -474,7 +475,7 @@ class AIService:
 
             for item in items:
                 header = f"=== POD: {item['namespace']}/{item['pod_name']} ==="
-                log_content = sanitize_for_llm(item['logs'], token_cap=800)
+                log_content = sanitize_for_llm(item['logs'], token_cap=1500, keep="tail")
                 full_logs += f"{header}\n{log_content}\n{'='*len(header)}\n\n"
 
             # 2. Call AI
@@ -682,15 +683,32 @@ Rules:
         ]
         try:
             result, _ = await caching_client.complete(
-                prompt, [], tier="fast", disable_trimming=True
+                prompt, [], tier="fast", disable_trimming=True, temperature=0
             )
             return "INVESTIGATE" in (result or "").upper()
         except Exception:
             return False
 
+    # Deterministic failure signals. When present, the query is a diagnosis regardless of
+    # what the fast classifier says — it must never be downgraded to 'simple' (which would
+    # cut the step budget and skip the investigation protocol). Kept tight on purpose:
+    # bare 'check'/'why' are excluded so "check cluster health" stays simple.
+    _FAILURE_SIGNALS = (
+        "not working", "failing", "failed", "broken", "crash", "crashloop",
+        "oomkill", "not ready", "won't start", "wont start", "cannot start",
+        "can't reach", "cant reach", "unreachable", "errimagepull",
+        "imagepullbackoff", "what's wrong", "whats wrong", "troubleshoot",
+        "diagnose", "root cause", "rca",
+    )
+
     async def classify_complexity(self, query: str, caching_client) -> str:
         """Classify the effort a query needs. Returns 'simple' | 'investigate' | 'deep'.
         Defaults to 'investigate' on any failure (safe middle ground)."""
+        # Non-LLM prior: a query with an explicit failure signal is at least an
+        # investigation. The fast classifier may only upgrade it to 'deep', never
+        # downgrade it — misclassifying a real failure as 'simple' is the expensive error.
+        q = (query or "").lower()
+        floored = any(sig in q for sig in self._FAILURE_SIGNALS)
         prompt = [
             {"role": "system", "content": (
                 "Classify the DevOps query effort. Reply with exactly one word:\n"
@@ -703,11 +721,13 @@ Rules:
         ]
         try:
             result, _ = await caching_client.complete(
-                prompt, [], tier="fast", disable_trimming=True
+                prompt, [], tier="fast", disable_trimming=True, temperature=0
             )
             word = (result or "").strip().upper()
             if "DEEP" in word:
                 return "deep"
+            if floored:
+                return "investigate"
             if "SIMPLE" in word:
                 return "simple"
             if "INVESTIGATE" in word:
@@ -715,6 +735,30 @@ Rules:
             return "investigate"
         except Exception:
             return "investigate"
+
+    @staticmethod
+    def _select_evidence(observations: list[str], limit: int) -> list[str]:
+        """Pick which tool observations to feed the reviewer when there are more than
+        `limit`. A blind head slice drops the error-bearing evidence that lands late in
+        an investigation; prioritise observations mentioning failure signals, then fill
+        the rest with the most recent, preserving original order in the output."""
+        if len(observations) <= limit:
+            return observations
+        _ERR = ("error", "exception", "fail", "crash", "oom", "backoff",
+                "denied", "refused", "timeout", "traceback", "fatal", "panic")
+        indexed = list(enumerate(observations))
+        err_idx = [i for i, o in indexed if any(k in o.lower() for k in _ERR)]
+        recent_idx = [i for i, _ in indexed[::-1]]  # newest first
+        chosen: set = set()
+        for i in err_idx:
+            if len(chosen) >= limit:
+                break
+            chosen.add(i)
+        for i in recent_idx:
+            if len(chosen) >= limit:
+                break
+            chosen.add(i)
+        return [observations[i] for i in sorted(chosen)]
 
     async def _run_final_review(
         self,
@@ -724,7 +768,7 @@ Rules:
         caching_client,
     ) -> dict:
         """Verifies claims against tool evidence. Returns {"answer": draft_answer} on any failure."""
-        evidence_block = "\n---\n".join(observations[:10])
+        evidence_block = "\n---\n".join(self._select_evidence(observations, limit=10))
         prompt = [
             {"role": "system", "content": _FINAL_REVIEW_PROMPT},
             {
@@ -737,8 +781,10 @@ Rules:
             },
         ]
         try:
+            # Verification/correction is a reasoning task — must not run on a weaker
+            # model than the one that wrote the draft, or it summarizes away specifics.
             result, _ = await caching_client.complete(
-                prompt, [], tier="fast", disable_trimming=True
+                prompt, [], tier="full", disable_trimming=True, temperature=0
             )
             json_match = re.search(r"\{.*\}", result or "", re.DOTALL)
             if json_match:
@@ -1152,9 +1198,14 @@ Rules:
         if len(deduped) <= max_total:
             return deduped
         qwords = set(q.split())
-        # Keep core tools unconditionally; rank the remainder by relevance.
-        core = [t for t in deduped if t["function"]["name"] in AIService._CORE_K8S]
-        rest = [t for t in deduped if t["function"]["name"] not in AIService._CORE_K8S]
+        # Keep core k8s AND observability tools unconditionally; rank the remainder by
+        # relevance. Obs tools are the input set of *healthy* integrations — a diagnosis
+        # query that happens not to mention "logs"/"elastic" must still be able to
+        # cross-reference application logs, so they must survive the cap like core does.
+        obs_names = {t["function"]["name"] for t in obs_tools_schema}
+        protected = AIService._CORE_K8S | obs_names
+        core = [t for t in deduped if t["function"]["name"] in protected]
+        rest = [t for t in deduped if t["function"]["name"] not in protected]
         rest.sort(key=lambda t: AIService._score_tool(qwords, t), reverse=True)
         result = (core + rest)[:max_total]
         # Guarantee the discover_tools escape hatch survives the cap — drop the
@@ -1340,6 +1391,7 @@ When you have enough evidence, give your final answer directly — do NOT call a
                     disable_trimming=False,
                     trim_keep=4,
                     trim_token_cap=8000,
+                    temperature=0,
                 )
 
                 if current_step == 1 and text is not None and not tool_calls and tools_schema:
@@ -1361,7 +1413,7 @@ When you have enough evidence, give your final answer directly — do NOT call a
                         yield {"type": "step", "message": f"{action}..."}
                         obs = ""
                         if action == "get_logs":
-                            obs = sanitize_for_llm(await k8s_service.get_pod_logs(namespace, pod_name, tail_lines=200, context=context))
+                            obs = sanitize_for_llm(await k8s_service.get_pod_logs(namespace, pod_name, tail_lines=200, context=context), token_cap=2500, keep="tail")
                         elif action == "get_events":
                             obs = sanitize_for_llm(await k8s_service.get_pod_events(namespace, pod_name, context=context))
                         elif action == "describe_pod":
@@ -1401,7 +1453,7 @@ When you have enough evidence, give your final answer directly — do NOT call a
                         obs = ""
                         try:
                             if tool_name == "get_logs":
-                                obs = sanitize_for_llm(await k8s_service.get_pod_logs(namespace, pod_name, tail_lines=200, context=context))
+                                obs = sanitize_for_llm(await k8s_service.get_pod_logs(namespace, pod_name, tail_lines=200, context=context), token_cap=2500, keep="tail")
                             elif tool_name == "get_events":
                                 obs = sanitize_for_llm(await k8s_service.get_pod_events(namespace, pod_name, context=context))
                             elif tool_name == "describe_pod":
@@ -1505,6 +1557,7 @@ When done, give a per-pod root cause analysis.
                     disable_trimming=False,
                     trim_keep=6,
                     trim_token_cap=10000,
+                    temperature=0,
                 )
 
                 if current_step == 1 and text is not None and not tool_calls and tools_schema:
@@ -1530,7 +1583,7 @@ When done, give a per-pod root cause analysis.
                         if "/" in action_input:
                             ns, p_name = action_input.split("/", 1)
                             if action in ["get_logs", "get_pod_logs"]:
-                                obs = sanitize_for_llm(await k8s_service.get_pod_logs(ns, p_name, tail_lines=200, context=context))
+                                obs = sanitize_for_llm(await k8s_service.get_pod_logs(ns, p_name, tail_lines=200, context=context), token_cap=2500, keep="tail")
                             elif action in ["get_events", "get_pod_events"]:
                                 obs = sanitize_for_llm(await k8s_service.get_pod_events(ns, p_name, context=context))
                             elif action in ["describe_pod", "get_pod_status"]:
@@ -1810,6 +1863,10 @@ CLUSTER TOPOLOGY SNAPSHOT:
             max_steps = self.STEP_BUDGETS[complexity]
             current_step = 0
             use_react_fallback = False
+            # Untrimmed tool observations kept for final synthesis/review. The copies in
+            # `messages` get shrunk by trim_tool_result to fit the context budget; the
+            # final answer must reason from the full evidence, not the lossy copy.
+            raw_observations: list[str] = []
             _agent_log.info("[AGENT] entering loop max_steps=%d messages=%d tools=%d", max_steps, len(messages), len(tools_schema))
 
             while current_step < max_steps:
@@ -1848,6 +1905,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                     disable_trimming=disable_trimming,
                     trim_keep=10,
                     trim_token_cap=16000,
+                    temperature=0,
                 )
                 _agent_log.info("[AGENT] step %d — AI returned: text_len=%s tool_calls=%s",
                                 current_step, len(text) if text else 0, len(tool_calls) if tool_calls else 0)
@@ -2114,6 +2172,8 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 )
 
                         yield {"type": "step", "message": f"{tool_name} done."}
+                        if observation:
+                            raw_observations.append(f"[{tool_name}] {observation}")
                         observation = await _ctx_mgr.trim_tool_result(
                             tool_name, observation, provider, caching_client
                         )
@@ -2126,7 +2186,8 @@ CLUSTER TOPOLOGY SNAPSHOT:
                     # No tool calls — model is done
                     text = text if text and text.strip() else "(No response from model)"
                     if investigation_mode and text != "(No response from model)":
-                        observations = [
+                        # Prefer the untrimmed evidence; fall back to message copies if empty.
+                        observations = raw_observations or [
                             m["content"] for m in messages
                             if m.get("role") == "tool" and m.get("content")
                         ]
@@ -2135,13 +2196,30 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             review = await self._run_final_review(
                                 query, observations, text, caching_client
                             )
+                            _root_cause = review.get("root_cause")
+                            _evidence = review.get("evidence") or []
+                            _answer = review.get("answer", text)
+                            _confidence = "confirmed"
+                            # Evidence gate: a stated root cause with no supporting evidence
+                            # is a guess. Downgrade it rather than present it as confident.
+                            if _root_cause and not _evidence:
+                                _confidence = "insufficient_evidence"
+                                _answer = (
+                                    "**Insufficient evidence to confirm a root cause.** "
+                                    "The investigation could not tie a definitive cause to the "
+                                    "collected tool output. Here is what was observed:\n\n"
+                                    + _answer
+                                )
+                            elif not _root_cause:
+                                _confidence = "inconclusive"
                             yield {
                                 "type": "result",
-                                "message": review.get("answer", text),
+                                "message": _answer,
                                 "structured": {
-                                    "root_cause": review.get("root_cause"),
-                                    "evidence": review.get("evidence"),
+                                    "root_cause": _root_cause,
+                                    "evidence": _evidence,
                                     "recommended_fix": review.get("recommended_fix"),
+                                    "confidence": _confidence,
                                 },
                             }
                             return

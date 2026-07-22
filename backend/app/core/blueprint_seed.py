@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import logging
 import os
 
@@ -46,16 +45,57 @@ async def _upsert_state_file(name: str, body: str, db: AsyncSession) -> Blueprin
     return sf
 
 
+async def backfill_disk_sources(root: str, db: AsyncSession) -> int:
+    """One-time: flip legacy inline rows whose bytes are already a file on disk.
+
+    Before disk-backing, folder-seeded artifacts were copied into the DB as base64.
+    This reclaims that space. Only rows that (a) belong to a path-named blueprint and
+    (b) have a backing file present are touched — so running with the blueprints
+    folder unmounted is a no-op rather than data loss. Idempotent: converted rows are
+    no longer "inline" and won't match again.
+    """
+    converted = 0
+    names = {bp.id: bp.name for bp in (await db.exec(select(Blueprint))).all()}
+    rows = (await db.exec(
+        select(BlueprintSource).where(BlueprintSource.origin == "inline")
+    )).all()
+    for src in rows:
+        bp_name = names.get(src.blueprint_id, "")
+        if bp_name.split("/", 1)[0] not in ("common", "orgs", "groups", "minions"):
+            continue  # UI-created blueprint — its sources have no folder file
+        rel_dir = os.path.dirname(bp_name)
+        rel_path = f"{rel_dir}/files/{src.name}" if rel_dir else f"files/{src.name}"
+        abs_path = os.path.join(root, rel_path)
+        if not os.path.isfile(abs_path):
+            continue  # no backing file — leave the bytes where they are
+        st = os.stat(abs_path)
+        src.origin = "disk"
+        src.rel_path = rel_path
+        src.size = st.st_size
+        src.mtime_ns = st.st_mtime_ns
+        src.sha256 = None
+        src.content = ""
+        src.encoding = "utf-8"
+        db.add(src)
+        converted += 1
+    if converted:
+        await db.commit()
+    return converted
+
+
 async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = False) -> tuple[int, int]:
     """Walk orgs/groups/minions dirs and upsert blueprints + sources + assignments.
 
     Returns (seeded, pruned). With prune=True (explicit re-seed / CD reconcile), any
-    seeded blueprint whose backing YAML is gone is deleted with its sources + assignments.
-    Only path-named blueprints (orgs/… groups/… minions/…) are pruned — UI-created ones
-    are never touched. Startup uses prune=False so a not-yet-mounted folder can't wipe data.
+    seeded blueprint whose backing YAML is gone is deleted with its sources + assignments,
+    and any disk source whose file is gone (deleted or moved) is dropped. `pruned` counts
+    both. Only path-named blueprints (orgs/… groups/… minions/…) and origin="disk" sources
+    are pruned — UI-created ones are never touched. Startup uses prune=False so a
+    not-yet-mounted folder can't wipe data.
     """
     seeded = 0
     seen: set[str] = set()
+    seen_sources: set[tuple[str, str]] = set()  # (blueprint_id, source name)
     for scope_kind in ("common", "orgs", "groups", "minions"):
         base = os.path.join(root, scope_kind)
         if not os.path.isdir(base):
@@ -87,22 +127,28 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
                     ]
                     for src_name in src_names:
                         src_path = os.path.join(files_dir, src_name)
+                        # stat() only — artifacts can be gigabytes and must never be
+                        # read into the DB just to register that they exist.
                         try:
-                            with open(src_path, "r", encoding="utf-8") as sfh:
-                                content = sfh.read()
-                            enc = "utf-8"
-                        except UnicodeDecodeError:
-                            with open(src_path, "rb") as sfh:
-                                content = base64.b64encode(sfh.read()).decode("ascii")
-                            enc = "base64"
+                            st = os.stat(src_path)
+                        except OSError as e:
+                            log.warning("blueprint seed: cannot stat %s — skipped (%s)", src_path, e)
+                            continue
+                        rel_path = os.path.relpath(src_path, root).replace("\\", "/")
                         existing = (await db.exec(select(BlueprintSource).where(
                             BlueprintSource.blueprint_id == sf.id, BlueprintSource.name == src_name))).first()
-                        if existing:
-                            existing.content = content
-                            existing.encoding = enc
-                            db.add(existing)
-                        else:
-                            db.add(BlueprintSource(blueprint_id=sf.id, name=src_name, content=content, encoding=enc))
+                        if existing is None:
+                            existing = BlueprintSource(blueprint_id=sf.id, name=src_name)
+                        if (existing.size, existing.mtime_ns) != (st.st_size, st.st_mtime_ns):
+                            existing.sha256 = None  # content changed; cached hash is stale
+                        existing.origin = "disk"
+                        existing.rel_path = rel_path
+                        existing.size = st.st_size
+                        existing.mtime_ns = st.st_mtime_ns
+                        existing.content = ""  # bytes stay on disk
+                        existing.encoding = "utf-8"
+                        db.add(existing)
+                        seen_sources.add((sf.id, src_name))
                 # assignment (avoid duplicate)
                 dup = (await db.exec(select(BlueprintAssignment).where(
                     BlueprintAssignment.blueprint_id == sf.id,
@@ -125,6 +171,18 @@ async def seed_blueprints_from_dir(root: str, db: AsyncSession, prune: bool = Fa
                         BlueprintAssignment.blueprint_id == bp.id))).all():
                     await db.delete(asn)
                 await db.delete(bp)
+                pruned += 1
+
+        # Drop disk sources whose file is gone from the folder (deleted or moved).
+        # Without this a moved artifact leaves its old row behind pointing at a path
+        # that no longer exists — it lingers in the UI and 404s on fetch. Only
+        # origin="disk" rows are considered: UI-created sources have no folder file
+        # and must never be pruned by a folder walk.
+        for src in (await db.exec(
+            select(BlueprintSource).where(BlueprintSource.origin == "disk")
+        )).all():
+            if (src.blueprint_id, src.name) not in seen_sources:
+                await db.delete(src)
                 pruned += 1
 
     await db.commit()

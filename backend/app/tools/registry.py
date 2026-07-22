@@ -403,7 +403,7 @@ TOOL_REGISTRY = {
     },
     "search_pods": {
         "function": k8s_tools.search_pods,
-        "description": "Search for pods by keyword or status (e.g., 'crash', 'fail', 'error'). Returns top 50 matches. Use this if you need to find broken pods.",
+        "description": "List or search pods. Omit keyword to LIST ALL pods (use with namespace to enumerate a namespace). Pass a keyword or status ('crash', 'fail', 'error') to filter to broken pods. Returns top 50.",
         "inputs": ["keyword", "namespace"],
         "operation_type": "read",
         "requires_confirmation": False
@@ -721,7 +721,7 @@ TOOL_REGISTRY = {
     },
     "list_namespaces": {
         "function": k8s_tools.list_namespaces,
-        "description": "List all namespaces with status and labels. Use for cluster-wide overview or to discover namespaces.",
+        "description": "List all namespaces with their status. Use for cluster-wide overview or to discover namespaces. The list is complete — do not assume more exist beyond what is returned.",
         "inputs": [],
         "operation_type": "read",
         "requires_confirmation": False,
@@ -991,6 +991,22 @@ TOOL_REGISTRY = {
             "journalctl, df, free, top -bn1, uptime, ansible --version, ansible-inventory. "
             "minion_id: device UUID. cmd: the shell command to run. "
             "Do NOT use for write operations — use minion_exec_write instead."
+        ),
+        "inputs": ["minion_id", "cmd", "timeout"],
+        "operation_type": "read",
+        "requires_confirmation": False,
+    },
+    "minion_investigate": {
+        "function": minion_tools.minion_investigate,
+        "description": (
+            "Read-only investigation on an on-premise minion — open files and run dry-run "
+            "checkers to find the root cause of a failure. Use this to inspect the exact file "
+            "and line an error points to. Examples: "
+            "cat /opt/playbook.yml; sed -n '38,46p' /opt/playbook.yml; grep -n 'name:' /opt/playbook.yml; "
+            "ansible-playbook --syntax-check /opt/playbook.yml; yamllint /opt/playbook.yml; stat /opt/playbook.yml. "
+            "Any path is allowed but the command MUST be non-mutating: no pipes, redirection, or chaining, "
+            "and ansible-playbook requires --syntax-check or --check. "
+            "minion_id: device UUID. cmd: the read-only shell command."
         ),
         "inputs": ["minion_id", "cmd", "timeout"],
         "operation_type": "read",

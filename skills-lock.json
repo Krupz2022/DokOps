@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "mediabunny": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/mediabunny/SKILL.md",
+      "computedHash": "f7592ee2c36238f5ee792e41f888d7751f74df1c0ed4207d3e500b6b5758c95f"
+    },
+    "remotion-best-practices": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-best-practices/SKILL.md",
+      "computedHash": "b686e5a37aba0283e3607fade477a7566ab178295ca9621be32961312158ec84"
+    },
+    "remotion-captions": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-captions/SKILL.md",
+      "computedHash": "beb07667f4f105f2b4838f0a848679d9910a369862fe7a7a994711aeca8eb367"
+    },
+    "remotion-create": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-create/SKILL.md",
+      "computedHash": "4b3c68ca9a1b5ea92f1bf939b572169333aeaa9effe344ffccb7eb86ff1fa767"
+    },
+    "remotion-interactivity": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-interactivity/SKILL.md",
+      "computedHash": "0837d0c3a1ff24565182cae9014c31f2afeac4056e2f35a2b48b835b445bc9de"
+    },
+    "remotion-markup": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-markup/SKILL.md",
+      "computedHash": "094dde27251fcb8bb35e103a21b5d88554e59e70c9b26109dae4c743de8af1ca"
+    },
+    "remotion-render": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-render/SKILL.md",
+      "computedHash": "559aa7436f00c2efe3029d31663466db4ab6a0f936f1c6553ed82ec05745fc86"
+    },
+    "remotion-saas": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion-saas/SKILL.md",
+      "computedHash": "2f52e9cfffb463635f4844c59e18f45e82e2b7f3368b29e8bd795fa263d21f44"
+    }
+  }
+}

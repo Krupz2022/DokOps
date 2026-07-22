@@ -9,8 +9,9 @@ from app.services.cached_ai_client import CachingAIClient
 async def test_complete_gemini_returns_text(monkeypatch):
     captured = {}
 
-    def fake_generate(client, model, contents, tools=None):
+    def fake_generate(client, model, contents, tools=None, temperature=None):
         captured["model"] = model
+        captured["temperature"] = temperature
         return SimpleNamespace(text="hello world", function_calls=[])
 
     monkeypatch.setattr("app.services.gemini_compat.generate", fake_generate)

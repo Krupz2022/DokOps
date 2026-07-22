@@ -215,7 +215,7 @@ async def get_cluster_health() -> Dict[str, Any]:
         logger.error(f"k8s_client error in get_cluster_health: {e}")
         return await kubectl_fallback("kubectl get nodes,pods -A")
 
-async def search_pods(keyword: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+async def search_pods(keyword: str = "", namespace: Optional[str] = None) -> Dict[str, Any]:
     try:
         core_api = k8s_service._get_api("CoreV1Api")
         if not core_api:
@@ -225,10 +225,12 @@ async def search_pods(keyword: str, namespace: Optional[str] = None) -> Dict[str
         else:
             pods = (await core_api.list_pod_for_all_namespaces()).items
 
-        kw = keyword.lower().strip()
+        kw = (keyword or "").lower().strip()
+        # ponytail: no keyword = plain listing, so agents can enumerate a namespace
+        list_all = not kw
         # Synonyms: when user/agent asks generically, match all non-running pods
         _unhealthy_synonyms = {"fail", "failing", "failed", "broken", "unhealthy", "bad", "crash", "crashing", "error", "problem", "issue", "notrunning", "not running"}
-        broad_unhealthy = not kw or any(s in kw for s in _unhealthy_synonyms)
+        broad_unhealthy = bool(kw) and any(s in kw for s in _unhealthy_synonyms)
 
         data = []
         for p in pods:
@@ -248,7 +250,9 @@ async def search_pods(keyword: str, namespace: Optional[str] = None) -> Dict[str
             is_unhealthy = phase not in ("Running", "Succeeded") or real_status != phase
 
             match = False
-            if broad_unhealthy:
+            if list_all:
+                match = True
+            elif broad_unhealthy:
                 match = is_unhealthy
             else:
                 if kw in p.metadata.name.lower(): match = True
@@ -274,7 +278,9 @@ async def search_pods(keyword: str, namespace: Optional[str] = None) -> Dict[str
         return {"success": True, "data": data, "error": None, "source": "k8s_client"}
     except Exception as e:
         logger.error(f"k8s_client error in search_pods: {e}")
-        return await kubectl_fallback(f"kubectl get pods -A | grep -i {keyword} | head -n 50")
+        scope = f"-n {namespace}" if namespace else "-A"
+        grep = f"| grep -i {keyword} " if keyword else ""
+        return await kubectl_fallback(f"kubectl get pods {scope} {grep}| head -n 50")
 
 async def _find_pod_namespace(pod_name: str) -> Optional[str]:
     """Search all namespaces to find which namespace a pod lives in."""
@@ -1736,7 +1742,13 @@ async def get_limit_range(namespace: str) -> Dict[str, Any]:
         return await kubectl_fallback(f"kubectl get limitrange -n {namespace} -o json")
 
 async def list_namespaces() -> Dict[str, Any]:
-    """List all namespaces with status and labels."""
+    """List all namespaces (name + status only).
+
+    ponytail: name+status keeps ~100 namespaces under the 4000-char
+    sanitize_for_llm cap that silently ate the tail of this list. If labels or
+    timestamps are ever needed, add a per-namespace describe tool rather than
+    fattening this one.
+    """
     try:
         core_api = k8s_service._get_api("CoreV1Api")
         if not core_api:
@@ -1748,8 +1760,6 @@ async def list_namespaces() -> Dict[str, Any]:
             results.append({
                 "name": ns.metadata.name,
                 "status": ns.status.phase,
-                "labels": ns.metadata.labels,
-                "creation_timestamp": str(ns.metadata.creation_timestamp),
             })
 
         return {"success": True, "data": {"namespaces": results, "total": len(results)}, "error": None, "source": "k8s_client"}

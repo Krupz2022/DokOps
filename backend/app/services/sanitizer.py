@@ -64,13 +64,16 @@ def _presidio_redact(text: str) -> str:
         return text
 
 
-def sanitize_for_llm(text: str, token_cap: int = 1000) -> str:
+def sanitize_for_llm(text: str, token_cap: int = 1000, keep: str = "head") -> str:
     """
     Sanitize raw log/observation text before injecting into LLM context.
 
     Args:
         text: Raw text from K8s logs, events, or tool output.
         token_cap: Maximum tokens to pass. Default 1000 (~4000 chars).
+        keep: Which end to keep when truncating. "head" (default) keeps the start;
+              "tail" keeps the end — use for logs, where the error/stack trace that
+              drives diagnosis lands last and a head slice would drop it.
 
     Returns:
         Sanitized, truncated string safe to include in LLM prompts.
@@ -94,8 +97,11 @@ def sanitize_for_llm(text: str, token_cap: int = 1000) -> str:
 
     # Layer 3: Hard token cap
     char_limit = token_cap * _CHARS_PER_TOKEN
-    truncated = len(text) > char_limit
-    result = clean[:char_limit]
+    truncated = len(clean) > char_limit
+    if truncated and keep == "tail":
+        result = clean[-char_limit:]
+    else:
+        result = clean[:char_limit]
 
     parts = []
     if regex_hits:

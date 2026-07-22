@@ -72,6 +72,59 @@ def is_read_allowed(cmd: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Investigation allowlist — broader read-only set used by the AI troubleshooter
+# ---------------------------------------------------------------------------
+# is_read_allowed() is intentionally tiny. Troubleshooting a failed blueprint (e.g. an
+# Ansible playbook with a YAML syntax error) needs to open arbitrary files and run
+# dry-run checkers. This allowlist widens *reads* on any path while staying non-mutating:
+# no writes, no shell chaining, no pipes/redirection, and mutating tools are excluded.
+
+_INVESTIGATE_EXECS = frozenset({
+    "cat", "head", "tail", "sed", "grep", "egrep", "fgrep", "wc", "stat",
+    "file", "ls", "find", "readlink", "realpath", "dirname", "basename",
+    "cut", "sort", "uniq", "diff", "nl", "tac", "md5sum", "sha256sum",
+    "yamllint", "ansible-lint", "ansible-inventory", "ansible-playbook",
+})
+
+# A single pipe is tolerated for reads elsewhere, but in investigate mode a pipe or
+# redirection would let a read tool hand its output to an arbitrary second command
+# (`cat x | bash`, `... | tee /etc/passwd`), so both are refused outright.
+_INVESTIGATE_BLOCKED = _CHAIN_TOKENS + ("|", ">", "<")
+
+
+def is_investigate_allowed(cmd: str) -> bool:
+    """Return True when *cmd* is a safe, read-only investigation command.
+
+    Broader than is_read_allowed (any path allowed) but still strictly non-mutating.
+    Callers may accept a command matching *either* allowlist."""
+    import shlex
+
+    if any(tok in cmd for tok in _INVESTIGATE_BLOCKED):
+        return False
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return False  # unbalanced quotes — reject
+    if not parts:
+        return False
+
+    exe = parts[0].rsplit("/", 1)[-1]  # allow /usr/bin/cat etc.
+    if exe not in _INVESTIGATE_EXECS:
+        return False
+    args = parts[1:]
+
+    # Per-tool mutation guards.
+    if exe == "sed" and any(a == "-i" or a.startswith("-i") for a in args):
+        return False  # sed -i edits in place
+    if exe == "find" and any(a in ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf") for a in args):
+        return False  # find can mutate / run commands
+    if exe == "ansible-playbook" and not any(a in ("--syntax-check", "--check") for a in args):
+        return False  # without a dry-run flag ansible-playbook actually applies
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # WebSocket connection manager
 # ---------------------------------------------------------------------------
 

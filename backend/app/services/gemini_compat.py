@@ -36,11 +36,15 @@ def to_gemini_tools(schema: List[dict]) -> List[types.Tool]:
 
 
 def generate(client: genai.Client, model: str, contents: str,
-             tools: Optional[List[dict]] = None) -> Any:
+             tools: Optional[List[dict]] = None,
+             temperature: Optional[float] = None) -> Any:
     """Synchronous generate_content call. Callers wrap in asyncio.to_thread."""
     config = None
-    if tools:
-        config = types.GenerateContentConfig(tools=to_gemini_tools(tools))
+    if tools is not None or temperature is not None:
+        config = types.GenerateContentConfig(
+            tools=to_gemini_tools(tools) if tools else None,
+            temperature=temperature,
+        )
     return client.models.generate_content(model=model, contents=contents, config=config)
 
 

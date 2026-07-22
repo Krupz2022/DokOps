@@ -2,6 +2,13 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from "react";
 import api from "../lib/api";
 
+export interface StructuredResult {
+  root_cause?: string | null;
+  evidence?: string[] | null;
+  recommended_fix?: string | null;
+  confidence?: "confirmed" | "insufficient_evidence" | "inconclusive" | null;
+}
+
 export interface ChatMessageData {
   id: string;
   role: "user" | "assistant";
@@ -9,6 +16,7 @@ export interface ChatMessageData {
   message_type: "text" | "step" | "model" | "action_card" | "runbook_card" | "pending_op" | "compaction_banner";
   created_at: string;
   is_compacted: boolean;
+  structured?: StructuredResult | null;
 }
 
 export interface ConversationSummary {
@@ -34,6 +42,8 @@ interface ChatContextValue {
   activeConversationId: string | null;
   messages: ChatMessageData[];
   isStreaming: boolean;
+  /** True while any conversation is streaming, not just the active one. */
+  anyStreaming: boolean;
   tokenUsage: TokenUsage | null;
   panelOpen: boolean;
   setPanelOpen: (open: boolean) => void;
@@ -47,14 +57,26 @@ interface ChatContextValue {
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
 
+function dropKey<T>(all: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...all };
+  delete next[key];
+  return next;
+}
+
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessageData[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  // Everything below is keyed by conversation id so several chats can stream at once.
+  const [messagesByConv, setMessagesByConv] = useState<Record<string, ChatMessageData[]>>({});
+  const [streamingConvs, setStreamingConvs] = useState<Record<string, boolean>>({});
+  const [tokenUsageByConv, setTokenUsageByConv] = useState<Record<string, TokenUsage | null>>({});
   const [panelOpen, setPanelOpen] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const abortRefs = useRef<Record<string, AbortController>>({});
+
+  const messages = activeConversationId ? messagesByConv[activeConversationId] ?? [] : [];
+  const isStreaming = activeConversationId ? !!streamingConvs[activeConversationId] : false;
+  const tokenUsage = activeConversationId ? tokenUsageByConv[activeConversationId] ?? null : null;
+  const anyStreaming = Object.values(streamingConvs).some(Boolean);
 
   const loadConversations = useCallback(async () => {
     const resp = await api.get("/chat/conversations");
@@ -65,26 +87,37 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const resp = await api.post("/chat/conversations");
     const conv = resp.data;
     setActiveConversationId(conv.id);
-    setMessages([]);
-    setTokenUsage(null);
+    setMessagesByConv((all) => ({ ...all, [conv.id]: [] }));
+    setTokenUsageByConv((all) => ({ ...all, [conv.id]: null }));
     await loadConversations();
     return conv.id;
   }, [loadConversations]);
 
   const loadConversation = useCallback(async (id: string) => {
-    const resp = await api.get(`/chat/conversations/${id}`);
     setActiveConversationId(id);
-    setMessages(resp.data.messages);
-    setTokenUsage(
-      typeof resp.data.total_tokens === "number"
+    // A conversation that's mid-stream already holds the live thread in memory —
+    // refetching it from the DB would drop the in-flight messages.
+    if (abortRefs.current[id]) return;
+    const resp = await api.get(`/chat/conversations/${id}`);
+    setMessagesByConv((all) => ({ ...all, [id]: resp.data.messages }));
+    setTokenUsageByConv((all) => ({
+      ...all,
+      [id]: typeof resp.data.total_tokens === "number"
         ? { input: 0, output: 0, total: 0, conversationTotal: resp.data.total_tokens, source: "estimate" }
-        : null
-    );
+        : null,
+    }));
   }, []);
 
   const sendMessage = useCallback(async (content: string, overrideConversationId?: string) => {
     const convId = overrideConversationId ?? activeConversationId;
-    if (!convId || isStreaming) return;
+    if (!convId || abortRefs.current[convId]) return;
+
+    const setMessages = (updater: (prev: ChatMessageData[]) => ChatMessageData[]) =>
+      setMessagesByConv((all) => ({ ...all, [convId]: updater(all[convId] ?? []) }));
+    const setTokenUsage = (usage: TokenUsage) =>
+      setTokenUsageByConv((all) => ({ ...all, [convId]: usage }));
+    const setIsStreaming = (on: boolean) =>
+      setStreamingConvs((all) => ({ ...all, [convId]: on }));
 
     // Optimistically add user message to UI
     const userMsg: ChatMessageData = {
@@ -114,7 +147,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const token = localStorage.getItem("access_token");
     const clusterContext = localStorage.getItem("clusterContext");
 
-    abortRef.current = new AbortController();
+    const controller = new AbortController();
+    abortRefs.current[convId] = controller;
 
     try {
       const res = await fetch(
@@ -127,7 +161,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             ...(clusterContext ? { "X-Cluster-Context": clusterContext } : {}),
           },
           body: JSON.stringify({ content }),
-          signal: abortRef.current.signal,
+          signal: controller.signal,
         }
       );
 
@@ -195,7 +229,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === streamingMsgId
-                  ? { ...m, content: resultContent, message_type: "text" }
+                  ? { ...m, content: resultContent, message_type: "text", structured: event.structured ?? null }
                   : m
               )
             );
@@ -270,18 +304,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         ]);
       }
     } finally {
-      setIsStreaming(false);
+      if (abortRefs.current[convId] === controller) {
+        delete abortRefs.current[convId];
+        setIsStreaming(false);
+      }
       await loadConversations();
     }
-  }, [activeConversationId, isStreaming, loadConversations]);
+  }, [activeConversationId, loadConversations]);
 
   const deleteConversation = useCallback(async (id: string) => {
+    abortRefs.current[id]?.abort();
+    delete abortRefs.current[id];
     await api.delete(`/chat/conversations/${id}`);
-    if (activeConversationId === id) {
-      setActiveConversationId(null);
-      setMessages([]);
-      setTokenUsage(null);
-    }
+    if (activeConversationId === id) setActiveConversationId(null);
+    setMessagesByConv((all) => dropKey(all, id));
+    setTokenUsageByConv((all) => dropKey(all, id));
+    setStreamingConvs((all) => dropKey(all, id));
     await loadConversations();
   }, [activeConversationId, loadConversations]);
 
@@ -296,6 +334,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       activeConversationId,
       messages,
       isStreaming,
+      anyStreaming,
       tokenUsage,
       panelOpen,
       setPanelOpen,

@@ -153,6 +153,14 @@ Do NOT produce a final answer until all plan steps are checked.
 PHASE 3 — EVIDENCE GATE:
 Before answering, verify: can you point to a specific tool result for every claim?
 If a claim has no tool evidence, either call another tool or mark it as [INFERRED].
+
+PHASE 4 — TERMINAL CONDITION:
+Never end your turn with a question you have a tool to answer. Before you write
+"Would you like me to…" or "This is likely…", check whether a tool call would
+settle it. If one would, call it instead. You have a large step budget — spend it.
+A hypothesis handed back to the user is a failed investigation.
+Only ask the user when the answer requires information that exists nowhere in the
+cluster (a business decision, a credential, an intended value).
 """
 
 _FINAL_REVIEW_PROMPT = (

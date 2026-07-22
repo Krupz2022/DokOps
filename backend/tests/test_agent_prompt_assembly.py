@@ -16,3 +16,8 @@ def test_health_followup_absent_in_investigation_mode():
 def test_health_followup_present_in_normal_mode():
     prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
     assert "Would you like me to investigate any of these?" in prompt
+
+
+def test_investigation_protocol_forbids_ending_on_answerable_question():
+    prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
+    assert "PHASE 4 — TERMINAL CONDITION" in prompt

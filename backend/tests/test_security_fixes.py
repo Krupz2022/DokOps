@@ -128,6 +128,28 @@ def test_redact_command_preserves_non_credential_commands():
     assert redact_command(cmd) == cmd
 
 
+def test_redact_command_covers_every_probe_credential_form():
+    """Job history leaked REDISCLI_AUTH in cleartext — only PGPASSWORD was covered."""
+    from app.services.minion_service import redact_command
+    for cmd, secret in [
+        ("docker exec -e REDISCLI_AUTH=hunter2 lab-redis redis-cli info", "hunter2"),
+        ("docker exec -e PGPASSWORD=hunter2 lab-pg psql -U postgres -c 'select 1'", "hunter2"),
+        ("curl -sf -u admin:hunter2 http://localhost:15672/api/overview", "hunter2"),
+        ("mysql --password=hunter2 -e 'show processlist'", "hunter2"),
+        ("mongosh --password hunter2 --eval 'db.stats()'", "hunter2"),
+    ]:
+        redacted = redact_command(cmd)
+        assert secret not in redacted, f"leaked in: {redacted}"
+        assert "[REDACTED]" in redacted
+
+
+def test_redact_command_leaves_rabbitmq_vhost_flag_alone():
+    """`-p` is the vhost flag in rabbitmqctl, not a password — must not be redacted."""
+    from app.services.minion_service import redact_command
+    cmd = 'rabbitmqctl list_queues -p "/" name messages'
+    assert redact_command(cmd) == cmd
+
+
 # Task 11 — template param sanitization
 def test_sanitize_template_param_strips_newlines():
     from app.services.ai_service import _sanitize_template_param

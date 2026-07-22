@@ -447,7 +447,18 @@ def redact_command(cmd: str) -> str:
     result = _re.sub(r"(--password=)'[^']*'", r"\1'[REDACTED]'", result)
     result = _re.sub(r"(--password )'[^']*'", r"\1'[REDACTED]'", result)
     result = _re.sub(r"(-p )'[^']*'", r"\1'[REDACTED]'", result)
-    result = _re.sub(r"(PGPASSWORD=)\S+", r"\1[REDACTED]", result)
+    # Any secret-ish env var, not just PGPASSWORD: REDISCLI_AUTH leaked the Redis
+    # password into job history in cleartext, and per-service patterns only ever
+    # cover the services someone remembered.
+    result = _re.sub(
+        r"\b([A-Z_]*(?:PASSWORD|PASSWD|PWD|AUTH|TOKEN|SECRET)[A-Z_]*=)(?:'[^']*'|\"[^\"]*\"|\S+)",
+        r"\1[REDACTED]",
+        result,
+    )
+    # curl basic auth: -u user:password (rabbitmq/couchdb probes)
+    result = _re.sub(r"(-u\s+[^\s:'\"]+):(?:'[^']*'|\"[^\"]*\"|[^\s'\"]+)", r"\1:[REDACTED]", result)
+    # unquoted --password forms
+    result = _re.sub(r"(--password[= ])(?!\[REDACTED\])[^\s'\"]+", r"\1[REDACTED]", result)
     return result
 
 

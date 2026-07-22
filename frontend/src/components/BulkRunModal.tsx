@@ -181,8 +181,8 @@ export default function BulkRunModal({ minions, onClose }: Props) {
                     </span>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">{m.hostname}</div>
-                      {job?.exit_code !== null && (
-                        <div className="text-xs text-muted-foreground">exit: {job!.exit_code}</div>
+                      {job?.exit_code != null && (
+                        <div className="text-xs text-muted-foreground">exit: {job.exit_code}</div>
                       )}
                     </div>
                   </div>

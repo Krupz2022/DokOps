@@ -316,7 +316,9 @@ async def redis_kill_client(client_id: str,
         host, port, username, password, db_index = await asyncio.to_thread(_get_credential, cid, instance_name)
         def _run():
             r = _connect(host, port, username, password, db_index)
-            result = r.client_kill_filter(id=client_id)
+            # redis-py names the id filter `_id`; `id=` is swallowed by **kwargs
+            # and the command goes out with no filter at all.
+            result = r.client_kill_filter(_id=client_id)
             return f"Killed {result} client(s) with id={client_id}."
         data = await asyncio.to_thread(_run)
         return {"success": True, "data": data, "error": None, "source": "redis"}

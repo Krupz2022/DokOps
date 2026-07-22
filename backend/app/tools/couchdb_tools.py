@@ -180,13 +180,17 @@ async def couchdb_node_stats(cluster_id: Optional[str] = None,
     try:
         host, port, user, pwd = await asyncio.to_thread(_get_credential, cid, instance_name)
         stats = await asyncio.to_thread(_get, host, port, user, pwd, "/_node/_local/_stats")
+        # CouchDB nests these under the "couchdb" group — reading them off the
+        # top level silently yields N/A for every metric.
+        cdb = stats.get("couchdb", {})
+        codes = cdb.get("httpd_status_codes", {})
         lines = [
-            f"DB reads (total):    {stats.get('couch_db_reads', {}).get('value', 'N/A')}",
-            f"DB writes (total):   {stats.get('couch_db_writes', {}).get('value', 'N/A')}",
-            f"Open DBs:            {stats.get('couch_open_databases', {}).get('value', 'N/A')}",
-            f"Open OS files:       {stats.get('couch_open_os_files', {}).get('value', 'N/A')}",
-            f"HTTP 200 responses:  {stats.get('httpd_status_codes', {}).get('200', {}).get('value', 'N/A')}",
-            f"HTTP 500 responses:  {stats.get('httpd_status_codes', {}).get('500', {}).get('value', 'N/A')}",
+            f"DB reads (total):    {cdb.get('database_reads', {}).get('value', 'N/A')}",
+            f"DB writes (total):   {cdb.get('database_writes', {}).get('value', 'N/A')}",
+            f"Open DBs:            {cdb.get('open_databases', {}).get('value', 'N/A')}",
+            f"Open OS files:       {cdb.get('open_os_files', {}).get('value', 'N/A')}",
+            f"HTTP 200 responses:  {codes.get('200', {}).get('value', 'N/A')}",
+            f"HTTP 500 responses:  {codes.get('500', {}).get('value', 'N/A')}",
         ]
         return {"success": True, "data": "\n".join(lines), "error": None, "source": "couchdb"}
     except Exception as e:

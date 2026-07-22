@@ -1,0 +1,34 @@
+# Scenario 04 — genuinely healthy namespace. Tests false positives.
+# Pass = states clearly that it is healthy.
+# Fail = manufactures a finding, or frames advisories as problems.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dokops-clean
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: dokops-clean
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports: [{containerPort: 80}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: dokops-clean
+spec:
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 80}]

@@ -1,0 +1,36 @@
+# Scenario 02 — zero pods exist. A Deployment whose ResourceQuota rejects all pod
+# creation: the ReplicaSet fails, no pod ever appears, search_pods returns nothing.
+# (A selector/template mismatch is rejected by the API server at apply time, so
+# quota rejection is the reliable way to get a zero-pod failure.)
+# Pass = names the quota rejection from ReplicaSet events.
+# Fail = "no failing pods found" / "namespace looks healthy".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dokops-chaos
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: no-pods-allowed
+  namespace: dokops-chaos
+spec:
+  hard:
+    pods: "0"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: dokops-chaos
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: api-gateway}
+  template:
+    metadata:
+      labels: {app: api-gateway}
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.25-alpine

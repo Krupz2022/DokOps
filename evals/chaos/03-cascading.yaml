@@ -1,0 +1,92 @@
+# Scenario 03 — cascading failure. One root cause (postgres refuses to start:
+# no POSTGRES_PASSWORD), three symptoms (consumers crashloop against it).
+# Pass = identifies postgres as the single upstream cause, frames the three
+# consumers as downstream. Fail = four coequal findings with no causal link.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dokops-chaos
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: dokops-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+      - name: db
+        image: postgres:16-alpine
+        # no POSTGRES_PASSWORD — the image refuses to initialise and exits
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: dokops-chaos
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: dokops-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orders}
+  template:
+    metadata:
+      labels: {app: orders}
+    spec:
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args: ['nc -z -w 2 postgres 5432 || { echo "FATAL: cannot reach postgres:5432 - connection refused" >&2; exit 1; }; sleep 3600']
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing
+  namespace: dokops-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: billing}
+  template:
+    metadata:
+      labels: {app: billing}
+    spec:
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args: ['nc -z -w 2 postgres 5432 || { echo "FATAL: cannot reach postgres:5432 - connection refused" >&2; exit 1; }; sleep 3600']
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipping
+  namespace: dokops-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: shipping}
+  template:
+    metadata:
+      labels: {app: shipping}
+    spec:
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args: ['nc -z -w 2 postgres 5432 || { echo "FATAL: cannot reach postgres:5432 - connection refused" >&2; exit 1; }; sleep 3600']

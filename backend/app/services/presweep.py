@@ -129,6 +129,43 @@ async def _unready_deployments(apps, namespace: str) -> list[str]:
     return lines
 
 
+async def _replicaset_failures(core, apps, namespace: str) -> list[str]:
+    """Why a Deployment produced no pods at all.
+
+    When the ReplicaSet cannot create pods — quota rejection, an invalid template —
+    the only evidence is a Warning event on the ReplicaSet. No pod exists to inspect,
+    so a pod-centric investigation sees nothing and falls back to guessing.
+    """
+    deployments = await apps.list_namespaced_deployment(namespace)
+    stalled = {
+        dep.metadata.name for dep in deployments.items
+        if (dep.spec.replicas or 0) > 0 and (dep.status.ready_replicas or 0) == 0
+    }
+    if not stalled:
+        return []
+
+    replica_sets = await apps.list_namespaced_replica_set(namespace)
+    owned: dict[str, str] = {}
+    for rs in replica_sets.items:
+        for owner in (rs.metadata.owner_references or []):
+            if owner.kind == "Deployment" and owner.name in stalled:
+                owned[rs.metadata.name] = owner.name
+
+    if not owned:
+        return []
+
+    events = await core.list_namespaced_event(namespace)
+    lines, seen = [], set()
+    for event in events.items:
+        name = getattr(event.involved_object, "name", None)
+        deployment = owned.get(name)
+        if not deployment or deployment in seen or event.type != "Warning":
+            continue
+        seen.add(deployment)
+        lines.append(f"  - {deployment} (ReplicaSet {name}) {event.reason}: {event.message}")
+    return lines
+
+
 async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> list[str]:
     """Tail logs for containers that are crashing — the error line the agent
     otherwise reports as 'investigate the logs to determine the cause'."""
@@ -190,6 +227,13 @@ async def build_presweep(
             sections.extend(deployments)
     except Exception as e:
         logger.debug("presweep: deployment check failed for %s: %s", namespace, e)
+
+    try:
+        if stalled := await _replicaset_failures(core, apps, namespace):
+            sections.append("Deployments that produced NO pods (failure is on the ReplicaSet):")
+            sections.extend(stalled)
+    except Exception as e:
+        logger.debug("presweep: replicaset check failed for %s: %s", namespace, e)
 
     try:
         if logs := await _crash_logs(core, namespace, max_log_pods, tail_lines):

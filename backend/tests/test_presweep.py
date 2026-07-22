@@ -181,6 +181,37 @@ async def test_reports_crash_log_line():
 
 
 @pytest.mark.asyncio
+async def test_reports_replicaset_failure_when_no_pods_exist():
+    """Scenario 02: a ResourceQuota of pods=0 means no pod ever exists, so the
+    only evidence is a Warning event on the ReplicaSet. Without this the agent
+    listed four speculative causes and asked the user which to check."""
+    deployment = SimpleNamespace(
+        metadata=SimpleNamespace(name="api-gateway"),
+        spec=SimpleNamespace(replicas=2),
+        status=SimpleNamespace(ready_replicas=0),
+    )
+    replica_set = SimpleNamespace(metadata=SimpleNamespace(
+        name="api-gateway-755d4d56d5",
+        owner_references=[SimpleNamespace(kind="Deployment", name="api-gateway")],
+    ))
+    event = SimpleNamespace(
+        type="Warning", reason="FailedCreate",
+        involved_object=SimpleNamespace(name="api-gateway-755d4d56d5"),
+        message='pods "api-gateway-755d4d56d5-qj8pw" is forbidden: exceeded quota: no-pods-allowed',
+    )
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    core.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=[event]))
+    apps = _fake_apps([deployment])
+    apps.list_namespaced_replica_set = AsyncMock(return_value=SimpleNamespace(items=[replica_set]))
+
+    with _patch_apis(core, apps):
+        out = await build_presweep("dokops-chaos")
+
+    assert "failure is on the ReplicaSet" in out
+    assert "exceeded quota: no-pods-allowed" in out
+
+
+@pytest.mark.asyncio
 async def test_reports_unready_deployment():
     deployment = SimpleNamespace(
         metadata=SimpleNamespace(name="sample-api"),

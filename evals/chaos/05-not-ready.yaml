@@ -1,0 +1,37 @@
+# Scenario 05 — Running but never Ready. Readiness probe points at the wrong
+# port and path; traffic fails while pod status looks fine.
+# Pass = names the readiness probe and its wrong port/path.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dokops-chaos
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-api
+  namespace: dokops-chaos
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web-api}
+  template:
+    metadata:
+      labels: {app: web-api}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports: [{containerPort: 80}]
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}   # wrong port and path — never ready
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-api
+  namespace: dokops-chaos
+spec:
+  selector: {app: web-api}
+  ports: [{port: 80, targetPort: 80}]

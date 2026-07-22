@@ -55,8 +55,26 @@ def extract_namespace(query: str) -> Optional[str]:
 _BULLET = re.compile(r"^\s+- (\S+?)(?=[:/]|\s\()")
 
 
+# Hard facts inside a bullet: anything carrying a digit (0 endpoints, 1/3 ready,
+# api-gateway-755d4d56d5) or CamelCase (FailedCreate, CrashLoopBackOff). Naming the
+# resource is not the same as reporting the finding.
+_FACT_TOKEN = re.compile(r"\b(?:[\w.\-/]*\d[\w.\-/]*|[A-Z][a-z]+(?:[A-Z][a-z]+)+)\b")
+
+
+def _is_covered(bullet: str, subject: str, lowered_answer: str) -> bool:
+    """True only if the answer names the resource AND reports something concrete
+    about it. "api-gateway is not creating pods" does not cover a quota rejection."""
+    if subject.lower() not in lowered_answer:
+        return False
+    detail = bullet[bullet.index(subject) + len(subject):]
+    facts = {t.lower() for t in _FACT_TOKEN.findall(detail)}
+    if not facts:
+        return True  # nothing concrete to check — the name is all there was
+    return any(fact in lowered_answer for fact in facts)
+
+
 def append_missing_findings(presweep: str, answer: str) -> str:
-    """Append any pre-flight finding the drafted answer failed to mention.
+    """Append any pre-flight finding the drafted answer failed to report.
 
     Discovery being deterministic is not enough on its own: with the sweep in
     context the model still reported only the Service in one run and only the
@@ -69,7 +87,7 @@ def append_missing_findings(presweep: str, answer: str) -> str:
     lowered = answer.lower()
     missing = [
         line for line in presweep.splitlines()
-        if (m := _BULLET.match(line)) and m.group(1).lower() not in lowered
+        if (m := _BULLET.match(line)) and not _is_covered(line, m.group(1), lowered)
     ]
     if not missing:
         return answer
@@ -249,7 +267,8 @@ async def build_presweep(
         f"PRE-FLIGHT SWEEP of namespace '{namespace}' — verified facts, already gathered "
         f"for you. Do not re-fetch these with tools.\n"
         f"This is a HEAD START, NOT the scope of your investigation. It covers only "
-        f"service endpoints, deployment readiness and crash logs. You must STILL "
+        f"service endpoints, deployment readiness, ReplicaSet failures and crash logs. "
+        f"Quote these facts directly — they are the answer, not a hint. You must STILL "
         f"investigate every failing pod yourself and report those findings alongside "
         f"these — an answer that covers only what appears below is incomplete.\n{body}\n"
     )

@@ -37,14 +37,53 @@ def test_omitted_finding_is_appended():
     assert out.startswith(answer)          # original answer preserved verbatim
 
 
+def test_naming_the_resource_is_not_reporting_the_finding():
+    """Scenario 02 regression: the answer said "api-gateway is not creating pods"
+    and the quota rejection counted as covered purely because the name appeared.
+    Coverage must require a concrete fact, not a mention."""
+    sweep = (
+        "Deployments that produced NO pods (failure is on the ReplicaSet):\n"
+        "  - api-gateway (ReplicaSet api-gateway-755d4d56d5) FailedCreate: "
+        'Error creating: pods "x" is forbidden: exceeded quota: no-pods-allowed\n'
+    )
+    vague = "The api-gateway Deployment is not creating pods; review its configuration."
+    out = append_missing_findings(sweep, vague)
+
+    assert "Also found by the pre-flight sweep" in out
+    assert "exceeded quota" in out
+
+
+def test_concrete_report_counts_as_covered():
+    sweep = (
+        "Deployments that produced NO pods (failure is on the ReplicaSet):\n"
+        "  - api-gateway (ReplicaSet api-gateway-755d4d56d5) FailedCreate: "
+        'Error creating: pods "x" is forbidden: exceeded quota: no-pods-allowed\n'
+    )
+    concrete = (
+        "api-gateway cannot create pods: FailedCreate — forbidden, exceeded quota "
+        "no-pods-allowed. Raise the ResourceQuota."
+    )
+    assert append_missing_findings(sweep, concrete) == concrete
+
+
 def test_covered_findings_are_not_appended():
-    answer = "web-frontend has 0 endpoints; order-worker-qzfjg cannot reach postgres."
+    answer = (
+        "web-frontend has 0 endpoints; order-worker-qzfjg is in CrashLoopBackOff "
+        "because it cannot reach postgres."
+    )
     assert append_missing_findings(_SWEEP, answer) == answer
 
 
 def test_continuation_and_context_lines_are_not_treated_as_findings():
-    """Only bullets are findings — log bodies and the pod-labels note are not."""
-    answer = "web-frontend and order-worker-qzfjg are both covered here."
+    """Only bullets are findings — log bodies and the pod-labels note are not.
+
+    Both bullets are reported concretely here, so if anything is appended it can
+    only be a non-bullet line that was mistaken for a finding.
+    """
+    answer = (
+        "web-frontend: 0 endpoints, selector app=web-fronted does not match its pods. "
+        "order-worker-qzfjg is in CrashLoopBackOff against postgres."
+    )
     out = append_missing_findings(_SWEEP, answer)
 
     assert out == answer, "a non-bullet line was mistaken for a finding"

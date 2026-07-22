@@ -1869,8 +1869,22 @@ ELASTICSEARCH QUERY RULES:
 """
 
             _core_prompt = build_agent_system_prompt(investigation=investigation_mode, selected_tools=tools_schema)
-            _dynamic_context = f"""{_unavailability_block}
 
+            # Deterministic pre-flight. The agent follows a discovery checklist
+            # unreliably (three identical runs each checked a different subset), so
+            # the judgement-free lookups are done here and handed over as facts.
+            _presweep = ""
+            if investigation_mode:
+                from app.services.presweep import build_presweep, extract_namespace
+                if _ns := extract_namespace(query):
+                    try:
+                        _presweep = await build_presweep(_ns)
+                    except Exception as e:  # never let a sweep break the turn
+                        _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
+                    _agent_log.info("[AGENT] presweep ns=%s chars=%d", _ns, len(_presweep))
+
+            _dynamic_context = f"""{_unavailability_block}
+{_presweep}
 CLUSTER TOPOLOGY SNAPSHOT:
 {_topo_overview}
 

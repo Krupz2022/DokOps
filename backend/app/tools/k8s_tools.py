@@ -279,8 +279,18 @@ async def search_pods(keyword: str = "", namespace: Optional[str] = None) -> Dic
     except Exception as e:
         logger.error(f"k8s_client error in search_pods: {e}")
         scope = f"-n {namespace}" if namespace else "-A"
-        grep = f"| grep -i {keyword} " if keyword else ""
-        return await kubectl_fallback(f"kubectl get pods {scope} {grep}| head -n 50")
+        res = await kubectl_fallback(f"kubectl get pods {scope}")
+        if not res["success"]:
+            return res
+        # filter here, not with a shell pipe — kubectl_fallback shlex.splits its
+        # command, so a '| grep ...' would be handed to kubectl as literal argv
+        lines = str(res["data"]).splitlines()
+        header, rows = lines[:1], lines[1:]
+        kw_fb = (keyword or "").lower().strip()   # kw is unbound if _get_api raised
+        if kw_fb:
+            rows = [ln for ln in rows if kw_fb in ln.lower()]
+        res["data"] = "\n".join(header + rows[:50])
+        return res
 
 async def _find_pod_namespace(pod_name: str) -> Optional[str]:
     """Search all namespaces to find which namespace a pod lives in."""
@@ -514,8 +524,18 @@ async def get_node_capacity(node_name: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"k8s_client error in get_node_capacity: {e}")
         cmd = f"kubectl describe node {node_name}" if node_name else "kubectl describe nodes"
-        # We can't safely grep -A5 in a simple subprocess call without pipeline, so just describe
-        return await kubectl_fallback(f"{cmd} | grep -A5 'Allocated resources' || true")
+        res = await kubectl_fallback(cmd)
+        if not res["success"]:
+            return res
+        # slice out the 'Allocated resources' block in Python — a '| grep -A5'
+        # would be shlex.split into kubectl's own argv and fail
+        lines = str(res["data"]).splitlines()
+        picked: List[str] = []
+        for i, ln in enumerate(lines):
+            if "Allocated resources" in ln:
+                picked.extend(lines[i:i + 6])
+        res["data"] = "\n".join(picked) if picked else str(res["data"])
+        return res
 
 async def get_replicasets(deployment_name: str, namespace: str) -> Dict[str, Any]:
     try:
@@ -687,7 +707,14 @@ async def get_secret_exists(secret_name: str, namespace: str) -> Dict[str, Any]:
         if e.status == 404:
             return {"success": True, "data": {"exists": False, "name": secret_name, "namespace": namespace}, "error": None, "source": "k8s_client"}
         logger.error(f"k8s_client error in get_secret_exists: {e}")
-        return await kubectl_fallback(f"kubectl get secret {secret_name} -n {namespace} -o json | jq 'del(.data)'")
+        res = await kubectl_fallback(f"kubectl get secret {secret_name} -n {namespace} -o json")
+        # strip the values here rather than piping to jq: the pipe never ran
+        # (shlex.split), and relying on an external jq to redact secrets is a
+        # leak waiting to happen if it is missing.
+        if res["success"] and isinstance(res["data"], dict):
+            res["data"].pop("data", None)
+            res["data"].pop("stringData", None)
+        return res
     except Exception as e:
         return {"success": False, "data": None, "error": str(e), "source": "k8s_client"}
 
@@ -1875,7 +1902,7 @@ async def restart_pod(pod_name: str, namespace: str, reason: str, confirmed: boo
         logger.error(f"k8s_client error in restart_pod: {e}")
         return await kubectl_fallback(f"kubectl delete pod {pod_name} -n {namespace}")
 
-async def rollback_deployment(deployment_name: str, namespace: str, target_revision: Optional[str], reason: str, confirmed: bool = False) -> Dict[str, Any]:
+async def rollback_deployment(deployment_name: str, namespace: str, reason: str, target_revision: Optional[str] = None, confirmed: bool = False) -> Dict[str, Any]:
     if not confirmed:
         target = target_revision or 'the previous version'
         msg = f"The AI wants to roll back deployment '{deployment_name}' in namespace '{namespace}' to revision {target}.\n\nReason: {reason}\n\nThis will replace the current pods with the previous image version. Target revision: {target}.\n\nApprove or cancel?"

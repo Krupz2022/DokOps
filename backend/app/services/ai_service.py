@@ -2080,6 +2080,18 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     exec_result = resolved_op["result"]
                                     observation = sanitize_for_llm(str(exec_result))
                                     yield {"type": "step", "message": f"{tool_name} approved and executed."}
+                                    # "Applied successfully" is not "fixed" — wait for the
+                                    # change to land, then append the real end state.
+                                    from app.services.presweep import (
+                                        namespace_of_write, settle_after_write,
+                                    )
+                                    if _write_ns := namespace_of_write(tool_inputs):
+                                        yield {"type": "step", "message": "Verifying the change took effect..."}
+                                        try:
+                                            if _settled := await settle_after_write(_write_ns):
+                                                observation += "\n\n" + _settled
+                                        except Exception as e:
+                                            _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
                                 else:
                                     observation = f"Operation '{tool_name}' was approved but produced no result."
                             else:
@@ -2209,6 +2221,18 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     exec_result = resolved_op["result"]
                                     observation = sanitize_for_llm(str(exec_result))
                                     yield {"type": "step", "message": f"{tool_name} approved and executed."}
+                                    # "Applied successfully" is not "fixed" — wait for the
+                                    # change to land, then append the real end state.
+                                    from app.services.presweep import (
+                                        namespace_of_write, settle_after_write,
+                                    )
+                                    if _write_ns := namespace_of_write(tool_inputs):
+                                        yield {"type": "step", "message": "Verifying the change took effect..."}
+                                        try:
+                                            if _settled := await settle_after_write(_write_ns):
+                                                observation += "\n\n" + _settled
+                                        except Exception as e:
+                                            _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
                                 else:
                                     observation = f"Operation '{tool_name}' was approved but produced no result."
                             else:

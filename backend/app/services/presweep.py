@@ -16,8 +16,10 @@ still has its full toolset to fall back on.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from typing import Optional
 
 from app.services.k8s_service import k8s_service
@@ -311,18 +313,9 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
     return lines
 
 
-async def build_presweep(
-    namespace: str, *, max_log_pods: int = 3, tail_lines: int = 30
-) -> str:
-    """Return a context block of facts for `namespace`, or '' if nothing to report.
-
-    Never raises: a presweep failure must not break a chat turn.
-    """
-    core = k8s_service._get_api("CoreV1Api")
-    apps = k8s_service._get_api("AppsV1Api")
-    if core is None or apps is None:
-        return ""  # mock mode or no reachable cluster
-
+async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_lines: int) -> list[str]:
+    """Gather every problem section for `namespace`. Each check is independent —
+    one failing must not suppress the others."""
     sections: list[str] = []
     try:
         if services := await _zero_endpoint_services(core, namespace):
@@ -359,6 +352,22 @@ async def build_presweep(
     except Exception as e:
         logger.debug("presweep: crash-log check failed for %s: %s", namespace, e)
 
+    return sections
+
+
+async def build_presweep(
+    namespace: str, *, max_log_pods: int = 3, tail_lines: int = 30
+) -> str:
+    """Return a context block of facts for `namespace`, or '' if nothing to report.
+
+    Never raises: a presweep failure must not break a chat turn.
+    """
+    core = k8s_service._get_api("CoreV1Api")
+    apps = k8s_service._get_api("AppsV1Api")
+    if core is None or apps is None:
+        return ""  # mock mode or no reachable cluster
+
+    sections = await _collect_sections(core, apps, namespace, max_log_pods, tail_lines)
     if not sections:
         return ""
     body = "\n".join(sections)
@@ -370,4 +379,67 @@ async def build_presweep(
         f"Quote these facts directly — they are the answer, not a hint. You must STILL "
         f"investigate every failing pod yourself and report those findings alongside "
         f"these — an answer that covers only what appears below is incomplete.\n{body}\n"
+    )
+
+
+def namespace_of_write(tool_inputs: dict) -> Optional[str]:
+    """Namespace a write touched: an explicit input, else the manifest's own field."""
+    explicit = (tool_inputs or {}).get("namespace")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    manifest = (tool_inputs or {}).get("manifest_yaml") or ""
+    match = re.search(r"^\s*namespace:\s*([a-z0-9][a-z0-9.\-]*)", manifest, re.M | re.I)
+    return match.group(1) if match else None
+
+
+async def settle_after_write(
+    namespace: str, *, timeout: float = 25.0, interval: float = 3.0
+) -> str:
+    """Wait for an applied change to take effect, then report the REAL end state.
+
+    A write reports "applied successfully" the moment the API server accepts it,
+    which is not the same as fixed. Both failure modes were observed live: an image
+    patch verified 5s after apply caught the rollout mid-flight and reported "0 ready
+    replicas" as though it had failed; and a ConfigMap created with the wrong key
+    applied cleanly, reported success, and left the pod exactly as broken.
+    """
+    core = k8s_service._get_api("CoreV1Api")
+    apps = k8s_service._get_api("AppsV1Api")
+    if core is None or apps is None:
+        return ""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        try:
+            deployments = await apps.list_namespaced_deployment(namespace)
+        except Exception as e:
+            logger.debug("settle: could not list deployments in %s: %s", namespace, e)
+            break
+        unready = [
+            d for d in deployments.items
+            if (d.spec.replicas or 0) > 0 and (d.status.ready_replicas or 0) < (d.spec.replicas or 0)
+        ]
+        if not unready:
+            break
+
+    try:
+        remaining = await _collect_sections(core, apps, namespace, 3, 30)
+    except Exception as e:
+        logger.debug("settle: post-change sweep failed for %s: %s", namespace, e)
+        return ""
+
+    if not remaining:
+        return (
+            f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the change "
+            f"to take effect): everything is now healthy — all deployments at full "
+            f"readiness, no blocked or crashing containers, no service without endpoints. "
+            f"The fix worked; say so plainly."
+        )
+    return (
+        f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the change to "
+        f"take effect): the write was accepted, but these problems REMAIN. Applying a "
+        f"manifest is not the same as fixing the problem — do NOT report success. Say "
+        f"what is still broken and why your change did not resolve it:\n"
+        + "\n".join(remaining)
     )

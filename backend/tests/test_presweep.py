@@ -11,8 +11,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.services.presweep import (
-    append_missing_findings, build_presweep, extract_namespace, resolve_namespace,
+    append_missing_findings, build_presweep, extract_namespace,
+    namespace_of_write, resolve_namespace, settle_after_write,
 )
+
+
+# ── settle after a write ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("inputs,expected", [
+    ({"namespace": "dokops-chaos", "reason": "x"}, "dokops-chaos"),
+    ({"manifest_yaml": "kind: ConfigMap\nmetadata:\n  name: c\n  namespace: payments\n"}, "payments"),
+    ({"manifest_yaml": "kind: ConfigMap\nmetadata:\n  name: c\n"}, None),
+    ({}, None),
+])
+def test_namespace_of_write(inputs, expected):
+    assert namespace_of_write(inputs) == expected
 
 
 # ── namespace resolution against the live cluster ────────────────────────────
@@ -177,6 +190,78 @@ def test_failure_signals_floor_these_to_investigate(query):
     assert any(sig in query.lower() for sig in AIService._FAILURE_SIGNALS), (
         "query would not be floored to investigate"
     )
+
+
+@pytest.mark.asyncio
+async def test_settle_reports_remaining_problems_not_success():
+    """The exact silent failure: a ConfigMap created with the wrong key applied
+    cleanly, was reported as success, and left the pod broken."""
+    container = SimpleNamespace(
+        name="app", restart_count=0,
+        state=SimpleNamespace(waiting=SimpleNamespace(reason="CreateContainerConfigError")),
+    )
+    core = _fake_core(endpoints=[], services=[],
+                      pods=[_pod("notify-svc-x", {"app": "notify-svc"}, container)])
+    core.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=[
+        SimpleNamespace(type="Warning", reason="Failed",
+                        involved_object=SimpleNamespace(name="notify-svc-x"),
+                        message="Error: couldn't find key smtp_host in ConfigMap x/notify-config")
+    ]))
+    with _patch_apis(core, _fake_apps([])):
+        out = await settle_after_write("dokops-chaos", timeout=0.01, interval=0.001)
+
+    assert "REMAIN" in out
+    assert "do NOT report success" in out
+    assert "couldn't find key smtp_host" in out
+
+
+@pytest.mark.asyncio
+async def test_settle_confirms_success_when_healthy():
+    core = _fake_core(
+        endpoints=[SimpleNamespace(metadata=SimpleNamespace(name="web"),
+                                   subsets=[SimpleNamespace(addresses=[SimpleNamespace(ip="10.0.0.1")])])],
+        services=[_svc("web", {"app": "web"})],
+        pods=[_pod("web-1", {"app": "web"})],
+    )
+    healthy = SimpleNamespace(
+        metadata=SimpleNamespace(name="web"),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(ready_replicas=1),
+    )
+    with _patch_apis(core, _fake_apps([healthy])):
+        out = await settle_after_write("dokops-clean", timeout=0.01, interval=0.001)
+
+    assert "The fix worked" in out
+    assert "REMAIN" not in out
+
+
+@pytest.mark.asyncio
+async def test_settle_waits_for_a_rollout_instead_of_reporting_it_broken():
+    """Regression: an image patch was verified 5s after apply, caught the rollout
+    mid-flight, and reported "0 ready replicas" as though the fix had failed."""
+    rolling = SimpleNamespace(
+        metadata=SimpleNamespace(name="sample-api"),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(ready_replicas=0),
+    )
+    ready = SimpleNamespace(
+        metadata=SimpleNamespace(name="sample-api"),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(ready_replicas=1),
+    )
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    apps = _fake_apps([])
+    # Unready on the first poll, ready on the second — settle must keep waiting.
+    apps.list_namespaced_deployment = AsyncMock(side_effect=[
+        SimpleNamespace(items=[rolling]),
+        SimpleNamespace(items=[ready]),
+        SimpleNamespace(items=[ready]),
+    ])
+    with _patch_apis(core, apps):
+        out = await settle_after_write("dokops-chaos", timeout=5.0, interval=0.01)
+
+    assert apps.list_namespaced_deployment.await_count >= 2, "did not wait for the rollout"
+    assert "The fix worked" in out
 
 
 def test_no_sweep_returns_answer_unchanged():

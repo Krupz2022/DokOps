@@ -24,3 +24,14 @@ def test_investigation_protocol_forbids_ending_on_answerable_question():
     # Assert the prohibition itself, not just its heading — a header with an
     # empty or reworded body would otherwise pass while the rule does nothing.
     assert "Never end your turn with a question you have a tool to answer" in prompt
+
+
+def test_investigation_protocol_requires_non_pod_sweep():
+    """A namespace investigation must look past pod status.
+
+    Regression: a Service whose selector typo left it with zero endpoints was
+    missed twice, because discovery only enumerated pods and its pods were healthy.
+    """
+    prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
+    for tool in ("list_services", "get_endpoints", "list_deployments"):
+        assert tool in prompt, f"{tool} not named in the discovery sweep"

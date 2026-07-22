@@ -144,6 +144,17 @@ INVESTIGATION PLAN:
 ...
 Then immediately start executing — do NOT wait for confirmation.
 
+PHASE 1.5 — DISCOVERY SWEEP (namespace or cluster-wide investigations only):
+Unhealthy pods are not the only broken things. A workload can be fully Running and
+still be broken. Before concluding, always also check:
+- list_services + get_endpoints — a Service with zero endpoints is broken even when
+  every pod is Running. This is the most commonly missed failure.
+- list_deployments — desired != ready means a problem no pod may exist to show you.
+  If a Deployment has zero pods at all, the failure is at the ReplicaSet: check
+  events for quota rejection or a selector that does not match its own template.
+Report anything found here alongside the failing pods. Never answer "the namespace
+is healthy" on the strength of pod status alone.
+
 PHASE 2 — EXECUTE:
 Follow your plan. For each step, call the relevant tool.
 Mark steps complete as you go: [x] Step N.

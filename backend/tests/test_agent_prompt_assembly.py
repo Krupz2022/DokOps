@@ -21,3 +21,6 @@ def test_health_followup_present_in_normal_mode():
 def test_investigation_protocol_forbids_ending_on_answerable_question():
     prompt = build_agent_system_prompt(investigation=True, selected_tools=[])
     assert "PHASE 4 — TERMINAL CONDITION" in prompt
+    # Assert the prohibition itself, not just its heading — a header with an
+    # empty or reworded body would otherwise pass while the rule does nothing.
+    assert "Never end your turn with a question you have a tool to answer" in prompt

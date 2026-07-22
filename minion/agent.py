@@ -113,7 +113,10 @@ def _collect_patches_wua() -> dict:
     _SEV = {"critical": "critical", "important": "high", "moderate": "medium", "low": "low"}
     ps = (
         "$s=New-Object -ComObject Microsoft.Update.Session;"
-        "$r=$s.CreateUpdateSearcher().Search('IsInstalled=0 and Type=\\'Software\\'');"
+        # PowerShell escapes a quote inside a single-quoted string by doubling it.
+        # A backslash escape is a parse error, so this whole search used to fail and
+        # silently fall through to the winget path — WUA severities never arrived.
+        "$r=$s.CreateUpdateSearcher().Search('IsInstalled=0 and Type=''Software''');"
         "$out=@();"
         "foreach($u in $r.Updates){"
         "$sec=($u.Categories|?{$_.Name -match 'Security'}).Count -gt 0;"
@@ -151,8 +154,10 @@ def collect_patches_windows() -> dict:
     """Try WUA COM first; fall back to winget if WUA is unreachable."""
     try:
         return _collect_patches_wua()
-    except Exception:
-        pass  # WUA blocked (corporate firewall) — fall through to winget
+    except Exception as e:
+        # WUA blocked (corporate firewall) — fall through to winget. Log it: a silent
+        # swallow here hid a WUA parse error that downgraded every Windows scan.
+        log.warning("WUA scan failed (%s) — falling back to winget", e)
 
     from datetime import datetime as _dt, timezone as _tz
     packages = []

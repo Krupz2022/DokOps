@@ -360,7 +360,8 @@ async def _stream_and_save(
             pass  # Never block the chat stream due to runbook matching errors
 
     inner = ai_service.run_global_agentic_loop(
-        query, context=cluster_context, runbook_id=runbook_id, history=history
+        query, context=cluster_context, runbook_id=runbook_id, history=history,
+        conversation_id=conversation_id, user_id=user_id,
     )
     # Drain the agent generator in its own task feeding a queue; the emitter reads
     # with a timeout to send keepalives WITHOUT cancelling the generator.

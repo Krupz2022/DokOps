@@ -1693,6 +1693,8 @@ When done, give a per-pod root cause analysis.
         workflow_tool_executors: dict | None = None,
         evidence_context: Optional[str] = None,
         disable_trimming: bool = False,
+        conversation_id: str | None = None,
+        user_id: int | None = None,
     ):
         from app.services.k8s_service import active_cluster_ctx
         ctx_token = active_cluster_ctx.set(context) if context else None
@@ -1706,6 +1708,8 @@ When done, give a per-pod root cause analysis.
                 workflow_tool_executors=workflow_tool_executors,
                 evidence_context=evidence_context,
                 disable_trimming=disable_trimming,
+                conversation_id=conversation_id,
+                user_id=user_id,
             ):
                 yield event
         finally:
@@ -1722,6 +1726,8 @@ When done, give a per-pod root cause analysis.
         workflow_tool_executors: dict | None = None,
         evidence_context: Optional[str] = None,
         disable_trimming: bool = False,
+        conversation_id: str | None = None,
+        user_id: int | None = None,
     ):
         try:
             caching_client = self._get_caching_client()
@@ -2082,16 +2088,29 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     yield {"type": "step", "message": f"{tool_name} approved and executed."}
                                     # "Applied successfully" is not "fixed" — wait for the
                                     # change to land, then append the real end state.
-                                    from app.services.presweep import (
-                                        namespace_of_write, settle_after_write,
-                                    )
+                                    from app.services.presweep import namespace_of_write
                                     if _write_ns := namespace_of_write(tool_inputs):
-                                        yield {"type": "step", "message": "Verifying the change took effect..."}
-                                        try:
-                                            if _settled := await settle_after_write(_write_ns):
-                                                observation += "\n\n" + _settled
-                                        except Exception as e:
-                                            _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
+                                        if conversation_id and user_id is not None:
+                                            _tgt = (
+                                                f"deployment/{tool_inputs['deployment_name']}"
+                                                if tool_inputs.get("deployment_name")
+                                                else tool_inputs.get("configmap_name") or _write_ns
+                                            )
+                                            from app.services.rollout_watcher import start_rollout_watch
+                                            try:
+                                                observation += "\n\n" + await start_rollout_watch(
+                                                    conversation_id, user_id, _write_ns, _tgt)
+                                                yield {"type": "step", "message": f"Watching rollout of {_tgt}…"}
+                                            except Exception as e:
+                                                _agent_log.warning("[AGENT] watcher spawn failed for %s: %s", _write_ns, e)
+                                        else:
+                                            # no conversation context (e.g. workflow run) — verify inline as before
+                                            from app.services.presweep import settle_after_write
+                                            try:
+                                                if _settled := await settle_after_write(_write_ns):
+                                                    observation += "\n\n" + _settled
+                                            except Exception as e:
+                                                _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
                                 else:
                                     observation = f"Operation '{tool_name}' was approved but produced no result."
                             else:
@@ -2223,16 +2242,29 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     yield {"type": "step", "message": f"{tool_name} approved and executed."}
                                     # "Applied successfully" is not "fixed" — wait for the
                                     # change to land, then append the real end state.
-                                    from app.services.presweep import (
-                                        namespace_of_write, settle_after_write,
-                                    )
+                                    from app.services.presweep import namespace_of_write
                                     if _write_ns := namespace_of_write(tool_inputs):
-                                        yield {"type": "step", "message": "Verifying the change took effect..."}
-                                        try:
-                                            if _settled := await settle_after_write(_write_ns):
-                                                observation += "\n\n" + _settled
-                                        except Exception as e:
-                                            _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
+                                        if conversation_id and user_id is not None:
+                                            _tgt = (
+                                                f"deployment/{tool_inputs['deployment_name']}"
+                                                if tool_inputs.get("deployment_name")
+                                                else tool_inputs.get("configmap_name") or _write_ns
+                                            )
+                                            from app.services.rollout_watcher import start_rollout_watch
+                                            try:
+                                                observation += "\n\n" + await start_rollout_watch(
+                                                    conversation_id, user_id, _write_ns, _tgt)
+                                                yield {"type": "step", "message": f"Watching rollout of {_tgt}…"}
+                                            except Exception as e:
+                                                _agent_log.warning("[AGENT] watcher spawn failed for %s: %s", _write_ns, e)
+                                        else:
+                                            # no conversation context (e.g. workflow run) — verify inline as before
+                                            from app.services.presweep import settle_after_write
+                                            try:
+                                                if _settled := await settle_after_write(_write_ns):
+                                                    observation += "\n\n" + _settled
+                                            except Exception as e:
+                                                _agent_log.warning("[AGENT] settle failed for %s: %s", _write_ns, e)
                                 else:
                                     observation = f"Operation '{tool_name}' was approved but produced no result."
                             else:

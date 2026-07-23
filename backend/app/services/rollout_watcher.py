@@ -93,6 +93,25 @@ async def watch(notification_id: int) -> None:
             pass
 
 
+async def start_rollout_watch(conversation_id: str, user_id: int, namespace: str, target: str) -> str:
+    """Insert a watching Notification, spawn its watcher, and return an agent observation."""
+    async with AsyncSessionLocal() as db:
+        row = Notification(
+            user_id=user_id, conversation_id=conversation_id, kind="rollout_watch",
+            namespace=namespace, target=target, status="watching",
+            message=f"Rolling out {target}…",
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+    await spawn(row.id)
+    return (
+        f"The write was applied and a background watcher is now tracking the rollout of "
+        f"{target} in '{namespace}'. Do NOT claim the service is healthy yet — tell the user "
+        f"the change was applied and a notification will report when the pod is up or if it fails."
+    )
+
+
 async def resume_pending() -> int:
     """Re-spawn a watcher for every notification still in 'watching' (call on startup)."""
     from sqlmodel import select

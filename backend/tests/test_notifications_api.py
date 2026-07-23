@@ -60,3 +60,33 @@ def test_mark_read(isolated_session: Session, isolated_client) -> None:
         assert nid not in [n["id"] for n in r2.json()]
     finally:
         app.dependency_overrides.pop(deps.get_current_user, None)
+
+
+def test_mark_read_rejects_other_users_notification(isolated_session: Session, isolated_client) -> None:
+    theirs = _seed(isolated_session, 2)
+    app.dependency_overrides[deps.get_current_user] = lambda: _U(1)
+    try:
+        r = isolated_client.post(f"/api/v1/notifications/{theirs}/read")
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.pop(deps.get_current_user, None)
+    isolated_session.expire_all()
+    row = isolated_session.get(Notification, theirs)
+    assert row is not None
+    assert row.read is False
+
+
+def test_read_all_is_scoped_to_current_user(isolated_session: Session, isolated_client) -> None:
+    mine = _seed(isolated_session, 1)
+    theirs = _seed(isolated_session, 2)
+    app.dependency_overrides[deps.get_current_user] = lambda: _U(1)
+    try:
+        r = isolated_client.post("/api/v1/notifications/read-all")
+        assert r.status_code == 200
+    finally:
+        app.dependency_overrides.pop(deps.get_current_user, None)
+    isolated_session.expire_all()
+    mine_row = isolated_session.get(Notification, mine)
+    theirs_row = isolated_session.get(Notification, theirs)
+    assert mine_row is not None and mine_row.read is True
+    assert theirs_row is not None and theirs_row.read is False

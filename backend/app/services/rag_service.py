@@ -332,23 +332,32 @@ class RAGService:
         try:
             embedder = await self._get_embedding_provider()
             client = await self._get_chroma_client()
-            collection = client.get_or_create_collection(collection_name)
-            query_embedding = embedder.embed(query)
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(n_results, collection.count() or 1),
-            )
-            docs = results.get("documents", [[]])[0]
-            metas = results.get("metadatas", [[]])[0]
-            if not docs:
-                return "No relevant documents found."
-            lines = []
-            for i, (doc, meta) in enumerate(zip(docs, metas), 1):
-                title = meta.get("title") or meta.get("conversation_title") or "Unknown"
-                lines.append(
-                    f'<retrieved_document index="{i}" source="{title}">\n{doc}\n</retrieved_document>'
+
+            # Chroma HTTP calls and embedding (local model load + encode) are all
+            # synchronous and CPU/IO-bound. Run them off the event loop — inline
+            # they freeze the loop mid-chat-turn, the SSE keepalive can't fire, and
+            # a proxy cuts the silent stream (stalls at "Thinking..." ->
+            # ERR_INCOMPLETE_CHUNKED_ENCODING). Mirrors ingest_text above.
+            def _blocking_retrieve() -> str:
+                collection = client.get_or_create_collection(collection_name)
+                query_embedding = embedder.embed(query)
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=min(n_results, collection.count() or 1),
                 )
-            return "\n\n".join(lines)
+                docs = results.get("documents", [[]])[0]
+                metas = results.get("metadatas", [[]])[0]
+                if not docs:
+                    return "No relevant documents found."
+                lines = []
+                for i, (doc, meta) in enumerate(zip(docs, metas), 1):
+                    title = meta.get("title") or meta.get("conversation_title") or "Unknown"
+                    lines.append(
+                        f'<retrieved_document index="{i}" source="{title}">\n{doc}\n</retrieved_document>'
+                    )
+                return "\n\n".join(lines)
+
+            return await asyncio.to_thread(_blocking_retrieve)
         except Exception as e:
             return f"Knowledge base unavailable: {e}"
 

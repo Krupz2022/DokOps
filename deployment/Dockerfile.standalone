@@ -58,6 +58,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Bake the spaCy model into the image so it never downloads at runtime
 RUN python -m spacy download en_core_web_lg
 
+# Bake the local RAG embedding model too — otherwise the first chat turn with
+# RAG enabled downloads it synchronously and stalls that request's SSE stream.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Remove build tools — not needed at runtime (saves ~200 MB)
 RUN apt-get purge -y --auto-remove build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/*

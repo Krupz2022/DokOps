@@ -196,12 +196,18 @@ class ExternalRAGService:
         return True
 
     async def retrieve_all(self, query: str) -> str:
-        sources = [s for s in self.list_sources() if s.enabled]
+        # list_sources() and _embed_query() both do synchronous Session(engine)
+        # DB work (and _embed_query also loads/runs a local embedding model).
+        # This runs on every chat turn — inline it blocks the event loop and
+        # stalls the SSE stream, so push it to a worker thread.
+        sources = [s for s in await asyncio.to_thread(self.list_sources) if s.enabled]
         if not sources:
             return ""
 
         needs_vector = any(s.provider in _VECTOR_PROVIDERS for s in sources)
-        query_vector: Optional[List[float]] = _embed_query(query) if needs_vector else None
+        query_vector: Optional[List[float]] = (
+            await asyncio.to_thread(_embed_query, query) if needs_vector else None
+        )
 
         async def _retrieve_source(source) -> List[str]:
             config = self._decrypt_config(source)

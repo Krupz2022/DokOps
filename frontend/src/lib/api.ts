@@ -54,6 +54,37 @@ export const workflowApi = {
     api.post<{ ticket: string }>(`/workflows/runs/${runId}/stream-ticket`),
 };
 
+export interface AppNotification {
+  id: number;
+  status: "watching" | "succeeded" | "failed" | "timed_out";
+  message: string;
+  read: boolean;
+  conversation_id: string;
+  target: string;
+  namespace: string;
+  created_at: string;
+}
+
+export const notificationApi = {
+  list: (unreadOnly = false) =>
+    api.get<AppNotification[]>("/notifications/", { params: { unread_only: unreadOnly } }),
+  markRead: (id: number) => api.post(`/notifications/${id}/read`),
+  markAllRead: () => api.post("/notifications/read-all"),
+};
+
+export async function listNotifications(unreadOnly = false): Promise<AppNotification[]> {
+  const { data } = await notificationApi.list(unreadOnly);
+  return data;
+}
+
+export async function markNotificationRead(id: number): Promise<void> {
+  await notificationApi.markRead(id);
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await notificationApi.markAllRead();
+}
+
 export const jiraApi = {
   getFields: (body: JiraCredentials & { project_key: string; issue_type: string }) =>
     api.post<JiraFieldSchema[]>("/workflows/connectors/jira/fields", body),

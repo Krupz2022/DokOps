@@ -2,6 +2,7 @@ import { Button } from "../ui/Button";
 import { Shield, ShieldAlert, MessageSquare } from "lucide-react";
 import { ClusterContextSelector } from "./ClusterContextSelector";
 import { Breadcrumb } from "./Breadcrumb";
+import NotificationBell from "./NotificationBell";
 import { cn } from "../../lib/utils";
 import { useChatContext } from "../../context/ChatContext";
 
@@ -54,6 +55,9 @@ export function Header({
 
       {/* Cluster selector */}
       <ClusterContextSelector />
+
+      {/* Notification bell */}
+      <NotificationBell />
 
       {/* AI streaming indicator — visible from any page */}
       {anyStreaming && (

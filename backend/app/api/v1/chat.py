@@ -362,26 +362,42 @@ async def _stream_and_save(
     inner = ai_service.run_global_agentic_loop(
         query, context=cluster_context, runbook_id=runbook_id, history=history
     )
+    # Drain the agent generator in its own task feeding a queue; the emitter reads
+    # with a timeout to send keepalives WITHOUT cancelling the generator.
+    # The old `asyncio.wait_for(inner.__anext__(), 20)` threw CancelledError into
+    # the generator at its await point on every tick, corrupting the in-flight LLM
+    # call — so NO keepalive ever went out and any turn longer than the proxy's
+    # idle timeout was cut mid-stream (ERR_INCOMPLETE_CHUNKED_ENCODING).
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _drain():
+        try:
+            async for ev in inner:
+                await queue.put(ev)
+        except Exception as e:
+            await queue.put({"type": "result", "message": f"AI error — {type(e).__name__}: {e}"})
+        finally:
+            await queue.put(_DONE)
+
+    drain_task = asyncio.create_task(_drain())
     try:
         while True:
             try:
-                event = await asyncio.wait_for(inner.__anext__(), timeout=20.0)
-                collected.append(event)
-                yield f"data: {json.dumps(event)}\n\n"
+                event = await asyncio.wait_for(queue.get(), timeout=15.0)
             except asyncio.TimeoutError:
-                # Send SSE comment to keep the connection alive while AI is working
-                yield ": keepalive\n\n"
-            except StopAsyncIteration:
+                yield ": keepalive\n\n"  # keep the connection alive while AI works
+                continue
+            if event is _DONE:
                 break
-            except Exception as e:
-                # An AI-loop crash must end the stream cleanly: an unhandled raise
-                # aborts the chunked response mid-body (browser shows a connection
-                # error) instead of showing the user what actually failed.
-                err = {"type": "result", "message": f"AI error — {type(e).__name__}: {e}"}
-                collected.append(err)
-                yield f"data: {json.dumps(err)}\n\n"
-                break
+            collected.append(event)
+            yield f"data: {json.dumps(event)}\n\n"
     finally:
+        drain_task.cancel()
+        try:
+            await drain_task
+        except BaseException:
+            pass
         await inner.aclose()
         if collected:
             result_message: Optional[str] = None

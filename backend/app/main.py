@@ -273,23 +273,44 @@ app.add_middleware(AuditMiddleware)
 app.add_middleware(ActivationMiddleware)
 
 
-@app.middleware("http")
-async def relative_redirects(request, call_next):
+class RelativeRedirectMiddleware:
     """Rewrite self-referencing absolute redirect Locations to relative paths.
 
     Behind TLS-terminating proxies the app only sees http, so FastAPI's
     trailing-slash 307s carry an http:// Location that HTTPS pages block as
     mixed content. A relative Location keeps the browser on its own origin and
     scheme. External redirects (e.g. SSO to the IdP) have a different host and
-    are left untouched."""
-    response = await call_next(request)
-    loc = response.headers.get("location")
-    if loc and "://" in loc:
-        from urllib.parse import urlsplit
-        u = urlsplit(loc)
-        if u.netloc == request.headers.get("host"):
-            response.headers["location"] = (u.path or "/") + (f"?{u.query}" if u.query else "")
-    return response
+    are left untouched.
+
+    Pure ASGI (not @app.middleware("http") — that's BaseHTTPMiddleware sugar,
+    which cancel-scopes SSE streams and leaks pooled DB connections)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                from urllib.parse import urlsplit
+                host = next((v for k, v in scope.get("headers", []) if k == b"host"), b"").decode("latin-1")
+                headers = []
+                for k, v in message.get("headers", []):
+                    if k.lower() == b"location" and b"://" in v:
+                        u = urlsplit(v.decode("latin-1"))
+                        if u.netloc == host:
+                            v = ((u.path or "/") + (f"?{u.query}" if u.query else "")).encode("latin-1")
+                    headers.append((k, v))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(RelativeRedirectMiddleware)
 
 # CORS
 if settings.BACKEND_CORS_ORIGINS:

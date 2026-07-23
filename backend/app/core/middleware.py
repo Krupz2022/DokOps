@@ -1,6 +1,9 @@
+# Pure ASGI middleware (not BaseHTTPMiddleware): BaseHTTPMiddleware wraps the
+# response in an anyio cancel scope that tears down SSE streams mid-flight and
+# leaks pooled asyncpg connections. See docs/middleware.md "Pure ASGI Middleware".
 import time
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.core.db import AsyncSessionLocal
 from app.models.audit import AuditLog
 from app.core import security
@@ -20,17 +23,35 @@ _AZURE_ACTION_MAP = {
 }
 
 
-class AuditMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+class AuditMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+        method = scope["method"]
+        if path in ["/health", "/"] or method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
         start_time = time.time()
-        response = await call_next(request)
+        status_code = 500
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
         process_time = time.time() - start_time
 
-        if request.url.path in ["/health", "/"] or request.method == "OPTIONS":
-            return response
-
         actor = "anonymous"
-        auth_header = request.headers.get("Authorization")
+        auth_header = Headers(scope=scope).get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
             try:
@@ -39,9 +60,6 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 actor = payload.get("sub", "unknown")
             except Exception:
                 pass
-
-        path = request.url.path
-        method = request.method
 
         # Determine source + action + resource
         if "/integrations/azure/" in path or path.endswith("/integrations/azure"):
@@ -74,7 +92,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 actor=actor,
                 action=action,
                 resource=resource,
-                result=str(response.status_code),
+                result=str(status_code),
                 mode="NORMAL",
                 source=source,
                 details=f"Duration: {process_time:.4f}s",
@@ -85,5 +103,3 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     await session.commit()
             except Exception as e:
                 print(f"Failed to write audit log: {e}")
-
-        return response

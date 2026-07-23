@@ -278,6 +278,39 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
         pass  # Never fail the chat stream due to RAG indexing errors
 
 
+async def _save_events(conversation_id: str, collected: List[Dict]) -> int:
+    """Write collected AI messages + bump conversation; return cumulative token total.
+
+    Runs under asyncio.shield: a client disconnect cancels the SSE generator
+    mid-await, and without shielding the session close is cancelled too — the
+    asyncpg connection never returns to the pool (pool exhaustion after ~30
+    dropped streams)."""
+    async with AsyncSessionLocal() as db:
+        for event in collected:
+            msg_content = event.get("message", json.dumps(event))
+            tc = len(msg_content) // 4
+            msg = ChatMessage(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=msg_content,
+                message_type=_event_to_message_type(event["type"]),
+                token_count=tc,
+            )
+            db.add(msg)
+
+        conv = await db.get(ChatConversation, conversation_id)
+        if conv:
+            conv.updated_at = utcnow()
+            db.add(conv)
+        await db.commit()
+
+        # Compute cumulative conversation total from DB
+        all_msgs = (await db.exec(
+            select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+        )).all()
+        return sum(m.token_count for m in all_msgs)
+
+
 async def _stream_and_save(
     conversation_id: str,
     query: str,
@@ -341,30 +374,11 @@ async def _stream_and_save(
                     output_tokens += tc
 
             # ── write AI messages and update conversation ──────────────────
-            async with AsyncSessionLocal() as db:
-                for event in collected:
-                    msg_content = event.get("message", json.dumps(event))
-                    tc = len(msg_content) // 4
-                    msg = ChatMessage(
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=msg_content,
-                        message_type=_event_to_message_type(event["type"]),
-                        token_count=tc,
-                    )
-                    db.add(msg)
-
-                conv = await db.get(ChatConversation, conversation_id)
-                if conv:
-                    conv.updated_at = utcnow()
-                    db.add(conv)
-                await db.commit()
-
-                # Compute cumulative conversation total from DB
-                all_msgs = (await db.exec(
-                    select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
-                )).all()
-                conversation_total = sum(m.token_count for m in all_msgs)
+            # Shielded: on disconnect the save finishes in the background
+            # instead of being cancelled mid-transaction (connection leak).
+            conversation_total = await asyncio.shield(
+                _save_events(conversation_id, collected)
+            )
 
             history_chars = sum(len(h.get("content") or "") for h in history)
             input_tokens = (len(query) + history_chars) // 4
@@ -382,9 +396,10 @@ async def _stream_and_save(
             except GeneratorExit:
                 pass  # Client disconnected before receiving token_usage event
 
-            await _maybe_compact(conversation_id)
+            # Shielded for the same reason: both open their own DB sessions.
+            await asyncio.shield(_maybe_compact(conversation_id))
             if result_message:
-                await _maybe_index_incident(conversation_id, result_message)
+                await asyncio.shield(_maybe_index_incident(conversation_id, result_message))
 
 
 # ── Message Endpoint ───────────────────────────────────────────────────────────

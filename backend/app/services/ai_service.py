@@ -2104,6 +2104,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                             except Exception as e:
                                                 _agent_log.warning("[AGENT] watcher spawn failed for %s: %s", _write_ns, e)
                                         else:
+                                            yield {"type": "step", "message": "Verifying the change took effect..."}
                                             # no conversation context (e.g. workflow run) — verify inline as before
                                             from app.services.presweep import settle_after_write
                                             try:
@@ -2258,6 +2259,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                             except Exception as e:
                                                 _agent_log.warning("[AGENT] watcher spawn failed for %s: %s", _write_ns, e)
                                         else:
+                                            yield {"type": "step", "message": "Verifying the change took effect..."}
                                             # no conversation context (e.g. workflow run) — verify inline as before
                                             from app.services.presweep import settle_after_write
                                             try:

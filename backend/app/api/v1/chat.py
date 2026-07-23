@@ -1,4 +1,5 @@
 # backend/app/api/v1/chat.py
+import asyncio
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -18,6 +19,15 @@ from app.core.db import AsyncSessionLocal
 from app.core.token_context import set_token_context
 
 router = APIRouter()
+
+# Strong refs so fire-and-forget post-stream tasks aren't garbage-collected mid-run.
+_bg_tasks: set = set()
+
+
+def _spawn_bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 # ── Conversation CRUD ──────────────────────────────────────────────────────────
@@ -326,7 +336,6 @@ async def _stream_and_save(
     Final writes (saving AI messages) open a fresh AsyncSessionLocal() block
     around a single atomic write — no session is held during the AI loop.
     """
-    import asyncio
     set_token_context(user_id=user_id, source="chat")
 
     collected: List[Dict] = []
@@ -341,7 +350,10 @@ async def _stream_and_save(
         yield f"data: {json.dumps(first)}\n\n"
         try:
             from app.services.runbook_service import match_runbook_logic
-            match = await asyncio.to_thread(match_runbook_logic, query)
+            # 15s cap: this is the only stream window with no keepalives, and a
+            # hung provider here stalls past nginx's read timeout — the browser
+            # then sees ERR_INCOMPLETE_CHUNKED_ENCODING instead of an answer.
+            match = await asyncio.wait_for(asyncio.to_thread(match_runbook_logic, query), timeout=15.0)
             if match.get("confidence") in ("high", "medium") and match.get("matched_runbook_id"):
                 runbook_id = match["matched_runbook_id"]
         except Exception:
@@ -360,6 +372,14 @@ async def _stream_and_save(
                 # Send SSE comment to keep the connection alive while AI is working
                 yield ": keepalive\n\n"
             except StopAsyncIteration:
+                break
+            except Exception as e:
+                # An AI-loop crash must end the stream cleanly: an unhandled raise
+                # aborts the chunked response mid-body (browser shows a connection
+                # error) instead of showing the user what actually failed.
+                err = {"type": "result", "message": f"AI error — {type(e).__name__}: {e}"}
+                collected.append(err)
+                yield f"data: {json.dumps(err)}\n\n"
                 break
     finally:
         await inner.aclose()
@@ -396,10 +416,14 @@ async def _stream_and_save(
             except GeneratorExit:
                 pass  # Client disconnected before receiving token_usage event
 
-            # Shielded for the same reason: both open their own DB sessions.
-            await asyncio.shield(_maybe_compact(conversation_id))
+            # Background tasks, not awaited: compaction is a full LLM call, and
+            # running it inside the generator delays the terminating chunk past
+            # nginx's read timeout — the proxy then cuts the connection even
+            # though every event was already delivered. As independent tasks
+            # they also can't be cancelled by a client disconnect.
+            _spawn_bg(_maybe_compact(conversation_id))
             if result_message:
-                await asyncio.shield(_maybe_index_incident(conversation_id, result_message))
+                _spawn_bg(_maybe_index_incident(conversation_id, result_message))
 
 
 # ── Message Endpoint ───────────────────────────────────────────────────────────

@@ -62,3 +62,5 @@ from app.api.v1 import blueprints as blueprints_router
 api_router.include_router(blueprints_router.router, prefix="/blueprints", tags=["blueprints"])
 from app.api.v1 import keys as keys_router
 api_router.include_router(keys_router.router, prefix="/keys", tags=["keys"])
+from app.api.v1 import notifications as notifications_router
+api_router.include_router(notifications_router.router, prefix="/notifications", tags=["notifications"])

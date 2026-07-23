@@ -9,6 +9,7 @@ from app.models.user import User
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.setting import SystemSetting
 from app.models.chat import ChatConversation, ChatMessage  # noqa: F401
+from app.models.notification import Notification  # noqa: F401
 from app.models.rag import RagDocument  # noqa: F401
 from app.models.integration import AzureConnection, AzureFeatureConfig, IntegrationSettings  # noqa: F401
 from app.models.mcp import MCPServer, MCPTool  # noqa: F401

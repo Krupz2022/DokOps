@@ -402,36 +402,61 @@ _FATAL_WAITING = (
 async def _rollout_state(core, apps, namespace: str) -> tuple[str, list[str]]:
     """Classify a namespace mid-rollout as 'healthy', 'failed', or 'progressing'.
 
-    'progressing' is the case a fixed short wait got wrong: a pod that is simply slow
-    to come up (image pull, init containers, readiness-probe delay) is NOT broken, and
-    reporting it as a failed fix is the bug. Only a hard signal — crashloop, bad image,
-    config error, or an exceeded progress deadline — is 'failed'."""
-    deployments = (await apps.list_namespaced_deployment(namespace)).items
+    Readiness is checked across Deployments, StatefulSets, DaemonSets AND bare Pods —
+    not Deployments alone — so a slow StatefulSet/DaemonSet/pod reads as 'progressing',
+    not a premature 'healthy'. 'progressing' is the case a fixed short wait got wrong: a
+    workload that is simply slow to come up (image pull, init containers, ordered
+    StatefulSet roll, readiness-probe delay) is NOT broken. Only a hard signal — a
+    crashloop/bad-image/config-error waiting reason on any pod, an exceeded Deployment
+    progress deadline, or a Failed bare pod — is 'failed'.
+
+    Jobs (run-to-completion) and PVCs (bind-once) are deliberately excluded: their
+    'done' semantics differ from readiness, and namespace-scoped inclusion would hold
+    the watch open on unrelated CronJob activity or a pre-existing Pending PVC."""
     fatal: list[str] = []
-    for d in deployments:
+    progressing: list[str] = []
+
+    for d in (await apps.list_namespaced_deployment(namespace)).items:
         for cond in (getattr(d.status, "conditions", None) or []):
             if getattr(cond, "type", None) == "Progressing" and getattr(cond, "reason", None) == "ProgressDeadlineExceeded":
-                fatal.append(f"  - {d.metadata.name}: rollout failed (ProgressDeadlineExceeded)")
+                fatal.append(f"  - deployment/{d.metadata.name}: rollout failed (ProgressDeadlineExceeded)")
+        desired = d.spec.replicas or 0
+        if desired > 0 and (d.status.ready_replicas or 0) < desired:
+            progressing.append(f"  - deployment/{d.metadata.name}: {(d.status.ready_replicas or 0)}/{desired} ready")
 
-    pods = (await core.list_namespaced_pod(namespace)).items
-    for pod in pods:
+    for s in (await apps.list_namespaced_stateful_set(namespace)).items:
+        desired = s.spec.replicas or 0
+        if desired > 0 and (s.status.ready_replicas or 0) < desired:
+            progressing.append(f"  - statefulset/{s.metadata.name}: {(s.status.ready_replicas or 0)}/{desired} ready")
+
+    for ds in (await apps.list_namespaced_daemon_set(namespace)).items:
+        desired = ds.status.desired_number_scheduled or 0
+        if desired > 0 and (ds.status.number_ready or 0) < desired:
+            progressing.append(f"  - daemonset/{ds.metadata.name}: {(ds.status.number_ready or 0)}/{desired} ready")
+
+    for pod in (await core.list_namespaced_pod(namespace)).items:
         for st in (pod.status.container_statuses or []):
             waiting = getattr(st.state, "waiting", None) if st.state else None
             if getattr(waiting, "reason", None) in _FATAL_WAITING:
                 fatal.append(f"  - {pod.metadata.name}/{st.name}: {waiting.reason}")
+        # A bare pod (no controller) has no Deployment/STS/DS to track its readiness.
+        if not (getattr(pod.metadata, "owner_references", None) or []):
+            phase = getattr(pod.status, "phase", None)
+            if phase in (None, "Succeeded"):
+                continue  # unknown (mock/no phase) or completed — not a rollout in progress
+            if phase == "Failed":
+                fatal.append(f"  - pod/{pod.metadata.name}: Failed")
+            elif not any(
+                getattr(c, "type", None) == "Ready" and getattr(c, "status", None) == "True"
+                for c in (getattr(pod.status, "conditions", None) or [])
+            ):
+                progressing.append(f"  - pod/{pod.metadata.name}: not Ready ({phase})")
+
     if fatal:
         return "failed", fatal
-
-    unready = [
-        d for d in deployments
-        if (d.spec.replicas or 0) > 0 and (d.status.ready_replicas or 0) < (d.spec.replicas or 0)
-    ]
-    if not unready:
-        return "healthy", []
-    return "progressing", [
-        f"  - {d.metadata.name}: {(d.status.ready_replicas or 0)}/{d.spec.replicas} ready"
-        for d in unready
-    ]
+    if progressing:
+        return "progressing", progressing
+    return "healthy", []
 
 
 async def settle_after_write(
@@ -468,8 +493,9 @@ async def settle_after_write(
     if state == "healthy":
         return (
             f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the rollout "
-            f"to finish): everything is now healthy — all deployments at full readiness, "
-            f"no blocked or crashing containers. The fix worked; say so plainly."
+            f"to finish): everything is now healthy — all workloads (deployments, "
+            f"statefulsets, daemonsets, pods) at full readiness, no blocked or crashing "
+            f"containers. The fix worked; say so plainly."
         )
 
     if state == "failed":

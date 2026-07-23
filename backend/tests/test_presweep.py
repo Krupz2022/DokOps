@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.services.presweep import (
-    append_missing_findings, build_presweep, extract_namespace,
+    _rollout_state, append_missing_findings, build_presweep, extract_namespace,
     namespace_of_write, resolve_namespace, settle_after_write,
 )
 
@@ -264,6 +264,61 @@ async def test_settle_waits_for_a_rollout_instead_of_reporting_it_broken():
     assert "The fix worked" in out
 
 
+# ── the classifier covers StatefulSets, DaemonSets and bare pods, not just Deployments ──
+
+@pytest.mark.asyncio
+async def test_rollout_state_statefulset_still_rolling_is_progressing():
+    """The v1 gap: a slow StatefulSet (ordered roll — DBs) used to read as healthy the
+    instant no pod was crashing, because only Deployments were checked."""
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    apps = _fake_apps([], statefulsets=[_sts("postgres", ready=1, replicas=3)])
+    state, detail = await _rollout_state(core, apps, "db")
+    assert state == "progressing"
+    assert "statefulset/postgres: 1/3 ready" in "\n".join(detail)
+
+
+@pytest.mark.asyncio
+async def test_rollout_state_daemonset_not_fully_scheduled_is_progressing():
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    apps = _fake_apps([], daemonsets=[_ds("fluentd", ready=1, desired=2)])
+    state, detail = await _rollout_state(core, apps, "logging")
+    assert state == "progressing"
+    assert "daemonset/fluentd: 1/2 ready" in "\n".join(detail)
+
+
+@pytest.mark.asyncio
+async def test_rollout_state_bare_pod_not_ready_is_progressing():
+    """A restarted pod with no controller (bare pod) has no Deployment to track it."""
+    core = _fake_core(endpoints=[], services=[], pods=[_bare_pod("job-runner", "Running", ready=False)])
+    apps = _fake_apps([])
+    state, detail = await _rollout_state(core, apps, "batch")
+    assert state == "progressing"
+    assert "pod/job-runner: not Ready" in "\n".join(detail)
+
+
+@pytest.mark.asyncio
+async def test_rollout_state_all_workloads_ready_is_healthy():
+    """STS + DS fully ready and a Ready bare pod → healthy (no premature-broken)."""
+    core = _fake_core(endpoints=[], services=[], pods=[_bare_pod("oneoff", "Running", ready=True)])
+    apps = _fake_apps(
+        [],
+        statefulsets=[_sts("postgres", ready=3, replicas=3)],
+        daemonsets=[_ds("fluentd", ready=2, desired=2)],
+    )
+    state, detail = await _rollout_state(core, apps, "prod")
+    assert state == "healthy"
+    assert detail == []
+
+
+@pytest.mark.asyncio
+async def test_rollout_state_succeeded_bare_pod_does_not_hold_progressing():
+    """A completed bare pod (Job-style Succeeded) is not a rollout in progress."""
+    core = _fake_core(endpoints=[], services=[], pods=[_bare_pod("migrate", "Succeeded", ready=False)])
+    apps = _fake_apps([])
+    state, _ = await _rollout_state(core, apps, "prod")
+    assert state == "healthy"
+
+
 @pytest.mark.asyncio
 async def test_settle_slow_pod_is_converging_not_broken():
     """The 1.5-min-startup case: a pod that is simply slow to become Ready — no crash,
@@ -354,10 +409,36 @@ def _fake_core(*, endpoints, services, pods):
     return core
 
 
-def _fake_apps(deployments):
+def _fake_apps(deployments, statefulsets=(), daemonsets=()):
     apps = SimpleNamespace()
     apps.list_namespaced_deployment = AsyncMock(return_value=SimpleNamespace(items=deployments))
+    apps.list_namespaced_stateful_set = AsyncMock(return_value=SimpleNamespace(items=list(statefulsets)))
+    apps.list_namespaced_daemon_set = AsyncMock(return_value=SimpleNamespace(items=list(daemonsets)))
     return apps
+
+
+def _sts(name, ready, replicas):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name),
+        spec=SimpleNamespace(replicas=replicas),
+        status=SimpleNamespace(ready_replicas=ready),
+    )
+
+
+def _ds(name, ready, desired):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name),
+        status=SimpleNamespace(number_ready=ready, desired_number_scheduled=desired),
+    )
+
+
+def _bare_pod(name, phase, ready):
+    """A pod with no owner_references (not controlled by a Deployment/STS/DS)."""
+    conds = [SimpleNamespace(type="Ready", status="True" if ready else "False")]
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name, labels={}, owner_references=[]),
+        status=SimpleNamespace(phase=phase, conditions=conds, container_statuses=[]),
+    )
 
 
 def _svc(name, selector, type_="ClusterIP"):

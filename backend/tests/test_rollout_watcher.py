@@ -7,11 +7,14 @@ from app.services import rollout_watcher as rw
 
 
 def _apps(state_seq):
-    """state_seq: list of deployment-list items returned per poll."""
+    """state_seq: list of deployment-list items returned per poll.
+    StatefulSet/DaemonSet listers return empty (the classifier now queries all three)."""
     apps = SimpleNamespace()
     apps.list_namespaced_deployment = AsyncMock(
         side_effect=[SimpleNamespace(items=items) for items in state_seq]
     )
+    apps.list_namespaced_stateful_set = AsyncMock(return_value=SimpleNamespace(items=[]))
+    apps.list_namespaced_daemon_set = AsyncMock(return_value=SimpleNamespace(items=[]))
     return apps
 
 

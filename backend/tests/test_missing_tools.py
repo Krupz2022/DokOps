@@ -64,6 +64,11 @@ async def test_patch_secret_executes_when_confirmed():
     from app.tools.k8s_tools import patch_secret
     mock_api = MagicMock()
     mock_api.patch_namespaced_secret = AsyncMock(return_value=MagicMock())
+    # patch_secret now also rolls consumers; no workloads consume it here → no-op
+    empty = MagicMock(items=[])
+    mock_api.list_namespaced_deployment = AsyncMock(return_value=empty)
+    mock_api.list_namespaced_stateful_set = AsyncMock(return_value=empty)
+    mock_api.list_namespaced_daemon_set = AsyncMock(return_value=empty)
     with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=mock_api):
         result = await patch_secret(
             secret_name="rmq-creds", namespace="default",

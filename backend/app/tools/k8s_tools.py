@@ -782,8 +782,9 @@ async def patch_secret(secret_name: str, namespace: str, key: str, value: str, r
             f"The AI wants to update secret '{secret_name}' in namespace '{namespace}'.\n\n"
             f"Key to update: `{key}`\n"
             f"Reason: {reason}\n\n"
-            f"⚠️ This will change a credential or configuration value stored in Kubernetes. "
-            f"Pods that mount this secret may need a restart to pick up the change.\n\n"
+            f"⚠️ This will change a credential or configuration value stored in Kubernetes, "
+            f"AND roll-restart the Deployments/StatefulSets/DaemonSets that consume it "
+            f"(a Secret change alone is NOT picked up by running pods).\n\n"
             f"Approve or cancel?"
         )
         return _pending_confirmation("patch_secret", {"secret_name": secret_name, "namespace": namespace, "key": key, "value": "***", "reason": reason}, msg, "high")
@@ -795,9 +796,17 @@ async def patch_secret(secret_name: str, namespace: str, key: str, value: str, r
         encoded_value = base64.b64encode(value.encode()).decode()
         patch_body = {"data": {key: encoded_value}}
         await core_api.patch_namespaced_secret(secret_name, namespace, patch_body)
+        restarted = await _rollout_restart_consumers(namespace, "secret", secret_name)
+        if restarted:
+            note = (f" Rolled-restarted {len(restarted)} consuming workload(s): {', '.join(restarted)}. "
+                    f"The change is NOT live until these finish rolling out — do not report success "
+                    f"until the pods are Ready.")
+        else:
+            note = (" No Deployment, StatefulSet, or DaemonSet in this namespace consumes this Secret, "
+                    "so nothing was restarted. If a bare pod uses it, restart it separately (restart_pod).")
         return {
             "success": True,
-            "data": f"Secret '{secret_name}/{key}' in namespace '{namespace}' updated successfully. Restart affected pods to pick up the change.",
+            "data": f"Secret '{secret_name}/{key}' in namespace '{namespace}' updated.{note}",
             "error": None,
             "source": "k8s_client",
         }
@@ -1821,43 +1830,51 @@ async def get_pdb(namespace: str) -> Dict[str, Any]:
         logger.error(f"k8s_client error in get_pdb: {e}")
         return await kubectl_fallback(f"kubectl get pdb -n {namespace} -o json")
 
-def _deployment_uses_configmap(dep, configmap_name: str) -> bool:
-    """True if the deployment's pod spec references configmap_name via env, envFrom, or a volume."""
-    spec = dep.spec.template.spec
+def _workload_consumes(workload, kind: str, name: str) -> bool:
+    """True if a workload's pod template references the ConfigMap/Secret `name` via env,
+    envFrom, or a volume. `kind` is 'configmap' or 'secret'. Works for any workload with a
+    `.spec.template.spec` (Deployment, StatefulSet, DaemonSet)."""
+    spec = workload.spec.template.spec
     for c in (spec.containers or []) + (spec.init_containers or []):
         for ef in (c.env_from or []):
-            if ef.config_map_ref and ef.config_map_ref.name == configmap_name:
+            ref = ef.config_map_ref if kind == "configmap" else ef.secret_ref
+            if ref and ref.name == name:
                 return True
         for ev in (c.env or []):
-            ref = ev.value_from.config_map_key_ref if ev.value_from else None
-            if ref and ref.name == configmap_name:
+            vf = ev.value_from
+            ref = (vf.config_map_key_ref if kind == "configmap" else vf.secret_key_ref) if vf else None
+            if ref and ref.name == name:
                 return True
     for v in (spec.volumes or []):
-        if v.config_map and v.config_map.name == configmap_name:
+        if kind == "configmap" and v.config_map and v.config_map.name == name:
+            return True
+        if kind == "secret" and v.secret and v.secret.secret_name == name:
             return True
     return False
 
 
-async def _rollout_restart_configmap_consumers(namespace: str, configmap_name: str) -> List[str]:
-    """Rollout-restart every Deployment in `namespace` that consumes `configmap_name`.
-
-    A ConfigMap patch is not picked up by running pods (env vars are baked at pod
-    creation; mounted files reload lazily and the app must re-read them), so a config
-    fix is only real once the consuming workloads roll. Returns the names restarted.
-    ponytail: Deployments only — StatefulSets/DaemonSets need a separate roll if that ever comes up."""
+async def _rollout_restart_consumers(namespace: str, kind: str, name: str) -> List[str]:
+    """Rollout-restart every Deployment / StatefulSet / DaemonSet in `namespace` that
+    consumes the ConfigMap/Secret `name`. A ConfigMap/Secret patch is not picked up by
+    running pods (env vars are baked at pod creation; mounted files reload lazily and the
+    app must re-read them), so the fix is only real once the consuming workloads roll.
+    Returns 'kind/name' labels for what was restarted."""
     apps_api = k8s_service._get_api("AppsV1Api")
     if not apps_api:
         return []
+    patch = {"spec": {"template": {"metadata": {"annotations": {
+        "kubectl.kubernetes.io/restartedAt": utcnow().isoformat()
+    }}}}}
     restarted: List[str] = []
-    deps = await apps_api.list_namespaced_deployment(namespace)
-    for dep in deps.items:
-        if not _deployment_uses_configmap(dep, configmap_name):
-            continue
-        patch = {"spec": {"template": {"metadata": {"annotations": {
-            "kubectl.kubernetes.io/restartedAt": utcnow().isoformat()
-        }}}}}
-        await apps_api.patch_namespaced_deployment(dep.metadata.name, namespace, patch)
-        restarted.append(dep.metadata.name)
+    for label, lister, patcher in (
+        ("deployment", apps_api.list_namespaced_deployment, apps_api.patch_namespaced_deployment),
+        ("statefulset", apps_api.list_namespaced_stateful_set, apps_api.patch_namespaced_stateful_set),
+        ("daemonset", apps_api.list_namespaced_daemon_set, apps_api.patch_namespaced_daemon_set),
+    ):
+        for w in (await lister(namespace)).items:
+            if _workload_consumes(w, kind, name):
+                await patcher(w.metadata.name, namespace, patch)
+                restarted.append(f"{label}/{w.metadata.name}")
     return restarted
 
 
@@ -1885,15 +1902,15 @@ async def update_configmap(configmap_name: str, namespace: str, key: str, value:
             return await kubectl_fallback(f"kubectl patch configmap {configmap_name} -n {namespace} --type merge -p '{{\"data\":{{\"{key}\":\"{value}\"}}}}'")
         patch_body = {"data": {key: value}}
         await core_api.patch_namespaced_config_map(configmap_name, namespace, patch_body)
-        restarted = await _rollout_restart_configmap_consumers(namespace, configmap_name)
+        restarted = await _rollout_restart_consumers(namespace, "configmap", configmap_name)
         if restarted:
-            note = (f" Rolled-restarted {len(restarted)} consuming deployment(s): {', '.join(restarted)}. "
+            note = (f" Rolled-restarted {len(restarted)} consuming workload(s): {', '.join(restarted)}. "
                     f"The change is NOT live until these finish rolling out — do not report success "
                     f"until the pods are Ready.")
         else:
-            note = (" No Deployment in this namespace consumes this ConfigMap, so nothing was restarted. "
-                    "If a pod, StatefulSet, or DaemonSet uses it, it still holds the OLD value and must be "
-                    "restarted separately (rollout_restart / restart_pod) before the fix takes effect.")
+            note = (" No Deployment, StatefulSet, or DaemonSet in this namespace consumes this ConfigMap, "
+                    "so nothing was restarted. If a bare pod uses it, it still holds the OLD value and must "
+                    "be restarted separately (restart_pod) before the fix takes effect.")
         return {"success": True, "data": f"ConfigMap '{configmap_name}' updated: {key}={value}.{note}", "error": None, "source": "k8s_client"}
     except Exception as e:
         logger.error(f"k8s_client error in update_configmap: {e}")

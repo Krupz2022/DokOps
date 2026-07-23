@@ -1,5 +1,4 @@
 import asyncio
-import datetime as _dt
 import json
 import logging
 import os
@@ -10,6 +9,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 from kubernetes_asyncio.client.rest import ApiException
+from app.core.datetimes import utcnow
 from app.services.k8s_service import k8s_service
 
 
@@ -1854,7 +1854,7 @@ async def _rollout_restart_configmap_consumers(namespace: str, configmap_name: s
         if not _deployment_uses_configmap(dep, configmap_name):
             continue
         patch = {"spec": {"template": {"metadata": {"annotations": {
-            "kubectl.kubernetes.io/restartedAt": _dt.datetime.utcnow().isoformat()
+            "kubectl.kubernetes.io/restartedAt": utcnow().isoformat()
         }}}}}
         await apps_api.patch_namespaced_deployment(dep.metadata.name, namespace, patch)
         restarted.append(dep.metadata.name)
@@ -1966,7 +1966,7 @@ async def rollout_restart(deployment_name: str, namespace: str, reason: str, con
         if not apps_api:
             return await kubectl_fallback(f"kubectl rollout restart deployment/{deployment_name} -n {namespace}")
         patch = {"spec": {"template": {"metadata": {"annotations": {
-            "kubectl.kubernetes.io/restartedAt": _dt.datetime.utcnow().isoformat()
+            "kubectl.kubernetes.io/restartedAt": utcnow().isoformat()
         }}}}}
         await apps_api.patch_namespaced_deployment(deployment_name, namespace, patch)
         return {"success": True, "data": f"Deployment '{deployment_name}' restart initiated. Wait for pods to become Ready before reporting success.", "error": None, "source": "k8s_client"}

@@ -15,9 +15,9 @@ from typing import Set
 
 from app.core.datetimes import utcnow
 from app.core.db import AsyncSessionLocal
-from app.models.chat import ChatMessage
+from app.models.chat import ChatConversation, ChatMessage
 from app.models.notification import Notification
-from app.services.k8s_service import k8s_service
+from app.services.k8s_service import active_cluster_ctx, k8s_service
 from app.services.presweep import _rollout_state
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,10 @@ async def _resolve(notification_id: int, status: str, message: str) -> None:
             conversation_id=row.conversation_id, role="assistant",
             content=message, message_type="text", token_count=len(message) // 4,
         ))
+        conv = await db.get(ChatConversation, row.conversation_id)
+        if conv:
+            conv.updated_at = utcnow()
+            db.add(conv)
         await db.commit()
 
 
@@ -65,8 +69,15 @@ async def watch(notification_id: int) -> None:
             return
         namespace, target = row.namespace, row.target
 
-        core = k8s_service._get_api("CoreV1Api")
-        apps = k8s_service._get_api("AppsV1Api")
+        ctx = row.cluster_context
+        if ctx:
+            try:
+                await k8s_service._ensure_context_loaded(ctx)
+            except Exception as e:  # noqa: BLE001 — a bad/stale context must never crash the watcher
+                logger.warning("rollout_watcher.watch(%s): _ensure_context_loaded(%s) failed: %s", notification_id, ctx, e)
+
+        core = k8s_service._get_api("CoreV1Api", ctx)
+        apps = k8s_service._get_api("AppsV1Api", ctx)
         if core is None or apps is None:
             # mock mode / no cluster — nothing to watch, the write already happened
             await _resolve(notification_id, "succeeded", f"✅ {target} applied (no cluster to watch).")
@@ -100,6 +111,7 @@ async def start_rollout_watch(conversation_id: str, user_id: int, namespace: str
             user_id=user_id, conversation_id=conversation_id, kind="rollout_watch",
             namespace=namespace, target=target, status="watching",
             message=f"Rolling out {target}…",
+            cluster_context=active_cluster_ctx.get(),
         )
         db.add(row)
         await db.commit()

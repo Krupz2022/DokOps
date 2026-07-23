@@ -17,5 +17,6 @@ class Notification(SQLModel, table=True):
     status: str = Field(default="watching")  # watching | succeeded | failed | timed_out
     message: str = ""
     read: bool = Field(default=False)
+    cluster_context: Optional[str] = Field(default=None)
     created_at: datetime = utc_field()
     resolved_at: Optional[datetime] = utc_optional_field()

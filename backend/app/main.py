@@ -159,14 +159,6 @@ async def lifespan(app: FastAPI):
     await _run_patch_migrations()   # ← run AFTER create_db_and_tables; IF NOT EXISTS makes this safe on fresh DBs too
     await init_db()
 
-    # Resume pending rollout watchers from the last session. Errors are caught
-    # and logged so a watch-resume failure never blocks application startup.
-    try:
-        from app.services.rollout_watcher import resume_pending
-        await resume_pending()
-    except Exception as _e:  # noqa: BLE001 — resuming watchers must never block startup
-        logging.getLogger(__name__).warning("rollout_watcher resume failed: %s", _e)
-
     # Seed blueprints from scope-encoded directory (if present). Errors are
     # caught and logged so a bad seed file never blocks application startup.
     import os as _os_seed
@@ -195,6 +187,17 @@ async def lifespan(app: FastAPI):
 
     from app.services.k8s_service import k8s_service
     await k8s_service.initialize()
+
+    # Resume pending rollout watchers from the last session. Must run AFTER
+    # k8s_service.initialize() — otherwise resumed watchers see mock-mode
+    # (_get_api returns None) and falsely resolve every row as "succeeded
+    # (no cluster to watch)". Errors are caught and logged so a watch-resume
+    # failure never blocks application startup.
+    try:
+        from app.services.rollout_watcher import resume_pending
+        await resume_pending()
+    except Exception as _e:  # noqa: BLE001 — resuming watchers must never block startup
+        logging.getLogger(__name__).warning("rollout_watcher resume failed: %s", _e)
 
     from app.services.integration_health_service import integration_health
     integration_health.start()

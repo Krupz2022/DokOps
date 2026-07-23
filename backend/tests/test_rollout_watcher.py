@@ -48,7 +48,7 @@ class _FakeSession:
 @pytest.mark.asyncio
 async def test_watch_marks_succeeded_when_rollout_becomes_ready(monkeypatch):
     row = SimpleNamespace(id=1, conversation_id="c1", namespace="ns", target="deployment/x",
-                          status="watching", message="", resolved_at=None)
+                          status="watching", message="", resolved_at=None, cluster_context=None)
     sess = _FakeSession(row)
     apps = _apps([[_dep("x", 0, 1)], [_dep("x", 1, 1)]])   # unready then ready
     core = _core()
@@ -65,7 +65,7 @@ async def test_watch_marks_succeeded_when_rollout_becomes_ready(monkeypatch):
 @pytest.mark.asyncio
 async def test_watch_marks_failed_on_crashloop(monkeypatch):
     row = SimpleNamespace(id=2, conversation_id="c1", namespace="ns", target="deployment/x",
-                          status="watching", message="", resolved_at=None)
+                          status="watching", message="", resolved_at=None, cluster_context=None)
     crashing = SimpleNamespace(status=SimpleNamespace(container_statuses=[
         SimpleNamespace(name="app", state=SimpleNamespace(
             waiting=SimpleNamespace(reason="CrashLoopBackOff")))]),
@@ -101,7 +101,7 @@ async def test_resume_pending_respawns_only_watching_rows(monkeypatch):
 async def test_watch_never_raises_on_rollout_state_exception(monkeypatch):
     """Verify watch() catches exceptions and resolves row to 'failed' instead of propagating."""
     row = SimpleNamespace(id=3, conversation_id="c1", namespace="ns", target="deployment/x",
-                          status="watching", message="", resolved_at=None)
+                          status="watching", message="", resolved_at=None, cluster_context=None)
     apps = _apps([[_dep("x", 0, 1)]])
     core = _core()
 
@@ -119,6 +119,30 @@ async def test_watch_never_raises_on_rollout_state_exception(monkeypatch):
 
     assert row.status == "failed"
     assert "boom" in row.message
+
+
+@pytest.mark.asyncio
+async def test_watch_marks_timed_out_when_deadline_exceeded(monkeypatch):
+    """Verify watch() resolves to 'timed_out' when the rollout never becomes healthy/failed
+    before WATCH_MAX_SECONDS elapses."""
+    row = SimpleNamespace(id=4, conversation_id="c1", namespace="ns", target="deployment/x",
+                          status="watching", message="", resolved_at=None, cluster_context=None)
+    apps = _apps([[_dep("x", 0, 1)]] * 100)  # always unready — plenty of polls available
+    core = _core()
+
+    async def _always_progressing(*args, **kwargs):
+        return "progressing", []
+
+    monkeypatch.setattr(rw, "_rollout_state", _always_progressing)
+    with patch("app.services.rollout_watcher.AsyncSessionLocal", lambda: _FakeSession(row)), \
+         patch("app.services.rollout_watcher.k8s_service._get_api",
+               side_effect=lambda k, context=None: core if k == "CoreV1Api" else apps):
+        monkeypatch.setattr(rw, "WATCH_INTERVAL", 0.001)
+        monkeypatch.setattr(rw, "WATCH_MAX_SECONDS", 0.0)
+        await rw.watch(4)
+    assert row.status == "timed_out"
+    assert "not ready" in row.message.lower()
+    assert row.resolved_at is not None
 
 
 @pytest.mark.asyncio

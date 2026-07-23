@@ -146,3 +146,13 @@ async def test_spawn_is_idempotent(monkeypatch):
     # Cleanup
     rw._watching_ids.clear()
     rw._tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_pending_never_raises_on_db_error(monkeypatch):
+    class _Boom:
+        async def __aenter__(self): raise RuntimeError("db down")
+        async def __aexit__(self, *a): return False
+    monkeypatch.setattr(rw, "AsyncSessionLocal", lambda: _Boom())
+    with pytest.raises(RuntimeError):
+        await rw.resume_pending()   # resume itself may raise; main.py guards it

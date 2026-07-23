@@ -264,6 +264,31 @@ async def test_settle_waits_for_a_rollout_instead_of_reporting_it_broken():
     assert "The fix worked" in out
 
 
+@pytest.mark.asyncio
+async def test_settle_slow_pod_is_converging_not_broken():
+    """The 1.5-min-startup case: a pod that is simply slow to become Ready — no crash,
+    no bad image, no config error — must NOT be reported as a failed fix once the wait
+    times out. It is still rolling out, and that is normal."""
+    slow = SimpleNamespace(
+        metadata=SimpleNamespace(name="sample-api"),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(ready_replicas=0, conditions=[]),
+    )
+    starting = SimpleNamespace(
+        name="app", restart_count=0,
+        state=SimpleNamespace(waiting=SimpleNamespace(reason="ContainerCreating")),
+    )
+    core = _fake_core(endpoints=[], services=[],
+                      pods=[_pod("sample-api-x", {"app": "sample-api"}, starting)])
+    with _patch_apis(core, _fake_apps([slow])):
+        out = await settle_after_write("dokops-chaos", timeout=0.02, interval=0.001)
+
+    assert "STILL IN PROGRESS" in out
+    assert "converging" in out
+    assert "REMAIN" not in out
+    assert "The fix worked" not in out
+
+
 def test_no_sweep_returns_answer_unchanged():
     assert append_missing_findings("", "some answer") == "some answer"
 

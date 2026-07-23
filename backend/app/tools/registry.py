@@ -825,6 +825,19 @@ TOOL_REGISTRY = {
         "requires_confirmation": True,
         "risk_level": "low"
     },
+    "rollout_restart": {
+        "function": k8s_tools.rollout_restart,
+        "description": (
+            "Roll-restart a Deployment (kubectl rollout restart) so its pods pick up an updated "
+            "ConfigMap or Secret, or get a fresh start. REQUIRED after changing a ConfigMap/Secret that "
+            "a pod consumes via env/envFrom — a config change alone is NOT picked up by running pods. "
+            "Recreates pods gradually. Action Input JSON: {\"deployment_name\": \"<name>\", \"namespace\": \"<ns>\", \"reason\": \"<why>\"}"
+        ),
+        "inputs": ["deployment_name", "namespace", "reason"],
+        "operation_type": "write",
+        "requires_confirmation": True,
+        "risk_level": "low"
+    },
     "rollback_deployment": {
         "function": k8s_tools.rollback_deployment,
         "description": "Roll back a deployment to a previous revision",

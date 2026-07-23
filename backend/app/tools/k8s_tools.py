@@ -1,4 +1,5 @@
 import asyncio
+import datetime as _dt
 import json
 import logging
 import os
@@ -1820,14 +1821,55 @@ async def get_pdb(namespace: str) -> Dict[str, Any]:
         logger.error(f"k8s_client error in get_pdb: {e}")
         return await kubectl_fallback(f"kubectl get pdb -n {namespace} -o json")
 
+def _deployment_uses_configmap(dep, configmap_name: str) -> bool:
+    """True if the deployment's pod spec references configmap_name via env, envFrom, or a volume."""
+    spec = dep.spec.template.spec
+    for c in (spec.containers or []) + (spec.init_containers or []):
+        for ef in (c.env_from or []):
+            if ef.config_map_ref and ef.config_map_ref.name == configmap_name:
+                return True
+        for ev in (c.env or []):
+            ref = ev.value_from.config_map_key_ref if ev.value_from else None
+            if ref and ref.name == configmap_name:
+                return True
+    for v in (spec.volumes or []):
+        if v.config_map and v.config_map.name == configmap_name:
+            return True
+    return False
+
+
+async def _rollout_restart_configmap_consumers(namespace: str, configmap_name: str) -> List[str]:
+    """Rollout-restart every Deployment in `namespace` that consumes `configmap_name`.
+
+    A ConfigMap patch is not picked up by running pods (env vars are baked at pod
+    creation; mounted files reload lazily and the app must re-read them), so a config
+    fix is only real once the consuming workloads roll. Returns the names restarted.
+    ponytail: Deployments only — StatefulSets/DaemonSets need a separate roll if that ever comes up."""
+    apps_api = k8s_service._get_api("AppsV1Api")
+    if not apps_api:
+        return []
+    restarted: List[str] = []
+    deps = await apps_api.list_namespaced_deployment(namespace)
+    for dep in deps.items:
+        if not _deployment_uses_configmap(dep, configmap_name):
+            continue
+        patch = {"spec": {"template": {"metadata": {"annotations": {
+            "kubectl.kubernetes.io/restartedAt": _dt.datetime.utcnow().isoformat()
+        }}}}}
+        await apps_api.patch_namespaced_deployment(dep.metadata.name, namespace, patch)
+        restarted.append(dep.metadata.name)
+    return restarted
+
+
 async def update_configmap(configmap_name: str, namespace: str, key: str, value: str, reason: str, confirmed: bool = False) -> Dict[str, Any]:
-    """Update a single key in a ConfigMap. Requires user confirmation before applying."""
+    """Update a single key in a ConfigMap, then roll-restart consuming Deployments. Requires user confirmation."""
     if not confirmed:
         msg = (
             f"The AI wants to update ConfigMap '{configmap_name}' in namespace '{namespace}'.\n\n"
             f"Reason: {reason}\n\n"
             f"Change:\n  {key}: {value}\n\n"
-            f"This will update the live ConfigMap. Pods that mount this ConfigMap may need a restart to pick up the new value.\n\n"
+            f"This updates the live ConfigMap AND rolls-restarts the Deployments that consume it "
+            f"(a ConfigMap change alone is NOT picked up by running pods).\n\n"
             f"Approve or cancel?"
         )
         return _pending_confirmation(
@@ -1843,7 +1885,16 @@ async def update_configmap(configmap_name: str, namespace: str, key: str, value:
             return await kubectl_fallback(f"kubectl patch configmap {configmap_name} -n {namespace} --type merge -p '{{\"data\":{{\"{key}\":\"{value}\"}}}}'")
         patch_body = {"data": {key: value}}
         await core_api.patch_namespaced_config_map(configmap_name, namespace, patch_body)
-        return {"success": True, "data": f"ConfigMap '{configmap_name}' updated: {key}={value}", "error": None, "source": "k8s_client"}
+        restarted = await _rollout_restart_configmap_consumers(namespace, configmap_name)
+        if restarted:
+            note = (f" Rolled-restarted {len(restarted)} consuming deployment(s): {', '.join(restarted)}. "
+                    f"The change is NOT live until these finish rolling out — do not report success "
+                    f"until the pods are Ready.")
+        else:
+            note = (" No Deployment in this namespace consumes this ConfigMap, so nothing was restarted. "
+                    "If a pod, StatefulSet, or DaemonSet uses it, it still holds the OLD value and must be "
+                    "restarted separately (rollout_restart / restart_pod) before the fix takes effect.")
+        return {"success": True, "data": f"ConfigMap '{configmap_name}' updated: {key}={value}.{note}", "error": None, "source": "k8s_client"}
     except Exception as e:
         logger.error(f"k8s_client error in update_configmap: {e}")
         return await kubectl_fallback(f"kubectl patch configmap {configmap_name} -n {namespace} --type merge -p '{{\"data\":{{\"{key}\":\"{value}\"}}}}'")
@@ -1901,6 +1952,27 @@ async def restart_pod(pod_name: str, namespace: str, reason: str, confirmed: boo
     except Exception as e:
         logger.error(f"k8s_client error in restart_pod: {e}")
         return await kubectl_fallback(f"kubectl delete pod {pod_name} -n {namespace}")
+
+async def rollout_restart(deployment_name: str, namespace: str, reason: str, confirmed: bool = False) -> Dict[str, Any]:
+    """Roll-restart a Deployment (kubectl rollout restart) so its pods pick up updated
+    ConfigMaps/Secrets or a fresh start. Recreates pods gradually, no downtime for replicas>1."""
+    if not confirmed:
+        msg = (f"The AI wants to roll-restart deployment '{deployment_name}' in namespace '{namespace}'.\n\n"
+               f"Reason: {reason}\n\nKubernetes will recreate the pods gradually (rolling update). "
+               f"Use this after a ConfigMap/Secret change so running pods pick up the new value.\n\nApprove or cancel?")
+        return _pending_confirmation("rollout_restart", {"deployment_name": deployment_name, "namespace": namespace, "reason": reason}, msg, "low")
+    try:
+        apps_api = k8s_service._get_api("AppsV1Api")
+        if not apps_api:
+            return await kubectl_fallback(f"kubectl rollout restart deployment/{deployment_name} -n {namespace}")
+        patch = {"spec": {"template": {"metadata": {"annotations": {
+            "kubectl.kubernetes.io/restartedAt": _dt.datetime.utcnow().isoformat()
+        }}}}}
+        await apps_api.patch_namespaced_deployment(deployment_name, namespace, patch)
+        return {"success": True, "data": f"Deployment '{deployment_name}' restart initiated. Wait for pods to become Ready before reporting success.", "error": None, "source": "k8s_client"}
+    except Exception as e:
+        logger.error(f"k8s_client error in rollout_restart: {e}")
+        return await kubectl_fallback(f"kubectl rollout restart deployment/{deployment_name} -n {namespace}")
 
 async def rollback_deployment(deployment_name: str, namespace: str, reason: str, target_revision: Optional[str] = None, confirmed: bool = False) -> Dict[str, Any]:
     if not confirmed:

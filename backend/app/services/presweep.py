@@ -392,16 +392,61 @@ def namespace_of_write(tool_inputs: dict) -> Optional[str]:
     return match.group(1) if match else None
 
 
-async def settle_after_write(
-    namespace: str, *, timeout: float = 25.0, interval: float = 3.0
-) -> str:
-    """Wait for an applied change to take effect, then report the REAL end state.
+# Waiting reasons that mean the rollout is genuinely broken, not just slow.
+_FATAL_WAITING = (
+    "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
+    "CreateContainerConfigError", "CreateContainerError",
+)
 
-    A write reports "applied successfully" the moment the API server accepts it,
-    which is not the same as fixed. Both failure modes were observed live: an image
+
+async def _rollout_state(core, apps, namespace: str) -> tuple[str, list[str]]:
+    """Classify a namespace mid-rollout as 'healthy', 'failed', or 'progressing'.
+
+    'progressing' is the case a fixed short wait got wrong: a pod that is simply slow
+    to come up (image pull, init containers, readiness-probe delay) is NOT broken, and
+    reporting it as a failed fix is the bug. Only a hard signal — crashloop, bad image,
+    config error, or an exceeded progress deadline — is 'failed'."""
+    deployments = (await apps.list_namespaced_deployment(namespace)).items
+    fatal: list[str] = []
+    for d in deployments:
+        for cond in (getattr(d.status, "conditions", None) or []):
+            if getattr(cond, "type", None) == "Progressing" and getattr(cond, "reason", None) == "ProgressDeadlineExceeded":
+                fatal.append(f"  - {d.metadata.name}: rollout failed (ProgressDeadlineExceeded)")
+
+    pods = (await core.list_namespaced_pod(namespace)).items
+    for pod in pods:
+        for st in (pod.status.container_statuses or []):
+            waiting = getattr(st.state, "waiting", None) if st.state else None
+            if getattr(waiting, "reason", None) in _FATAL_WAITING:
+                fatal.append(f"  - {pod.metadata.name}/{st.name}: {waiting.reason}")
+    if fatal:
+        return "failed", fatal
+
+    unready = [
+        d for d in deployments
+        if (d.spec.replicas or 0) > 0 and (d.status.ready_replicas or 0) < (d.spec.replicas or 0)
+    ]
+    if not unready:
+        return "healthy", []
+    return "progressing", [
+        f"  - {d.metadata.name}: {(d.status.ready_replicas or 0)}/{d.spec.replicas} ready"
+        for d in unready
+    ]
+
+
+async def settle_after_write(
+    namespace: str, *, timeout: float = 120.0, interval: float = 3.0
+) -> str:
+    """Wait for an applied change to actually take effect, then report the REAL end state.
+
+    A write reports "applied successfully" the moment the API server accepts it, which
+    is not the same as fixed. We poll until the rollout is definitively healthy or
+    definitively failed — breaking early either way — and only wait out the full timeout
+    for a rollout that is still legitimately coming up. Failure modes seen live: an image
     patch verified 5s after apply caught the rollout mid-flight and reported "0 ready
-    replicas" as though it had failed; and a ConfigMap created with the wrong key
-    applied cleanly, reported success, and left the pod exactly as broken.
+    replicas" as failed; a ConfigMap with the wrong key applied cleanly and left the pod
+    broken; and a pod that simply took ~90s to become Ready was called broken because the
+    wait was a fixed 25s. The three-way classification handles all three.
     """
     core = k8s_service._get_api("CoreV1Api")
     apps = k8s_service._get_api("AppsV1Api")
@@ -409,37 +454,44 @@ async def settle_after_write(
         return ""
 
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    state, detail = "progressing", []
+    while True:
         await asyncio.sleep(interval)
         try:
-            deployments = await apps.list_namespaced_deployment(namespace)
+            state, detail = await _rollout_state(core, apps, namespace)
         except Exception as e:
-            logger.debug("settle: could not list deployments in %s: %s", namespace, e)
-            break
-        unready = [
-            d for d in deployments.items
-            if (d.spec.replicas or 0) > 0 and (d.status.ready_replicas or 0) < (d.spec.replicas or 0)
-        ]
-        if not unready:
+            logger.debug("settle: rollout-state check failed for %s: %s", namespace, e)
+            return ""
+        if state in ("healthy", "failed") or time.monotonic() >= deadline:
             break
 
-    try:
-        remaining = await _collect_sections(core, apps, namespace, 3, 30)
-    except Exception as e:
-        logger.debug("settle: post-change sweep failed for %s: %s", namespace, e)
-        return ""
-
-    if not remaining:
+    if state == "healthy":
         return (
-            f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the change "
-            f"to take effect): everything is now healthy — all deployments at full "
-            f"readiness, no blocked or crashing containers, no service without endpoints. "
-            f"The fix worked; say so plainly."
+            f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the rollout "
+            f"to finish): everything is now healthy — all deployments at full readiness, "
+            f"no blocked or crashing containers. The fix worked; say so plainly."
         )
+
+    if state == "failed":
+        try:
+            remaining = await _collect_sections(core, apps, namespace, 3, 30)
+        except Exception as e:
+            logger.debug("settle: post-change sweep failed for %s: %s", namespace, e)
+            remaining = detail
+        return (
+            f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the change to "
+            f"take effect): the write was accepted, but these problems REMAIN. Applying a "
+            f"manifest is not the same as fixing the problem — do NOT report success. Say "
+            f"what is still broken and why your change did not resolve it:\n"
+            + "\n".join(remaining or detail)
+        )
+
+    # progressing — timed out while still legitimately coming up, no hard error
     return (
-        f"POST-CHANGE STATE of '{namespace}' (verified after waiting for the change to "
-        f"take effect): the write was accepted, but these problems REMAIN. Applying a "
-        f"manifest is not the same as fixing the problem — do NOT report success. Say "
-        f"what is still broken and why your change did not resolve it:\n"
-        + "\n".join(remaining)
+        f"POST-CHANGE STATE of '{namespace}': the change was applied and the rollout is "
+        f"STILL IN PROGRESS after {int(timeout)}s with no error (no crash, bad image, or "
+        f"config failure). Pods are still becoming Ready:\n" + "\n".join(detail) + "\n"
+        f"This is normal for slow-starting pods. Tell the user the fix was applied and the "
+        f"rollout is converging — it is NOT broken, but not yet confirmed healthy. Suggest "
+        f"they re-check in a moment."
     )

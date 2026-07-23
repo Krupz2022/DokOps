@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -14,6 +14,21 @@ import { Toast } from "../components/ui/Toast";
 import ReactMarkdown from "react-markdown";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { EmptyState } from "../components/ui/EmptyState";
+
+// Live-refresh a resource list. Guarded: pauses when the tab is hidden, and callers
+// disable it for the cluster-wide "all" namespace (the one expensive LIST we don't auto-fire).
+// ponytail: polling, not a K8s watch/SSE — upgrade if the API-server LIST load becomes a problem at scale.
+function usePolling(callback: () => void, enabled: boolean, intervalMs = 5000) {
+    const saved = useRef(callback);
+    useEffect(() => { saved.current = callback; });
+    useEffect(() => {
+        if (!enabled) return;
+        const id = setInterval(() => {
+            if (document.visibilityState === "visible") saved.current();
+        }, intervalMs);
+        return () => clearInterval(id);
+    }, [enabled, intervalMs]);
+}
 
 export default function Resources({ initialTab, standalone }: { initialTab?: string, standalone?: boolean }) {
     const { godModeActive } = useAppContext();
@@ -314,7 +329,7 @@ export default function Resources({ initialTab, standalone }: { initialTab?: str
                         <div>
                             <h1 className="text-xl font-bold text-foreground">Resources</h1>
                             <p className="text-sm text-muted-foreground mt-0.5">
-                                Kubernetes resources · {selectedNamespace} namespace
+                                Kubernetes resources · {selectedNamespace === "all" ? "all namespaces" : `${selectedNamespace} namespace`}
                             </p>
                         </div>
                     </div>
@@ -331,6 +346,7 @@ export default function Resources({ initialTab, standalone }: { initialTab?: str
                     <div className="flex items-center gap-2">
                         <div className="relative">
                             <select value={selectedNamespace} onChange={(e) => setSelectedNamespace(e.target.value)} className="h-9 pl-3 pr-8 border border-slate-200 dark:border-border rounded-lg bg-white dark:bg-background text-sm text-slate-700 dark:text-foreground appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="all">All namespaces</option>
                                 {namespaces.map((ns) => <option key={ns} value={ns}>{ns}</option>)}
                             </select>
                             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
@@ -453,6 +469,8 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
     const [podSearch, setPodSearch] = useState("");
     const [sortRunning, setSortRunning] = useState<"running-first" | "not-first" | null>(null);
     const [selectedPod, setSelectedPod] = useState<string | null>(null);
+    // In "all namespaces" mode the page-level `namespace` is "all", so per-pod actions carry the pod's own namespace.
+    const [selectedPodNs, setSelectedPodNs] = useState(namespace);
     const [logs, setLogs] = useState("");
     const [aiModalOpen, setAiModalOpen] = useState(false);
     const [aiAnalysis, setAiAnalysis] = useState("");
@@ -462,21 +480,23 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
     const [logsModalOpen, setLogsModalOpen] = useState(false);
 
     useEffect(() => { fetchPods(); }, [namespace]);
+    usePolling(() => fetchPods(true), namespace !== "all");
 
-    const fetchPods = async () => {
-        setLoading(true);
+    const fetchPods = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const res = await api.get(`/k8s/namespaces/${namespace}/pods`);
             setPods(res.data);
         } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        finally { if (!silent) setLoading(false); }
     };
 
-    const viewLogs = async (podName: string) => {
+    const viewLogs = async (pod: any) => {
         try {
-            const res = await api.get(`/k8s/namespaces/${namespace}/pods/${podName}/logs`);
+            const res = await api.get(`/k8s/namespaces/${pod.namespace || namespace}/pods/${pod.name}/logs`);
             setLogs(res.data.logs);
-            setSelectedPod(podName);
+            setSelectedPod(pod.name);
+            setSelectedPodNs(pod.namespace || namespace);
             setLogsModalOpen(true);
         } catch (err) { toast("Failed to fetch logs", "error"); }
     };
@@ -485,21 +505,21 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
     const refreshLogs = useCallback(async (tail: number) => {
         if (!selectedPod) return;
         try {
-            const res = await api.get(`/k8s/namespaces/${namespace}/pods/${selectedPod}/logs`, { params: { tail_lines: tail } });
+            const res = await api.get(`/k8s/namespaces/${selectedPodNs}/pods/${selectedPod}/logs`, { params: { tail_lines: tail } });
             setLogs(res.data.logs);
         } catch { /* transient refresh error — keep showing current logs */ }
-    }, [selectedPod, namespace]);
+    }, [selectedPod, selectedPodNs]);
 
-    const deletePod = async (podName: string) => {
+    const deletePod = async (pod: any) => {
         const ok = await confirm({
             title: "Delete Pod",
-            description: `Permanently delete pod ${podName}? Kubernetes will reschedule it if managed by a controller.`,
+            description: `Permanently delete pod ${pod.name}? Kubernetes will reschedule it if managed by a controller.`,
             variant: "danger",
             confirmLabel: "Delete Pod",
         });
         if (!ok) return;
         try {
-            await api.delete(`/k8s/namespaces/${namespace}/pods/${podName}`);
+            await api.delete(`/k8s/namespaces/${pod.namespace || namespace}/pods/${pod.name}`);
             fetchPods();
         } catch (err: any) { toast(err.response?.data?.detail || "Failed to delete pod", "error"); }
     };
@@ -518,7 +538,7 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
             const res = await fetch(`${baseURL}/ai/diagnose/stream`, {
                 method: "POST",
                 headers,
-                body: JSON.stringify({ namespace, pod_name: selectedPod, query: aiQuery, runbook_id: selectedRunbookId || null })
+                body: JSON.stringify({ namespace: selectedPodNs, pod_name: selectedPod, query: aiQuery, runbook_id: selectedRunbookId || null })
             });
             if (!res.ok) throw new Error("Analysis failed");
             const reader = res.body?.getReader();
@@ -591,17 +611,18 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
                         {podSearch && <span className="text-xs text-muted-foreground">{filteredPods.length} / {pods.length}</span>}
                     </div>
                     <table className="w-full text-sm">
-                        <thead className="border-b"><tr><th className="p-4 text-left">Name</th><th className="p-4 text-left">Status</th><th className="p-4 text-left">IP</th><th className="p-4 text-left">Actions</th></tr></thead>
+                        <thead className="border-b"><tr>{namespace === "all" && <th className="p-4 text-left">Namespace</th>}<th className="p-4 text-left">Name</th><th className="p-4 text-left">Status</th><th className="p-4 text-left">IP</th><th className="p-4 text-left">Actions</th></tr></thead>
                         <tbody>
                             {filteredPods.map(pod => (
-                                <tr key={pod.name} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                <tr key={`${pod.namespace}/${pod.name}`} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                    {namespace === "all" && <td className="p-4 text-xs text-muted-foreground">{pod.namespace}</td>}
                                     <td className="p-4 font-mono text-xs">{pod.name}</td>
                                     <td className="p-4"><StatusBadge status={pod.status || "Unknown"} /></td>
                                     <td className="p-4 font-mono text-xs">{pod.ip}</td>
                                     <td className="p-4 flex gap-2">
-                                        <Button size="sm" variant="outline" onClick={() => viewLogs(pod.name)}><Eye className="w-4 h-4" /></Button>
-                                        <Button size="sm" variant="outline" className="text-primary border-primary/40" onClick={() => { setSelectedPod(pod.name); setAiModalOpen(true); }}><Sparkles className="w-4 h-4" /></Button>
-                                        {godModeActive && <Button size="sm" variant="destructive" onClick={() => deletePod(pod.name)}><Trash2 className="w-4 h-4" /></Button>}
+                                        <Button size="sm" variant="outline" onClick={() => viewLogs(pod)}><Eye className="w-4 h-4" /></Button>
+                                        <Button size="sm" variant="outline" className="text-primary border-primary/40" onClick={() => { setSelectedPod(pod.name); setSelectedPodNs(pod.namespace || namespace); setAiModalOpen(true); }}><Sparkles className="w-4 h-4" /></Button>
+                                        {godModeActive && <Button size="sm" variant="destructive" onClick={() => deletePod(pod)}><Trash2 className="w-4 h-4" /></Button>}
                                     </td>
                                 </tr>
                             ))}
@@ -615,7 +636,7 @@ function PodsView({ namespace, godModeActive, runbooks }: { namespace: string; g
                 isOpen={logsModalOpen}
                 onClose={() => setLogsModalOpen(false)}
                 podName={selectedPod ?? ""}
-                namespace={namespace}
+                namespace={selectedPodNs}
                 logs={logs}
                 onRefresh={refreshLogs}
             />
@@ -651,34 +672,35 @@ function DeploymentsView({ namespace, godModeActive }: { namespace: string; godM
     const [targetReplicas, setTargetReplicas] = useState(1);
 
     useEffect(() => { fetchDeployments(); }, [namespace]);
+    usePolling(() => fetchDeployments(true), namespace !== "all");
 
-    const fetchDeployments = async () => {
-        setLoading(true);
+    const fetchDeployments = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const res = await api.get(`/k8s/namespaces/${namespace}/deployments`);
             setDeployments(res.data);
         } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        finally { if (!silent) setLoading(false); }
     };
 
     const handleScaleSubmit = async () => {
         try {
-            await api.post(`/k8s/namespaces/${namespace}/deployments/${selectedDeployment.name}/scale`, { replicas: targetReplicas });
+            await api.post(`/k8s/namespaces/${selectedDeployment.namespace || namespace}/deployments/${selectedDeployment.name}/scale`, { replicas: targetReplicas });
             setIsScaleModalOpen(false);
             fetchDeployments();
         } catch (err: any) { toast("Scaling failed", "error"); }
     };
 
-    const handleDeleteDeployment = async (name: string) => {
+    const handleDeleteDeployment = async (dep: any) => {
         const ok = await confirm({
             title: "Delete Deployment",
-            description: `Permanently delete deployment ${name}? All managed pods will be terminated.`,
+            description: `Permanently delete deployment ${dep.name}? All managed pods will be terminated.`,
             variant: "danger",
             confirmLabel: "Delete Deployment",
         });
         if (!ok) return;
         try {
-            await api.delete(`/k8s/namespaces/${namespace}/deployments/${name}`);
+            await api.delete(`/k8s/namespaces/${dep.namespace || namespace}/deployments/${dep.name}`);
             fetchDeployments();
         } catch (err: any) { toast(err.response?.data?.detail || "Failed to delete deployment", "error"); }
     };
@@ -718,15 +740,16 @@ function DeploymentsView({ namespace, godModeActive }: { namespace: string; godM
                     {depSearch && <span className="text-xs text-muted-foreground">{filteredDeployments.length} / {deployments.length}</span>}
                 </div>
                 <table className="w-full text-sm">
-                    <thead className="border-b"><tr><th className="p-4 text-left">Name</th><th className="p-4 text-left">Replicas</th><th className="p-4 text-left">Actions</th></tr></thead>
+                    <thead className="border-b"><tr>{namespace === "all" && <th className="p-4 text-left">Namespace</th>}<th className="p-4 text-left">Name</th><th className="p-4 text-left">Replicas</th><th className="p-4 text-left">Actions</th></tr></thead>
                     <tbody>
                         {filteredDeployments.map(dep => (
-                            <tr key={dep.name} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                            <tr key={`${dep.namespace}/${dep.name}`} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                {namespace === "all" && <td className="p-4 text-xs text-muted-foreground">{dep.namespace}</td>}
                                 <td className="p-4">{dep.name}</td>
                                 <td className="p-4">{dep.available}/{dep.replicas}</td>
                                 <td className="p-4 flex gap-2">
                                     <Button size="sm" variant="outline" onClick={() => { setSelectedDeployment(dep); setTargetReplicas(dep.replicas); setIsScaleModalOpen(true); }}><Scale className="w-4 h-4" /></Button>
-                                    {godModeActive && <Button size="sm" variant="destructive" onClick={() => handleDeleteDeployment(dep.name)}><Trash2 className="w-4 h-4" /></Button>}
+                                    {godModeActive && <Button size="sm" variant="destructive" onClick={() => handleDeleteDeployment(dep)}><Trash2 className="w-4 h-4" /></Button>}
                                 </td>
                             </tr>
                         ))}
@@ -751,13 +774,14 @@ function ServicesView({ namespace }: { namespace: string }) {
     const [loading, setLoading] = useState(true);
     const [svcSearch, setSvcSearch] = useState("");
     useEffect(() => { fetchServices(); }, [namespace]);
-    const fetchServices = async () => {
-        setLoading(true);
+    usePolling(() => fetchServices(true), namespace !== "all");
+    const fetchServices = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const res = await api.get(`/k8s/namespaces/${namespace}/services`);
             setServices(res.data);
         } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        finally { if (!silent) setLoading(false); }
     };
 
     const filteredServices = services.filter(s => s.name.toLowerCase().includes(svcSearch.toLowerCase()));
@@ -780,10 +804,11 @@ function ServicesView({ namespace }: { namespace: string }) {
                     {svcSearch && <span className="text-xs text-muted-foreground">{filteredServices.length} / {services.length}</span>}
                 </div>
                 <table className="w-full text-sm">
-                    <thead className="border-b"><tr><th className="p-4 text-left">Name</th><th className="p-4 text-left">Type</th><th className="p-4 text-left">Cluster IP</th></tr></thead>
+                    <thead className="border-b"><tr>{namespace === "all" && <th className="p-4 text-left">Namespace</th>}<th className="p-4 text-left">Name</th><th className="p-4 text-left">Type</th><th className="p-4 text-left">Cluster IP</th></tr></thead>
                     <tbody>
                         {filteredServices.map(svc => (
-                            <tr key={svc.name} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                            <tr key={`${svc.namespace}/${svc.name}`} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                {namespace === "all" && <td className="p-4 text-xs text-muted-foreground">{svc.namespace}</td>}
                                 <td className="p-4">{svc.name}</td>
                                 <td className="p-4">{svc.type}</td>
                                 <td className="p-4">{svc.cluster_ip}</td>
@@ -812,25 +837,26 @@ function ConfigMapsView({ namespace }: { namespace: string }) {
     const [loadingCM, setLoadingCM] = useState<string | null>(null);
 
     useEffect(() => { fetchConfigMaps(); }, [namespace]);
+    usePolling(() => fetchConfigMaps(true), namespace !== "all");
 
-    const fetchConfigMaps = async () => {
-        setLoading(true);
+    const fetchConfigMaps = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const res = await api.get(`/k8s/namespaces/${namespace}/configmaps`);
             setConfigmaps(res.data);
         } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        finally { if (!silent) setLoading(false); }
     };
 
-    const fetchFullCM = async (name: string): Promise<Record<string, string>> => {
-        const res = await api.get(`/k8s/namespaces/${namespace}/configmaps/${name}`);
+    const fetchFullCM = async (cm: any): Promise<Record<string, string>> => {
+        const res = await api.get(`/k8s/namespaces/${cm.namespace || namespace}/configmaps/${cm.name}`);
         return res.data.data || {};
     };
 
     const handleView = async (cm: any) => {
         setLoadingCM(cm.name);
         try {
-            const data = await fetchFullCM(cm.name);
+            const data = await fetchFullCM(cm);
             setSelectedCM(cm);
             setViewData(data);
             setIsViewOpen(true);
@@ -844,7 +870,7 @@ function ConfigMapsView({ namespace }: { namespace: string }) {
     const handleEdit = async (cm: any) => {
         setLoadingCM(cm.name);
         try {
-            const data = await fetchFullCM(cm.name);
+            const data = await fetchFullCM(cm);
             setSelectedCM(cm);
             setCmDataString(JSON.stringify(data, null, 2));
             setIsEditOpen(true);
@@ -875,10 +901,11 @@ function ConfigMapsView({ namespace }: { namespace: string }) {
                     {cmSearch && <span className="text-xs text-muted-foreground">{filteredCMs.length} / {configmaps.length}</span>}
                 </div>
                 <table className="w-full text-sm">
-                    <thead className="border-b"><tr><th className="p-4 text-left">Name</th><th className="p-4 text-left">Keys</th><th className="p-4 text-left">Actions</th></tr></thead>
+                    <thead className="border-b"><tr>{namespace === "all" && <th className="p-4 text-left">Namespace</th>}<th className="p-4 text-left">Name</th><th className="p-4 text-left">Keys</th><th className="p-4 text-left">Actions</th></tr></thead>
                     <tbody>
                         {filteredCMs.map(cm => (
-                            <tr key={cm.name} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                            <tr key={`${cm.namespace}/${cm.name}`} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                {namespace === "all" && <td className="p-4 text-xs text-muted-foreground">{cm.namespace}</td>}
                                 <td className="p-4">{cm.name}</td>
                                 <td className="p-4">{cm.data_count} keys</td>
                                 <td className="p-4 flex gap-2">
@@ -908,7 +935,7 @@ function ConfigMapsView({ namespace }: { namespace: string }) {
                     <textarea className="w-full h-64 p-2 border rounded font-mono text-xs bg-background" value={cmDataString} onChange={e => setCmDataString(e.target.value)} />
                     <Button onClick={async () => {
                         try {
-                            await api.patch(`/k8s/namespaces/${namespace}/configmaps/${selectedCM.name}`, { data: JSON.parse(cmDataString) });
+                            await api.patch(`/k8s/namespaces/${selectedCM.namespace || namespace}/configmaps/${selectedCM.name}`, { data: JSON.parse(cmDataString) });
                             setIsEditOpen(false);
                             fetchConfigMaps();
                             toast("ConfigMap updated successfully", "success");
@@ -926,13 +953,14 @@ function SecretsView({ namespace }: { namespace: string }) {
     const [loading, setLoading] = useState(true);
     const [secretSearch, setSecretSearch] = useState("");
     useEffect(() => { fetchSecrets(); }, [namespace]);
-    const fetchSecrets = async () => {
-        setLoading(true);
+    usePolling(() => fetchSecrets(true), namespace !== "all");
+    const fetchSecrets = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const res = await api.get(`/k8s/namespaces/${namespace}/secrets`);
             setSecrets(res.data);
         } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        finally { if (!silent) setLoading(false); }
     };
 
     const filteredSecrets = secrets.filter(s => s.name.toLowerCase().includes(secretSearch.toLowerCase()));
@@ -955,10 +983,11 @@ function SecretsView({ namespace }: { namespace: string }) {
                     {secretSearch && <span className="text-xs text-muted-foreground">{filteredSecrets.length} / {secrets.length}</span>}
                 </div>
                 <table className="w-full text-sm">
-                    <thead className="border-b"><tr><th className="p-4 text-left">Name</th><th className="p-4 text-left">Type</th></tr></thead>
+                    <thead className="border-b"><tr>{namespace === "all" && <th className="p-4 text-left">Namespace</th>}<th className="p-4 text-left">Name</th><th className="p-4 text-left">Type</th></tr></thead>
                     <tbody>
                         {filteredSecrets.map(s => (
-                            <tr key={s.name} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                            <tr key={`${s.namespace}/${s.name}`} className="border-b hover:bg-slate-50 dark:hover:bg-accent transition-colors">
+                                {namespace === "all" && <td className="p-4 text-xs text-muted-foreground">{s.namespace}</td>}
                                 <td className="p-4">{s.name}</td>
                                 <td className="p-4">{s.type}</td>
                             </tr>

@@ -381,7 +381,7 @@ class K8sService:
         core_api = self._get_api("CoreV1Api", ctx)
         if not core_api:
             return []
-        pods = await core_api.list_namespaced_pod(namespace)
+        pods = await (core_api.list_pod_for_all_namespaces() if namespace == "all" else core_api.list_namespaced_pod(namespace))
         result = []
         for p in pods.items:
             phase = p.status.phase or "Unknown"
@@ -412,7 +412,7 @@ class K8sService:
             core_api = self._get_api("CoreV1Api", ctx)
             if not core_api:
                 return []
-            services = await core_api.list_namespaced_service(namespace)
+            services = await (core_api.list_service_for_all_namespaces() if namespace == "all" else core_api.list_namespaced_service(namespace))
             result = []
             for svc in services.items:
                 result.append({
@@ -530,13 +530,13 @@ class K8sService:
             apps_api = self._get_api("AppsV1Api", ctx)
             if not apps_api:
                 return []
-            deployments = await apps_api.list_namespaced_deployment(namespace)
+            deployments = await (apps_api.list_deployment_for_all_namespaces() if namespace == "all" else apps_api.list_namespaced_deployment(namespace))
             return [
                 {
                     "name": d.metadata.name,
                     "replicas": d.spec.replicas,
                     "available": d.status.available_replicas or 0,
-                    "namespace": namespace
+                    "namespace": d.metadata.namespace or namespace
                 }
                 for d in deployments.items
             ]
@@ -594,12 +594,12 @@ class K8sService:
             core_api = self._get_api("CoreV1Api", ctx)
             if not core_api:
                 return []
-            configmaps = await core_api.list_namespaced_config_map(namespace)
+            configmaps = await (core_api.list_config_map_for_all_namespaces() if namespace == "all" else core_api.list_namespaced_config_map(namespace))
             return [
                 {
                     "name": cm.metadata.name,
                     "data_count": len(cm.data) if cm.data else 0,
-                    "namespace": namespace
+                    "namespace": cm.metadata.namespace or namespace
                 }
                 for cm in configmaps.items
             ]
@@ -646,12 +646,12 @@ class K8sService:
             core_api = self._get_api("CoreV1Api", ctx)
             if not core_api:
                 return []
-            secrets = await core_api.list_namespaced_secret(namespace)
+            secrets = await (core_api.list_secret_for_all_namespaces() if namespace == "all" else core_api.list_namespaced_secret(namespace))
             return [
                 {
                     "name": s.metadata.name,
                     "type": s.type,
-                    "namespace": namespace
+                    "namespace": s.metadata.namespace or namespace
                 }
                 for s in secrets.items
             ]

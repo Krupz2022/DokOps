@@ -746,7 +746,12 @@ Rules:
         # investigation. The fast classifier may only upgrade it to 'deep', never
         # downgrade it — misclassifying a real failure as 'simple' is the expensive error.
         q = (query or "").lower()
-        floored = any(sig in q for sig in self._FAILURE_SIGNALS)
+        # Action turns ("please fix this") carry no failure keyword yet need the
+        # investigation machinery most — floor them alongside failure signals.
+        # Word-bounded so "prefix"/"suffix" don't match.
+        floored = any(sig in q for sig in self._FAILURE_SIGNALS) or bool(
+            re.search(r"\bfix(e[sd]|ing)?\b", q)
+        )
         prompt = [
             {"role": "system", "content": (
                 "Classify the DevOps query effort. Reply with exactly one word:\n"
@@ -1938,6 +1943,11 @@ CLUSTER TOPOLOGY SNAPSHOT:
             max_steps = self.STEP_BUDGETS[complexity]
             current_step = 0
             use_react_fallback = False
+            # Action gate: a write-intent turn must end in a concrete operation or an
+            # explicit one-line blocker — never a prose essay. One retry, then accept.
+            _wants_action = any(kw in (query or "").lower() for kw in self._WRITE_KEYWORDS)
+            _pending_op_seen = False
+            _action_gate_used = False
             # Untrimmed tool observations kept for final synthesis/review. The copies in
             # `messages` get shrunk by trim_tool_result to fit the context budget; the
             # final answer must reason from the full evidence, not the lossy copy.
@@ -2090,6 +2100,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 pending_operations_store[op_id] = new_op
                                 _approval_event = asyncio.Event()
                                 _pending_approval_events[op_id] = _approval_event
+                                _pending_op_seen = True
                                 yield {"type": "pending_operation", "message": new_op["confirmation_message"], "operation": new_op}
                                 try:
                                     await asyncio.wait_for(_approval_event.wait(), timeout=300)
@@ -2243,6 +2254,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 # Register wait event BEFORE yielding so the approval API can set it
                                 _approval_event = asyncio.Event()
                                 _pending_approval_events[op_id] = _approval_event
+                                _pending_op_seen = True
                                 yield {"type": "pending_operation", "message": new_op["confirmation_message"], "operation": new_op}
                                 # Pause loop until user approves or rejects (5-minute timeout)
                                 try:
@@ -2333,6 +2345,20 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             "content": observation,
                         })
                 else:
+                    if _wants_action and not _pending_op_seen and not _action_gate_used:
+                        _action_gate_used = True
+                        max_steps += 1  # the gate consumes a step; don't starve the budget
+                        messages.append({"role": "assistant", "content": text or ""})
+                        messages.append({"role": "user", "content": (
+                            "The user asked you to TAKE AN ACTION, but you have not proposed "
+                            "any concrete operation. Do exactly one of: (1) call the "
+                            "appropriate write tool now — it will go through the normal "
+                            "approval flow — or (2) if you genuinely cannot act safely, reply "
+                            "starting with 'Blocked:' and state in one line the exact missing "
+                            "fact or verification. Do not restate your analysis."
+                        )})
+                        yield {"type": "step", "message": "Preparing the requested action..."}
+                        continue
                     # No tool calls — model is done
                     text = text if text and text.strip() else "(No response from model)"
                     if investigation_mode and text != "(No response from model)":

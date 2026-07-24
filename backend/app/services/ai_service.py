@@ -2290,7 +2290,13 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                     f"Pick from: {valid_names}"
                                 )
 
-                        yield {"type": "step", "message": f"{tool_name} done."}
+                        yield {
+                            "type": "step",
+                            "message": f"{tool_name} done.",
+                            # Persisted by the chat layer as a tool_output message so the
+                            # NEXT turn starts with evidence, not prose. UI ignores this key.
+                            "observation": f"[{tool_name}] {observation[:4000]}" if observation else "",
+                        }
                         if observation:
                             raw_observations.append(f"[{tool_name}] {observation}")
                         observation = await _ctx_mgr.trim_tool_result(

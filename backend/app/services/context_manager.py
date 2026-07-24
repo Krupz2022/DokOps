@@ -6,6 +6,11 @@ _log = logging.getLogger("dokops.context_manager")
 
 _CHARS_PER_TOKEN = 4
 
+# Prefix marking a history entry that carries verbatim prior-turn tool output.
+# Written by chat._build_history, recognised by ai_service when seeding the
+# final reviewer's evidence window. Keep in sync — it is matched by startswith.
+PRIOR_EVIDENCE_PREFIX = "[Prior tool evidence]"
+
 _TIKTOKEN_ENC = None
 
 

@@ -26,7 +26,7 @@ class ChatMessage(SQLModel, table=True):
     conversation_id: str = Field(foreign_key="chatconversation.id", index=True)
     role: str  # "user" | "assistant"
     content: str
-    message_type: str = Field(default="text")  # "text" | "step" | "action_card" | "runbook_card" | "pending_op" | "compaction_banner"
+    message_type: str = Field(default="text")  # "text" | "step" | "tool_output" | "action_card" | "runbook_card" | "pending_op" | "compaction_banner"
     token_count: int = Field(default=0)
     created_at: datetime = utc_field()
     is_compacted: bool = Field(default=False)

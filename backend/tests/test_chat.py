@@ -199,3 +199,84 @@ def test_get_conversation_includes_total_tokens(client: TestClient, auth_headers
     data = resp.json()
     assert "total_tokens" in data
     assert data["total_tokens"] == 15
+
+
+# ── Tool-evidence persistence (Task 1) ────────────────────────────────────────
+
+def _install_fake_loop(monkeypatch, captured: dict):
+    """Replace the agent loop with a deterministic 2-event generator and
+    disable the runbook LLM round-trip."""
+    from app.services.ai_service import ai_service as _svc
+
+    def fake_loop(query, **kwargs):
+        captured["history"] = kwargs.get("history")
+
+        async def _gen():
+            yield {"type": "step", "message": "get_pod_logs..."}
+            yield {
+                "type": "step",
+                "message": "get_pod_logs done.",
+                "observation": "[get_pod_logs] HttpRequestException: Connection refused (consul-server:8501)",
+            }
+            # Deliberately does NOT contain "consul-server" — the preview
+            # assertion below checks evidence never leaks into previews.
+            yield {"type": "result", "message": "Root cause: the app dials a refused port."}
+        return _gen()
+
+    monkeypatch.setattr(_svc, "run_global_agentic_loop", fake_loop)
+    monkeypatch.setattr(
+        "app.services.runbook_service.match_runbook_logic",
+        lambda q: {"confidence": "low", "matched_runbook_id": None},
+    )
+
+
+def test_tool_output_persisted_and_hidden_from_api(client, session, auth_headers, monkeypatch):
+    """The observation is saved as a tool_output row but never returned by the API."""
+    captured: dict = {}
+    _install_fake_loop(monkeypatch, captured)
+
+    conv_id = client.post("/api/v1/chat/conversations", headers=auth_headers).json()["id"]
+    resp = client.post(
+        f"/api/v1/chat/conversations/{conv_id}/message",
+        json={"content": "why is api-pod failing?"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    rows = session.exec(
+        select(ChatMessage).where(ChatMessage.conversation_id == conv_id)
+    ).all()
+    tool_rows = [m for m in rows if m.message_type == "tool_output"]
+    assert len(tool_rows) == 1
+    assert "consul-server:8501" in tool_rows[0].content
+
+    detail = client.get(f"/api/v1/chat/conversations/{conv_id}", headers=auth_headers).json()
+    assert all(m["message_type"] != "tool_output" for m in detail["messages"])
+
+    listing = client.get("/api/v1/chat/conversations", headers=auth_headers).json()
+    entry = next(c for c in listing if c["id"] == conv_id)
+    assert "consul-server" not in entry["preview"]
+
+
+def test_history_carries_prior_tool_evidence(client, auth_headers, monkeypatch):
+    """Turn 2's history must contain turn 1's verbatim tool output."""
+    captured: dict = {}
+    _install_fake_loop(monkeypatch, captured)
+
+    conv_id = client.post("/api/v1/chat/conversations", headers=auth_headers).json()["id"]
+    client.post(
+        f"/api/v1/chat/conversations/{conv_id}/message",
+        json={"content": "why is api-pod failing?"},
+        headers=auth_headers,
+    )
+    client.post(
+        f"/api/v1/chat/conversations/{conv_id}/message",
+        json={"content": "ok please fix it"},
+        headers=auth_headers,
+    )
+    history = captured["history"]
+    assert any(
+        (h.get("content") or "").startswith("[Prior tool evidence]")
+        and "consul-server:8501" in h["content"]
+        for h in history
+    ), f"no prior tool evidence in history: {history}"

@@ -59,6 +59,7 @@ async def list_conversations(
         msgs = (await db.exec(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == c.id)
+            .where(ChatMessage.message_type != "tool_output")  # internal evidence, not UI
             .order_by(ChatMessage.created_at.desc())
         )).all()
         preview = msgs[0].content[:80] if msgs else ""
@@ -86,6 +87,7 @@ async def get_conversation(
     msgs = (await db.exec(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
+        .where(ChatMessage.message_type != "tool_output")  # internal evidence, not UI
         .order_by(ChatMessage.created_at.asc())
     )).all()
     return {
@@ -158,19 +160,40 @@ def _event_to_message_type(event_type: str) -> str:
 
 
 async def _build_history(conversation_id: str, db: AsyncSession) -> List[Dict]:
-    """Return last 6 non-compacted messages as OpenAI-style history dicts."""
+    """Return prior tool evidence + last 6 non-compacted text pairs as
+    OpenAI-style history dicts."""
     msgs = (await db.exec(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
         .where(ChatMessage.is_compacted == False)  # noqa: E712
         .order_by(ChatMessage.created_at.asc())
     )).all()
-    # Only include user/assistant text messages — exclude step noise and pending_op cards
-    history = []
-    for m in msgs:
-        if m.message_type == "text":
-            history.append({"role": m.role, "content": m.content})
-    return history[-12:]  # last 6 pairs
+
+    history: List[Dict] = []
+
+    # Verbatim tool output from earlier turns — without it every follow-up turn
+    # starts blind and the agent re-derives facts from its own prose.
+    from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
+    evidence = [m for m in msgs if m.message_type == "tool_output"][-6:]
+    if evidence:
+        block = "\n\n".join((m.content or "")[:2000] for m in evidence)
+        history.append({
+            "role": "system",
+            "content": (
+                f"{PRIOR_EVIDENCE_PREFIX}\n"
+                "Verbatim tool output gathered earlier in this conversation. "
+                "Treat as ground truth evidence; re-fetch only if it may be stale:\n"
+                f"{block}"
+            ),
+        })
+
+    # Only user/assistant text messages — exclude step noise and pending_op cards
+    texts = [
+        {"role": m.role, "content": m.content}
+        for m in msgs
+        if m.message_type == "text"
+    ]
+    return history + texts[-12:]  # last 6 pairs
 
 
 async def _maybe_compact(conversation_id: str) -> None:
@@ -263,7 +286,7 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
             msgs = (await db.exec(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == conversation_id)
-                .where(ChatMessage.message_type.in_(["text", "step"]))
+                .where(ChatMessage.message_type.in_(["text", "tool_output"]))
                 .order_by(ChatMessage.created_at.asc())
             )).all()
 
@@ -271,7 +294,7 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
         for m in msgs:
             if not m.content or not m.content.strip():
                 continue
-            if m.message_type == "step":
+            if m.message_type == "tool_output":
                 parts.append("[Tool output]\n" + m.content.strip())
             else:
                 prefix = "User: " if m.role == "user" else "AI: "
@@ -307,6 +330,17 @@ async def _save_events(conversation_id: str, collected: List[Dict]) -> int:
                 token_count=tc,
             )
             db.add(msg)
+            # Tool observations ride on step events; persist them as hidden
+            # tool_output rows so history/RAG get evidence, not just labels.
+            obs = event.get("observation")
+            if obs:
+                db.add(ChatMessage(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=obs,
+                    message_type="tool_output",
+                    token_count=len(obs) // 4,
+                ))
 
         conv = await db.get(ChatConversation, conversation_id)
         if conv:

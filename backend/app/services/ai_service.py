@@ -1973,7 +1973,7 @@ ELASTICSEARCH QUERY RULES:
                 _ns = await resolve_namespace(_hist_text, strict=True)
             if _ns:
                 try:
-                    _presweep = await build_presweep(_ns)
+                    _presweep = await build_presweep(_ns, query=query)
                 except Exception as e:  # never let a sweep break the turn
                     _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
                 _agent_log.info("[AGENT] presweep ns=%s chars=%d", _ns, len(_presweep))
@@ -2489,7 +2489,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                         if _pre_gate_text.strip():
                             _final_text = f"{_pre_gate_text.rstrip()}\n\n{text.lstrip()}"
                         from app.services.presweep import append_missing_findings
-                        yield {"type": "result", "message": append_missing_findings(_presweep, _final_text)}
+                        yield {"type": "result", "message": append_missing_findings(_presweep, _final_text, query)}
                         return
                     if investigation_mode and text != "(No response from model)":
                         # Prefer the untrimmed evidence; fall back to message copies if empty.
@@ -2521,7 +2521,12 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             # Coverage is mechanical: never drop a swept finding the
                             # model was holding but omitted from its write-up.
                             from app.services.presweep import append_missing_findings
-                            _answer = append_missing_findings(_presweep, _answer)
+                            # A write this turn invalidates the pre-change sweep: the
+                            # rollout watcher / settle report carries the REAL end state,
+                            # so appending the stale snapshot only contradicts it.
+                            _answer = append_missing_findings(
+                                "" if _pending_op_seen else _presweep, _answer, query
+                            )
                             yield {
                                 "type": "result",
                                 "message": _answer,
@@ -2534,7 +2539,9 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             }
                             return
                     from app.services.presweep import append_missing_findings
-                    yield {"type": "result", "message": append_missing_findings(_presweep, text)}
+                    yield {"type": "result", "message": append_missing_findings(
+                        "" if _pending_op_seen else _presweep, text, query
+                    )}
                     return
 
             yield {"type": "result", "message": "Agent reached max iterations without a final answer."}

@@ -75,35 +75,73 @@ def _is_covered(bullet: str, subject: str, lowered_answer: str) -> bool:
     return any(fact in lowered_answer for fact in facts)
 
 
-def append_missing_findings(presweep: str, answer: str) -> str:
+def _subject_matches_query(subject: str, lowered_query: str) -> bool:
+    """True when the query names this swept resource. Pod names carry hash
+    suffixes ("api-785d7689bc-b2xjj"), so match on progressively shorter
+    '-'-boundary prefixes: "sample-catalog-api" in the query matches the
+    full pod name."""
+    name = subject.lower().split("/")[0].strip()
+    parts = name.split("-")
+    for end in range(len(parts), 0, -1):
+        candidate = "-".join(parts[:end])
+        if len(candidate) >= 4 and candidate in lowered_query:
+            return True
+    return False
+
+
+def sweep_subjects(presweep: str) -> list[str]:
+    """All bullet subjects (resource names) in a sweep block."""
+    return [m.group(1) for line in presweep.splitlines() if (m := _BULLET.match(line))]
+
+
+def append_missing_findings(presweep: str, answer: str, query: str = "") -> str:
     """Append any pre-flight finding the drafted answer failed to report.
 
     Discovery being deterministic is not enough on its own: with the sweep in
     context the model still reported only the Service in one run and only the
     pods in the next, dropping findings it was holding. Coverage is mechanical,
     so it is enforced here rather than asked for in the prompt.
+
+    Scope-aware: when `query` names one of the swept resources ("why is
+    sample-catalog-api failing?"), only bullets about matching resources are
+    appended. Namespace-wide coverage enforcement on a pod-scoped question
+    dumped other containers' crash logs into the answer — noise presented as
+    findings. A query naming no swept resource keeps full-namespace coverage.
     """
     if not presweep or not answer:
         return answer
 
     lowered = answer.lower()
+    lowered_query = (query or "").lower()
     lines = presweep.splitlines()
+    targeted = bool(lowered_query) and any(
+        _subject_matches_query(s, lowered_query) for s in sweep_subjects(presweep)
+    )
+
     missing: list[str] = []
     for i, line in enumerate(lines):
         match = _BULLET.match(line)
         if not match or _is_covered(line, match.group(1), lowered):
             continue
+        if targeted and not _subject_matches_query(match.group(1), lowered_query):
+            continue  # user asked about a specific resource — skip the others
         missing.append(f"- {line.strip().lstrip('- ')}")
         # Carry the bullet's continuation lines (a crash log's body lives there;
         # appending the header alone produced "pod/app (CrashLoopBackOff):" with
-        # no error message, which is worse than useless).
+        # no error message, which is worse than useless). Fence the body so raw
+        # log lines render as a code block, not prose soup.
         indent = len(line) - len(line.lstrip())
+        body: list[str] = []
         for follow in lines[i + 1:]:
             if not follow.strip() or _BULLET.match(follow):
                 break
             if len(follow) - len(follow.lstrip()) <= indent:
                 break
-            missing.append(f"  {follow.strip()}")
+            body.append(follow.strip())
+        if body:
+            missing.append("  ```")
+            missing.extend(f"  {b}" for b in body)
+            missing.append("  ```")
 
     if not missing:
         return answer
@@ -365,11 +403,16 @@ async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_
 
 
 async def build_presweep(
-    namespace: str, *, max_log_pods: int = 3, tail_lines: int = 30
+    namespace: str, *, query: str = "", max_log_pods: int = 3, tail_lines: int = 30
 ) -> str:
     """Return a context block of facts for `namespace`, or '' if nothing to report.
 
     Never raises: a presweep failure must not break a chat turn.
+
+    When `query` names one of the swept resources, the header scopes the answer
+    to that resource: the old always-on "report every finding alongside these"
+    instruction made a pod-scoped question ("why is X failing?") come back
+    padded with every other broken workload in the namespace.
     """
     core = k8s_service._get_api("CoreV1Api")
     apps = k8s_service._get_api("AppsV1Api")
@@ -380,14 +423,30 @@ async def build_presweep(
     if not sections:
         return ""
     body = "\n".join(sections)
+
+    lowered_query = (query or "").lower()
+    targeted = bool(lowered_query) and any(
+        _subject_matches_query(m.group(1), lowered_query)
+        for line in sections if (m := _BULLET.match(line))
+    )
+    if targeted:
+        scope_line = (
+            f"The user asked about a SPECIFIC resource — answer about that resource. "
+            f"Other findings below are namespace context: mention them in at most one "
+            f"short 'other issues in {namespace}' note, without their log excerpts."
+        )
+    else:
+        scope_line = (
+            f"You must STILL investigate every failing pod yourself and report those "
+            f"findings alongside these — an answer that covers only what appears below "
+            f"is incomplete."
+        )
     return (
         f"PRE-FLIGHT SWEEP of namespace '{namespace}' — verified facts, already gathered "
         f"for you. Do not re-fetch these with tools.\n"
         f"This is a HEAD START, NOT the scope of your investigation. It covers only "
         f"service endpoints, deployment readiness, ReplicaSet failures and crash logs. "
-        f"Quote these facts directly — they are the answer, not a hint. You must STILL "
-        f"investigate every failing pod yourself and report those findings alongside "
-        f"these — an answer that covers only what appears below is incomplete.\n{body}\n"
+        f"Quote these facts directly — they are the answer, not a hint. {scope_line}\n{body}\n"
     )
 
 

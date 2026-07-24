@@ -58,5 +58,7 @@ async def test_agent_loop_falls_back_to_history_for_namespace():
     # Second resolution call ran against history text, not the bare query
     second_arg = resolve.await_args_list[1].args[0]
     assert "namespace1" in second_arg
-    build.assert_awaited_once_with("namespace1")
+    # query is threaded through so build_presweep can scope its header to a
+    # specifically-named resource instead of always demanding namespace-wide coverage
+    build.assert_awaited_once_with("namespace1", query="ok can u please fix this ?")
     assert any(e["type"] == "result" for e in events)

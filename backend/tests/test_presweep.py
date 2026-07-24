@@ -623,3 +623,81 @@ async def test_api_failure_does_not_raise():
     core.list_namespaced_endpoints = AsyncMock(side_effect=Exception("api down"))
     with _patch_apis(core, _fake_apps([])):
         assert await build_presweep("dokops-chaos") == ""
+
+
+# ── scope-awareness: a pod-scoped question must not drag in the namespace ─────
+# Live complaint: asked "why is pod X failing", the answer came back padded with
+# other containers' raw crash logs, because coverage enforcement was always
+# namespace-wide.
+
+_MULTI_SWEEP = """PRE-FLIGHT SWEEP of namespace 'dokops-demo' — verified facts.
+Deployments not at full readiness:
+  - sample-catalog-api: 0/1 ready
+  - order-worker: 0/2 ready
+Logs from crashing containers:
+  - sample-catalog-api-785d7689bc-b2xjj/api (CrashLoopBackOff):
+      Connection refused (consul-server:8501)
+  - order-worker-qzfjg/worker (CrashLoopBackOff):
+      FATAL: could not connect to postgres
+"""
+
+
+def test_targeted_query_appends_only_the_named_resource():
+    """Query names one swept resource -> other resources are not appended."""
+    answer = "The deployment is not ready."  # covers nothing concretely
+    out = append_missing_findings(
+        _MULTI_SWEEP, answer, "why is sample-catalog-api failing?"
+    )
+    assert "sample-catalog-api" in out
+    assert "consul-server:8501" in out
+    # The unrelated workload and its logs must NOT be dragged in
+    assert "order-worker" not in out
+    assert "postgres" not in out
+
+
+def test_targeted_query_matches_pod_name_despite_hash_suffix():
+    """'sample-catalog-api' in the query must match pod ...-785d7689bc-b2xjj."""
+    from app.services.presweep import _subject_matches_query
+
+    assert _subject_matches_query(
+        "sample-catalog-api-785d7689bc-b2xjj/api", "why is sample-catalog-api failing?"
+    )
+    assert not _subject_matches_query(
+        "order-worker-qzfjg/worker", "why is sample-catalog-api failing?"
+    )
+
+
+def test_untargeted_query_keeps_full_namespace_coverage():
+    """Query names no swept resource -> every finding still enforced (old behaviour)."""
+    out = append_missing_findings(_MULTI_SWEEP, "Something is wrong.", "what is broken?")
+    assert "sample-catalog-api" in out
+    assert "order-worker" in out
+
+
+def test_no_query_is_backward_compatible():
+    """Omitting query keeps the pre-existing namespace-wide behaviour."""
+    assert append_missing_findings(_MULTI_SWEEP, "Something is wrong.") == \
+        append_missing_findings(_MULTI_SWEEP, "Something is wrong.", "")
+
+
+def test_appended_log_bodies_are_fenced():
+    """Raw log lines must render as a code block, not as prose in the UI."""
+    out = append_missing_findings(_MULTI_SWEEP, "Nothing covered.", "")
+    assert "```" in out
+    fenced = out.split("```")
+    assert any("consul-server:8501" in seg for seg in fenced)
+
+
+async def test_build_presweep_scopes_header_to_named_resource():
+    """A targeted query must not get the 'report every failing pod' instruction."""
+    with patch("app.services.presweep._collect_sections", new=AsyncMock(return_value=[
+        "Deployments not at full readiness:",
+        "  - sample-catalog-api: 0/1 ready",
+        "  - order-worker: 0/2 ready",
+    ])), patch("app.services.presweep.k8s_service._get_api", return_value=object()):
+        targeted = await build_presweep("dokops-demo", query="why is sample-catalog-api failing?")
+        broad = await build_presweep("dokops-demo", query="what is broken?")
+
+    assert "SPECIFIC resource" in targeted
+    assert "report those findings alongside" not in targeted
+    assert "report those findings alongside" in broad

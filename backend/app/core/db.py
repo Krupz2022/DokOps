@@ -243,6 +243,9 @@ async def _migrate_schema() -> None:
         _col("servicecredential", "host", "TEXT"),
         _col("servicecredential", "instance_name", "TEXT DEFAULT ''"),
         _col("user", "god_mode_active", "INTEGER DEFAULT 0"),
+        # Added with the rollout-watch resume fix: without it, every DB created
+        # before that change 500s the notifications list ("no such column").
+        _col("notifications", "cluster_context", "TEXT"),
     ]
 
     # All timestamp columns are timezone-aware UTC (see app.core.datetimes).
@@ -280,6 +283,7 @@ async def _migrate_schema() -> None:
             "mcpserver": ["last_connected_at", "created_at"],
             "mcptool": ["last_synced_at"],
             "auditlog": ["timestamp"],
+            "notifications": ["created_at", "resolved_at"],
             "azureconnection": ["connected_at"],
             "azurefeatureconfig": ["last_synced_at"],
             "integrationsettings": ["connected_at", "last_checked_at"],

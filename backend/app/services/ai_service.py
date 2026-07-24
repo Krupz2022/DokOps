@@ -223,6 +223,26 @@ _FINAL_REVIEW_PROMPT = (
 )
 
 
+def _is_content_filter_error(exc: BaseException) -> bool:
+    """True when a provider 400 is Azure's content filter rejecting our PROMPT.
+
+    Azure Prompt Shields scans the whole input — including verbatim tool output
+    (pod logs, events) we place in context — and can flag it as a jailbreak
+    attempt ('jailbreak': {'detected': True}) even when every content category
+    is 'safe'. Seen live: a turn died on step 15 after 14 clean calls because
+    accumulated raw tool output tripped the classifier."""
+    s = str(exc)
+    return "content_filter" in s or "ResponsibleAIPolicyViolation" in s
+
+
+_CONTENT_FILTER_USER_MESSAGE = (
+    "Azure's content filter blocked this request — its prompt-injection "
+    "classifier flagged the conversation text itself, not anything harmful. "
+    "This can be triggered by raw log or event content. Please rephrase your "
+    "message (avoid asking for verbatim context/prompt contents) and try again."
+)
+
+
 # Tool-name prefixes that mark a backend-service query. Kept in lockstep with the
 # values of AIService._SERVICE_TOOL_MAP — the single source of truth for gating is
 # the *selected tool set*, not a parallel keyword list, so the two can never drift.
@@ -1551,7 +1571,10 @@ When you have enough evidence, give your final answer directly — do NOT call a
 
             yield {"type": "result", "message": "Agent reached max iterations without a final answer."}
         except Exception as e:
-            yield {"type": "result", "message": f"Agent error: {str(e)}"}
+            if _is_content_filter_error(e):
+                yield {"type": "result", "message": _CONTENT_FILTER_USER_MESSAGE}
+            else:
+                yield {"type": "result", "message": f"Agent error: {str(e)}"}
 
     async def run_batch_agentic_loop(
         self,
@@ -1710,7 +1733,10 @@ When done, give a per-pod root cause analysis.
 
             yield {"type": "result", "message": "Agent reached max iterations without a final answer."}
         except Exception as e:
-            yield {"type": "result", "message": f"Agent error: {str(e)}"}
+            if _is_content_filter_error(e):
+                yield {"type": "result", "message": _CONTENT_FILTER_USER_MESSAGE}
+            else:
+                yield {"type": "result", "message": f"Agent error: {str(e)}"}
 
     async def run_global_agentic_loop(
         self,
@@ -2032,15 +2058,58 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             ),
                         }
 
-                text, tool_calls = await caching_client.complete(
-                    messages,
-                    tools_schema,
-                    tier="full",
-                    disable_trimming=disable_trimming,
-                    trim_keep=10,
-                    trim_token_cap=16000,
-                    temperature=0,
-                )
+                try:
+                    text, tool_calls = await caching_client.complete(
+                        messages,
+                        tools_schema,
+                        tier="full",
+                        disable_trimming=disable_trimming,
+                        trim_keep=10,
+                        trim_token_cap=16000,
+                        temperature=0,
+                    )
+                except Exception as _cf_err:
+                    if not _is_content_filter_error(_cf_err):
+                        raise
+                    # Azure Prompt Shields flagged our own prompt. The verbatim
+                    # content we inject (prior-evidence block, raw tool output)
+                    # is the usual suspect — strip it and retry ONCE. Which retry
+                    # succeeds doubles as the diagnostic for what tripped it.
+                    _agent_log.warning(
+                        "[AGENT] content filter tripped at step %d — retrying with verbatim evidence stripped",
+                        current_step,
+                    )
+                    _stripped: list = []
+                    for _m in messages:
+                        _mc = str(_m.get("content") or "")
+                        if _m.get("role") == "system" and _mc.startswith(PRIOR_EVIDENCE_PREFIX):
+                            continue  # drop the prior-evidence block entirely
+                        if _m.get("role") == "tool":
+                            # keep the message (OpenAI requires a tool reply per
+                            # tool_call id) but withhold the raw content
+                            _m = {**_m, "content": "[tool output withheld — content filter]"}
+                        _stripped.append(_m)
+                    try:
+                        text, tool_calls = await caching_client.complete(
+                            _stripped,
+                            tools_schema,
+                            tier="full",
+                            disable_trimming=disable_trimming,
+                            trim_keep=10,
+                            trim_token_cap=16000,
+                            temperature=0,
+                        )
+                        _agent_log.warning(
+                            "[AGENT] retry without verbatim evidence succeeded — stripped content tripped the filter"
+                        )
+                        messages = _stripped
+                    except Exception as _cf_err2:
+                        if not _is_content_filter_error(_cf_err2):
+                            raise
+                        # Still filtered with all verbatim output removed: the
+                        # conversation text itself is what the classifier dislikes.
+                        yield {"type": "result", "message": _CONTENT_FILTER_USER_MESSAGE}
+                        return
                 _agent_log.info("[AGENT] step %d — AI returned: text_len=%s tool_calls=%s",
                                 current_step, len(text) if text else 0, len(tool_calls) if tool_calls else 0)
 
@@ -2470,6 +2539,9 @@ CLUSTER TOPOLOGY SNAPSHOT:
 
             yield {"type": "result", "message": "Agent reached max iterations without a final answer."}
         except Exception as e:
-            yield {"type": "result", "message": f"Agent error: {str(e)}"}
+            if _is_content_filter_error(e):
+                yield {"type": "result", "message": _CONTENT_FILTER_USER_MESSAGE}
+            else:
+                yield {"type": "result", "message": f"Agent error: {str(e)}"}
 
 ai_service = AIService()

@@ -1058,8 +1058,18 @@ Rules:
     # *selection* (_select_dynamic_tools, is_write below) stays loose on purpose —
     # over-selecting a write tool schema is harmless; over-triggering the gate's
     # "TAKE AN ACTION now" instruction on a read-only turn is not.
+    # Word-bounded, and deliberately NOT stemmed: `\bdeploy\b` must not match the
+    # noun "deployments", and `\bapply\b` must not match "application" — both are
+    # overwhelmingly read-only phrasings. Past participles ("created", "deployed",
+    # "restarted") are excluded for the same reason: they describe state, they do
+    # not request a change. Tool *selection* keeps the loose `_WRITE_KEYWORDS`
+    # substring match on purpose — over-including a tool is harmless, wrongly
+    # telling the model to take an action is not.
     _WRITE_INTENT_RE = re.compile(
-        r"\b(scale|deploy|creat|delet|patch|restart|rollout|upgrad|appl|updat|fix|install)\w*\b"
+        r"\b(scale|scaling|deploy|deploying|redeploy|create|creating|"
+        r"delete|deleting|remove|removing|patch|patching|restart|restarting|"
+        r"rollout|upgrade|upgrading|apply|applying|update|updating|"
+        r"fix|fixing|install|installing|remediate|remediating)\b"
     )
     # Maps query keywords → tool name prefixes for service tools
     _SERVICE_TOOL_MAP = {
@@ -1966,6 +1976,11 @@ CLUSTER TOPOLOGY SNAPSHOT:
             _wants_action = bool(self._WRITE_INTENT_RE.search((query or "").lower()))
             _pending_op_seen = False
             _action_gate_used = False
+            # Text the model wrote BEFORE the gate fired. The gate's retry prompt
+            # explicitly says "Do not restate your analysis", so a "Blocked:" reply
+            # is deliberately terse — if we discard this, the user's analysis is
+            # gone, not just shortened. Carried over into the short-circuit below.
+            _pre_gate_text = ""
             # Untrimmed tool observations kept for final synthesis/review. The copies in
             # `messages` get shrunk by trim_tool_result to fit the context budget; the
             # final answer must reason from the full evidence, not the lossy copy.
@@ -1977,7 +1992,6 @@ CLUSTER TOPOLOGY SNAPSHOT:
             # Prior-turn tool evidence (persisted by the chat layer) is evidence too —
             # without it the reviewer judges follow-up answers against a one-turn
             # window and strips conclusions correctly established earlier.
-            from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
             for _h in history or []:
                 _hc = str(_h.get("content") or "")
                 # Role check matters: the marker is only ever legitimately written by
@@ -2371,6 +2385,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                     if _wants_action and not _pending_op_seen and not _action_gate_used:
                         _action_gate_used = True
                         max_steps += 1  # the gate consumes a step; don't starve the budget
+                        _pre_gate_text = text or ""
                         messages.append({"role": "assistant", "content": text or ""})
                         messages.append({"role": "user", "content": (
                             "The user asked you to TAKE AN ACTION, but you have not proposed "
@@ -2394,8 +2409,18 @@ CLUSTER TOPOLOGY SNAPSHOT:
                     # contract silently breaks in exactly the configuration
                     # production runs in. Skip the reviewer entirely for it.
                     if text.lstrip().startswith("Blocked:"):
+                        # The gate's retry prompt tells the model "Do not restate your
+                        # analysis", so `text` here is only the one-line blocker — the
+                        # actual investigation lives in `_pre_gate_text` (the first-attempt
+                        # reply, captured before the gate fired). Without stitching it back
+                        # on, a genuine write request the agent can't safely satisfy would
+                        # surface to the user as a bare "Blocked: ..." line with the
+                        # analysis that led to it silently dropped.
+                        _final_text = text
+                        if _pre_gate_text.strip():
+                            _final_text = f"{_pre_gate_text.rstrip()}\n\n{text.lstrip()}"
                         from app.services.presweep import append_missing_findings
-                        yield {"type": "result", "message": append_missing_findings(_presweep, text)}
+                        yield {"type": "result", "message": append_missing_findings(_presweep, _final_text)}
                         return
                     if investigation_mode and text != "(No response from model)":
                         # Prefer the untrimmed evidence; fall back to message copies if empty.

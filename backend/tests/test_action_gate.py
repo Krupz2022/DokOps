@@ -1,6 +1,48 @@
 # backend/tests/test_action_gate.py
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+
+_NO_MATCH_QUERIES = [
+    "show me the deployments in prod",
+    "why is my application crashing",
+    "check the application logs",
+    "argocd applications out of sync",
+    "what caused the deletion of the pod",
+    "get the applied configuration",
+    "list pods in default",
+    "why does the ingress prefix rewrite break",
+]
+
+_MATCH_QUERIES = [
+    "ok can u please fix this ?",
+    "please fix the deployment",
+    "scale it to 3",
+    "restart the api deployment",
+    "apply this manifest",
+    "delete the stuck pod",
+    "update the configmap",
+]
+
+
+@pytest.mark.parametrize("query", _NO_MATCH_QUERIES)
+def test_write_intent_regex_does_not_match_read_only_queries(query):
+    """Truncated stems (e.g. `appl`, `delet`) with a trailing `\\w*` used to match
+    nouns like "deployments" and "application" — false-triggering the action gate
+    on plainly read-only questions. The regex must be word-bounded, unstemmed
+    verb forms only."""
+    from app.services.ai_service import ai_service
+
+    assert ai_service._WRITE_INTENT_RE.search(query.lower()) is None
+
+
+@pytest.mark.parametrize("query", _MATCH_QUERIES)
+def test_write_intent_regex_matches_write_requests(query):
+    from app.services.ai_service import ai_service
+
+    assert ai_service._WRITE_INTENT_RE.search(query.lower()) is not None
+
 
 async def test_fix_queries_floor_to_investigate():
     """'fix' phrasing must never classify simple, even if the LLM says SIMPLE."""
@@ -14,9 +56,12 @@ async def test_fix_queries_floor_to_investigate():
 
 
 async def test_action_gate_forces_second_attempt():
-    """A write-intent turn ending in prose gets exactly one forced retry, and the
-    resulting 'Blocked:' reply reaches the user verbatim — the reviewer must be
-    short-circuited for it, not just happen to skip it for lack of evidence.
+    """A write-intent turn ending in prose gets exactly one forced retry. The
+    final message must carry BOTH the first-attempt analysis (captured before
+    the gate fired) AND the 'Blocked:' reply — the gate's retry prompt tells
+    the model "Do not restate your analysis", so the analysis only survives if
+    it is stitched back on here; the reviewer must also be short-circuited for
+    it, not just happen to skip it for lack of evidence.
 
     Seed prior-turn evidence via history (role="system", PRIOR_EVIDENCE_PREFIX)
     so raw_observations is non-empty, the way it normally is in production (a
@@ -72,7 +117,11 @@ async def test_action_gate_forces_second_attempt():
 
     results = [e for e in events if e["type"] == "result"]
     assert len(results) == 1
-    assert results[0]["message"].startswith("Blocked:")
+    message = results[0]["message"]
+    # Pre-gate analysis must be preserved, not discarded ...
+    assert "I recommend changing the port to 8500." in message
+    # ... alongside the terse blocker itself.
+    assert "Blocked: the correct Consul port is unverified" in message
 
 
 async def test_action_gate_fires_only_once():

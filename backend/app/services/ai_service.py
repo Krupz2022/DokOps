@@ -1085,7 +1085,14 @@ Rules:
     # not request a change. Tool *selection* keeps the loose `_WRITE_KEYWORDS`
     # substring match on purpose — over-including a tool is harmless, wrongly
     # telling the model to take an action is not.
+    # The determiner lookbehinds keep NOUN uses out: "whats the fix?", "propose a
+    # fix", "what was the patch" are all asking for information, not commanding a
+    # change — and gating them injected an imperative "take an action" turn into a
+    # purely informational question (seen live, and it then tripped Azure's
+    # prompt-injection classifier). Verb uses ("please fix this", "apply the patch")
+    # are unaffected because the verb itself is not preceded by a determiner.
     _WRITE_INTENT_RE = re.compile(
+        r"(?<!the )(?<!a )(?<!this )(?<!that )(?<!any )(?<!some )"
         r"\b(scale|scaling|deploy|deploying|redeploy|create|creating|"
         r"delete|deleting|remove|removing|patch|patching|restart|restarting|"
         r"rollout|upgrade|upgrading|apply|applying|update|updating|"
@@ -2456,13 +2463,18 @@ CLUSTER TOPOLOGY SNAPSHOT:
                         max_steps += 1  # the gate consumes a step; don't starve the budget
                         _pre_gate_text = text or ""
                         messages.append({"role": "assistant", "content": text or ""})
-                        messages.append({"role": "user", "content": (
-                            "The user asked you to TAKE AN ACTION, but you have not proposed "
-                            "any concrete operation. Do exactly one of: (1) call the "
-                            "appropriate write tool now — it will go through the normal "
-                            "approval flow — or (2) if you genuinely cannot act safely, reply "
-                            "starting with 'Blocked:' and state in one line the exact missing "
-                            "fact or verification. Do not restate your analysis."
+                        # Neutral, non-impersonating wording on purpose. The earlier
+                        # phrasing ("The user asked you to TAKE AN ACTION...") was a
+                        # fabricated user turn with a capitalised imperative — the exact
+                        # shape Azure's prompt-injection classifier flags, and it blocked
+                        # real turns in production once the gate started firing.
+                        messages.append({"role": "system", "content": (
+                            "Note: no concrete operation has been proposed for this request "
+                            "yet. If a change is appropriate, call the relevant write tool — "
+                            "it goes through the normal approval flow. If a change is not "
+                            "appropriate or cannot be made safely, begin the reply with "
+                            "'Blocked:' followed by the single missing fact, on one line. "
+                            "There is no need to repeat the analysis already given."
                         )})
                         yield {"type": "step", "message": "Preparing the requested action..."}
                         continue

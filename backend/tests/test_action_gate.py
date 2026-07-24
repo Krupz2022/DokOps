@@ -13,6 +13,14 @@ _NO_MATCH_QUERIES = [
     "get the applied configuration",
     "list pods in default",
     "why does the ingress prefix rewrite break",
+    # Noun uses: asking WHAT the fix is, not asking for it to be applied.
+    # Gating these injected an imperative "take an action" turn into a purely
+    # informational question, which then tripped Azure's prompt-injection filter.
+    "whats the fix ?",
+    "what's the fix?",
+    "what is the fix",
+    "propose a fix",
+    "what was the patch that landed",
 ]
 
 _MATCH_QUERIES = [
@@ -23,6 +31,7 @@ _MATCH_QUERIES = [
     "apply this manifest",
     "delete the stuck pod",
     "update the configmap",
+    "fix it",
 ]
 
 
@@ -110,8 +119,15 @@ async def test_action_gate_forces_second_attempt():
 
     # Gate fired: two loop completions, second saw the forced-action instruction
     assert len(loop_calls) == 2
-    gate_texts = [m["content"] for m in loop_calls[1] if m.get("role") == "user"]
-    assert any("TAKE AN ACTION" in (t or "") for t in gate_texts)
+    # The gate note is a neutral SYSTEM message, not a fabricated user turn:
+    # impersonating the user with a capitalised imperative tripped Azure's
+    # prompt-injection classifier in production.
+    gate_texts = [m["content"] for m in loop_calls[1] if m.get("role") == "system"]
+    assert any("no concrete operation has been proposed" in (t or "") for t in gate_texts)
+    assert not any(
+        "TAKE AN ACTION" in (m.get("content") or "")
+        for m in loop_calls[1]
+    ), "gate must not impersonate the user with a capitalised imperative"
 
     svc._run_final_review.assert_not_awaited()
 

@@ -1900,7 +1900,15 @@ ELASTICSEARCH QUERY RULES:
             # little and removes a dependency on a coin-flip.
             _presweep = ""
             from app.services.presweep import build_presweep, resolve_namespace
-            if _ns := await resolve_namespace(query):
+            _ns = await resolve_namespace(query)
+            if not _ns and history:
+                # Follow-up turns ("please fix this") name no namespace; recover it
+                # from recent conversation text instead of silently skipping the sweep.
+                _hist_text = " ".join(
+                    str(m.get("content") or "")[:2000] for m in history[-10:]
+                )
+                _ns = await resolve_namespace(_hist_text)
+            if _ns:
                 try:
                     _presweep = await build_presweep(_ns)
                 except Exception as e:  # never let a sweep break the turn

@@ -215,7 +215,11 @@ _FINAL_REVIEW_PROMPT = (
     '   "recommended_fix": concrete actionable fix with exact values\n'
     '   "answer": the full corrected answer as markdown\n'
     "If you cannot determine root cause from the evidence, say so explicitly — "
-    "do not invent an answer."
+    "do not invent an answer.\n"
+    "The 'answer' value is shown to the user verbatim as the assistant's reply. "
+    "Write it as a direct final answer. NEVER mention the draft, the review process, "
+    "corrections you made, or 'the evidence provided' — the user has never seen any "
+    "draft and must not learn one existed."
 )
 
 
@@ -1942,6 +1946,14 @@ CLUSTER TOPOLOGY SNAPSHOT:
             # API) — without this seed the reviewer deletes them from the draft
             # whenever the model, correctly, didn't re-fetch them with a tool.
             raw_observations: list[str] = [_presweep] if _presweep else []
+            # Prior-turn tool evidence (persisted by the chat layer) is evidence too —
+            # without it the reviewer judges follow-up answers against a one-turn
+            # window and strips conclusions correctly established earlier.
+            from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
+            for _h in history or []:
+                _hc = str(_h.get("content") or "")
+                if _hc.startswith(PRIOR_EVIDENCE_PREFIX):
+                    raw_observations.append(_hc)
             _agent_log.info("[AGENT] entering loop max_steps=%d messages=%d tools=%d", max_steps, len(messages), len(tools_schema))
 
             while current_step < max_steps:
@@ -1985,9 +1997,14 @@ CLUSTER TOPOLOGY SNAPSHOT:
                 _agent_log.info("[AGENT] step %d — AI returned: text_len=%s tool_calls=%s",
                                 current_step, len(text) if text else 0, len(tool_calls) if tool_calls else 0)
 
-                # Fallback: first turn, tools provided, only text returned → model doesn't support tool calling
+                # Fallback: first turn, tools provided, only text returned AND the text is
+                # ReAct-formatted → model doesn't support tool calling. Plain prose on step 1
+                # is a normal final answer and must flow through the terminal branch below
+                # (final review, presweep coverage append, action gate) — routing it through
+                # the legacy ReAct branch silently skipped all three.
                 if current_step == 1 and text is not None and not tool_calls and tools_schema:
-                    use_react_fallback = True
+                    if "Action:" in text or "Final Answer:" in text:
+                        use_react_fallback = True
 
                 if use_react_fallback:
                     # Legacy ReAct parsing path

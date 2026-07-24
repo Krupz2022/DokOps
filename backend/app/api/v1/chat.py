@@ -280,7 +280,7 @@ async def _maybe_index_incident(conversation_id: str, result_text: str) -> None:
             title = conv.title if conv else conversation_id
 
             # Build a full dialogue transcript for richer retrieval.
-            # Include "step" messages (tool outputs) so that raw resource data
+            # Include tool_output messages so that raw resource data
             # such as configmap contents, port numbers, and patch values are indexed
             # alongside the user/AI text — not just the final summary.
             msgs = (await db.exec(

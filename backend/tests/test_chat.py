@@ -203,12 +203,12 @@ def test_get_conversation_includes_total_tokens(client: TestClient, auth_headers
 
 # ── Tool-evidence persistence (Task 1) ────────────────────────────────────────
 
-def _install_fake_loop(monkeypatch, captured: dict):
+def _install_fake_loop(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
     """Replace the agent loop with a deterministic 2-event generator and
     disable the runbook LLM round-trip."""
     from app.services.ai_service import ai_service as _svc
 
-    def fake_loop(query, **kwargs):
+    def fake_loop(query: str, **kwargs) -> object:
         captured["history"] = kwargs.get("history")
 
         async def _gen():
@@ -230,7 +230,7 @@ def _install_fake_loop(monkeypatch, captured: dict):
     )
 
 
-def test_tool_output_persisted_and_hidden_from_api(client, session, auth_headers, monkeypatch):
+def test_tool_output_persisted_and_hidden_from_api(client: TestClient, session: Session, auth_headers: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     """The observation is saved as a tool_output row but never returned by the API."""
     captured: dict = {}
     _install_fake_loop(monkeypatch, captured)
@@ -258,7 +258,7 @@ def test_tool_output_persisted_and_hidden_from_api(client, session, auth_headers
     assert "consul-server" not in entry["preview"]
 
 
-def test_history_carries_prior_tool_evidence(client, auth_headers, monkeypatch):
+def test_history_carries_prior_tool_evidence(client: TestClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     """Turn 2's history must contain turn 1's verbatim tool output."""
     captured: dict = {}
     _install_fake_loop(monkeypatch, captured)

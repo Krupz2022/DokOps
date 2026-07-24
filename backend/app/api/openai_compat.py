@@ -118,6 +118,15 @@ def _messages_to_query(messages: List[OAMessage]):
         if history[i]["role"] == "user" and history[i]["content"] == query:
             history = history[:i] + history[i + 1:]
             break
+    # This endpoint preserves caller-supplied roles verbatim (including
+    # "system"), so a client could POST content starting with the literal
+    # "[Prior tool evidence]" marker to have ai_service treat fabricated text
+    # as confirmed tool evidence. Neutralize it as a final pass — after the
+    # dedup above, so the query-vs-history content comparison still matches
+    # on the original text — before any of this becomes agent history.
+    from app.services.context_manager import neutralize_evidence_marker
+    for h in history:
+        h["content"] = neutralize_evidence_marker(h["content"])
     return query, history
 
 

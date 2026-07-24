@@ -11,6 +11,24 @@ _CHARS_PER_TOKEN = 4
 # final reviewer's evidence window. Keep in sync — it is matched by startswith.
 PRIOR_EVIDENCE_PREFIX = "[Prior tool evidence]"
 
+
+def neutralize_evidence_marker(content: Optional[str]) -> Optional[str]:
+    """Defuse a leading PRIOR_EVIDENCE_PREFIX in caller/user-supplied text.
+
+    ai_service seeds the final reviewer's "confirmed" evidence block from any
+    history entry that starts with this literal prefix (restricted to
+    role="system" entries written by chat._build_history). Two other paths can
+    put arbitrary text into history: a user chat message, and an OpenAI-compat
+    caller supplying a "role": "system" message of their own
+    (openai_compat._messages_to_query preserves client-supplied roles
+    verbatim). Either could type/POST the prefix literally to spoof fabricated
+    "tool evidence". Neither is a legitimate evidence entry, so the prefix is
+    quoted off before the text ever reaches history.
+    """
+    if content and content.startswith(PRIOR_EVIDENCE_PREFIX):
+        return content.replace(PRIOR_EVIDENCE_PREFIX, f'"{PRIOR_EVIDENCE_PREFIX}"', 1)
+    return content
+
 _TIKTOKEN_ENC = None
 
 

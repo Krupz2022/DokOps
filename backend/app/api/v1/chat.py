@@ -173,7 +173,7 @@ async def _build_history(conversation_id: str, db: AsyncSession) -> List[Dict]:
 
     # Verbatim tool output from earlier turns — without it every follow-up turn
     # starts blind and the agent re-derives facts from its own prose.
-    from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
+    from app.services.context_manager import PRIOR_EVIDENCE_PREFIX, neutralize_evidence_marker
     evidence = [m for m in msgs if m.message_type == "tool_output"][-6:]
     if evidence:
         block = "\n\n".join((m.content or "")[:2000] for m in evidence)
@@ -187,9 +187,12 @@ async def _build_history(conversation_id: str, db: AsyncSession) -> List[Dict]:
             ),
         })
 
-    # Only user/assistant text messages — exclude step noise and pending_op cards
+    # Only user/assistant text messages — exclude step noise and pending_op cards.
+    # These are user/assistant prose rows and must never carry the evidence
+    # marker — neutralize it in case a user typed the literal prefix, so it
+    # can't later be mistaken for a genuine "[Prior tool evidence]" system row.
     texts = [
-        {"role": m.role, "content": m.content}
+        {"role": m.role, "content": neutralize_evidence_marker(m.content)}
         for m in msgs
         if m.message_type == "text"
     ]

@@ -1051,6 +1051,16 @@ Rules:
         "scale", "deploy", "create", "delete", "patch", "restart",
         "rollout", "upgrade", "apply", "update", "fix", "install",
     }
+    # Word-bounded version of _WRITE_KEYWORDS, used ONLY for the action gate below.
+    # The gate's substring match fired on "show me the deployments in prod" (matches
+    # "deploy") and "why does the ingress prefix rewrite break" (matches "fix"),
+    # pushing an unsolicited write-tool prompt onto a read-only question. Tool
+    # *selection* (_select_dynamic_tools, is_write below) stays loose on purpose —
+    # over-selecting a write tool schema is harmless; over-triggering the gate's
+    # "TAKE AN ACTION now" instruction on a read-only turn is not.
+    _WRITE_INTENT_RE = re.compile(
+        r"\b(scale|deploy|creat|delet|patch|restart|rollout|upgrad|appl|updat|fix|install)\w*\b"
+    )
     # Maps query keywords → tool name prefixes for service tools
     _SERVICE_TOOL_MAP = {
         "rabbitmq":  "rabbitmq_",
@@ -1909,14 +1919,22 @@ ELASTICSEARCH QUERY RULES:
             # little and removes a dependency on a coin-flip.
             _presweep = ""
             from app.services.presweep import build_presweep, resolve_namespace
+            from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
             _ns = await resolve_namespace(query)
             if not _ns and history:
                 # Follow-up turns ("please fix this") name no namespace; recover it
                 # from recent conversation text instead of silently skipping the sweep.
+                # Exclude prior-evidence blocks: they are verbatim tool output, and
+                # strict=True below still guards against a "namespace: X" fragment
+                # living INSIDE that output (e.g. a describe result) being read as
+                # if the user had named it — resolve only against real cluster
+                # namespaces, never the unvalidated regex.
                 _hist_text = " ".join(
-                    str(m.get("content") or "")[:2000] for m in history[-10:]
+                    str(m.get("content") or "")[:2000]
+                    for m in history[-10:]
+                    if not str(m.get("content") or "").startswith(PRIOR_EVIDENCE_PREFIX)
                 )
-                _ns = await resolve_namespace(_hist_text)
+                _ns = await resolve_namespace(_hist_text, strict=True)
             if _ns:
                 try:
                     _presweep = await build_presweep(_ns)
@@ -1945,7 +1963,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
             use_react_fallback = False
             # Action gate: a write-intent turn must end in a concrete operation or an
             # explicit one-line blocker — never a prose essay. One retry, then accept.
-            _wants_action = any(kw in (query or "").lower() for kw in self._WRITE_KEYWORDS)
+            _wants_action = bool(self._WRITE_INTENT_RE.search((query or "").lower()))
             _pending_op_seen = False
             _action_gate_used = False
             # Untrimmed tool observations kept for final synthesis/review. The copies in
@@ -1962,7 +1980,12 @@ CLUSTER TOPOLOGY SNAPSHOT:
             from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
             for _h in history or []:
                 _hc = str(_h.get("content") or "")
-                if _hc.startswith(PRIOR_EVIDENCE_PREFIX):
+                # Role check matters: the marker is only ever legitimately written by
+                # chat._build_history as a "system" message. Without this check, a
+                # user/assistant message that merely starts with the same literal
+                # text (spoofed by a caller) would be treated as verified tool
+                # evidence and laundered into the reviewer's "confirmed" evidence.
+                if _h.get("role") == "system" and _hc.startswith(PRIOR_EVIDENCE_PREFIX):
                     raw_observations.append(_hc)
             _agent_log.info("[AGENT] entering loop max_steps=%d messages=%d tools=%d", max_steps, len(messages), len(tools_schema))
 
@@ -2361,6 +2384,19 @@ CLUSTER TOPOLOGY SNAPSHOT:
                         continue
                     # No tool calls — model is done
                     text = text if text and text.strip() else "(No response from model)"
+                    # The action gate above promises exactly a write tool call OR a
+                    # one-line "Blocked:" reply. Without this short-circuit, the
+                    # reviewer below rewrites ANY non-empty text into markdown prose
+                    # whenever raw_observations is non-empty — which is the normal
+                    # case, since a presweep or prior-turn evidence exists on most
+                    # turns. _FINAL_REVIEW_PROMPT says nothing about preserving a
+                    # "Blocked:" prefix, so without this check the one-line blocker
+                    # contract silently breaks in exactly the configuration
+                    # production runs in. Skip the reviewer entirely for it.
+                    if text.lstrip().startswith("Blocked:"):
+                        from app.services.presweep import append_missing_findings
+                        yield {"type": "result", "message": append_missing_findings(_presweep, text)}
+                        return
                     if investigation_mode and text != "(No response from model)":
                         # Prefer the untrimmed evidence; fall back to message copies if empty.
                         observations = raw_observations or [

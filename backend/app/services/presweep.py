@@ -115,7 +115,7 @@ def append_missing_findings(presweep: str, answer: str) -> str:
     )
 
 
-async def resolve_namespace(query: str) -> Optional[str]:
+async def resolve_namespace(query: str, *, strict: bool = False) -> Optional[str]:
     """Namespace for a query: the regex forms first, then any real namespace name
     mentioned anywhere in it.
 
@@ -124,9 +124,18 @@ async def resolve_namespace(query: str) -> Optional[str]:
     sweep silently did not run — the agent then answered from speculation.
     Matching against the cluster's actual namespaces removes the dependency on
     how the user phrased it.
+
+    strict: when True, skip the extract_namespace() regex branch entirely and
+    resolve ONLY against real namespace names from list_namespace(). The regex
+    branch matches "namespace: X" wherever it appears, with no validation — fine
+    for a user's own query, but callers may feed this text that is itself
+    verbatim tool/evidence output (e.g. a describe result mentioning an
+    unrelated "namespace: kube-system"), in which case the unvalidated regex
+    would confidently return a namespace the user never asked about.
     """
-    if namespace := extract_namespace(query):
-        return namespace
+    if not strict:
+        if namespace := extract_namespace(query):
+            return namespace
 
     core = k8s_service._get_api("CoreV1Api")
     if core is None:

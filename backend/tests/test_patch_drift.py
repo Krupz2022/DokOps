@@ -112,6 +112,12 @@ from app.models.patch import (
 )
 from app.models.minion import Minion
 from app.models.user import User
+# KeyBlueprint (app/models/activation_key.py) FKs to Blueprint, but nothing in
+# this file's own import graph loads app.models.blueprint. Without this import,
+# the `engine` fixture's SQLModel.metadata.create_all() below raises
+# NoReferencedTableError when this file is run standalone (repo-wide gap, see
+# test_live_resources.py / test_sso_callback_cookie.py for the same fix).
+import app.main  # noqa: F401 — registers every SQLModel table before create_all
 
 
 @pytest.fixture(name="engine")

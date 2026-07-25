@@ -127,33 +127,22 @@ export default function PipelineDrift() {
     [data, selected],
   );
 
-  /* Fleet composition — the one honest part-of-whole on this page. Stage rings
-     each measure against a different denominator (qa vs dev, uat vs qa), so they
-     can never be summed into one pie. Devices can: every host in the pipeline,
-     counted once, split by how far behind it is. */
+  /* Fleet split by stage.
+     The slice ANGLE is the stage's device count — that is a real part-of-whole
+     (every host in the pipeline, once). The drift percentage rides as a label
+     and as the slice colour, never as the angle: qa is measured against dev and
+     prod against qa, so those percentages share no denominator and summing them
+     into a pie would draw a quantity that does not exist. */
   const fleet = useMemo(() => {
-    const worst = new Map<string, DeviceRow>();
-    for (const s of data?.stages ?? []) {
-      for (const d of s.devices) {
-        // A host can sit in two stages' groups; the worse reading wins, because
-        // this segment is a risk summary, not an average.
-        const prev = worst.get(d.minion_id);
-        if (!prev || (d.percent ?? -1) < (prev.percent ?? -1)) worst.set(d.minion_id, d);
-      }
-    }
-    const all = [...worst.values()];
-    const never = all.filter(d => d.last_patched === null).length;
-    const behind = all.filter(
-      d => d.last_patched !== null && d.percent !== null && d.percent < 100,
-    ).length;
-    return {
-      total: all.length,
-      segments: [
-        { name: "up to date", value: all.length - never - behind, fill: "rgb(16 185 129)" },
-        { name: "behind", value: behind, fill: "rgb(239 68 68)" },
-        { name: "never patched", value: never, fill: "rgb(245 158 11)" },
-      ].filter(s => s.value > 0),
-    };
+    const segments = (data?.stages ?? [])
+      .filter(s => s.devices_total > 0)
+      .map(s => ({
+        name: s.name,
+        value: s.devices_total,
+        percent: s.percent,
+        fill: band(s.percent).ring,
+      }));
+    return { total: segments.reduce((n, s) => n + s.value, 0), segments };
   }, [data]);
 
   const hostnames = useMemo(
@@ -272,17 +261,20 @@ export default function PipelineDrift() {
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="min-w-[7.5rem]">
+                <div className="min-w-[9.5rem]">
                   <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">
                     {fleet.total} device{fleet.total === 1 ? "" : "s"}
                   </p>
-                  {/* Count + label beside every swatch: the segments are never
-                      distinguished by colour alone. */}
+                  {/* Stage name + device count + percentage beside every swatch,
+                      so a slice is never identified by colour alone. */}
                   {fleet.segments.map(s => (
                     <div key={s.name} className="flex items-center gap-1.5 text-[11px] leading-5">
                       <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.fill }} />
-                      <span className="text-muted-foreground">{s.name}</span>
-                      <span className="ml-auto tabular-nums text-foreground">{s.value}</span>
+                      <span className="text-foreground font-medium">{s.name}</span>
+                      <span className="text-muted-foreground tabular-nums">{s.value} dev</span>
+                      <span className={cn("ml-auto tabular-nums font-semibold", band(s.percent).text)}>
+                        {s.percent === null ? "base" : `${s.percent}%`}
+                      </span>
                     </div>
                   ))}
                 </div>

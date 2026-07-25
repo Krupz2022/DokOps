@@ -246,8 +246,91 @@ export default function PipelineDrift() {
             )}
           </div>
 
-          {/* Task 4 fills this in. */}
-          {stage && <div className="px-6 pb-6" data-stage={stage.id} />}
+          {stage && (
+            <div className="px-6 pb-6">
+              <div className="flex flex-wrap items-baseline gap-2 mb-3">
+                <span className="text-sm font-semibold">{stage.name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {stage.reference_stage_name
+                    ? `reference ${stage.reference_stage_name} · ${stage.missing.length} of ${stage.ref_total} advisories missing on at least one device`
+                    : "baseline stage — nothing upstream to compare against"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Devices, worst first (server-sorted). */}
+                <div className="bg-card border border-border rounded-xl dark:glass overflow-hidden">
+                  <p className="text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-muted-foreground/70 px-4 py-2.5 border-b border-border">
+                    Devices
+                  </p>
+                  {stage.devices.length === 0 ? (
+                    <p className="text-xs text-muted-foreground px-4 py-6">
+                      This stage's group has no devices.
+                    </p>
+                  ) : (
+                    <div className="max-h-[46vh] overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {stage.devices.map(d => (
+                            <tr key={d.minion_id} className="border-b border-border/50 last:border-0">
+                              <td className="px-4 py-2 font-medium truncate max-w-[180px]">{d.hostname}</td>
+                              <td className={cn("px-2 py-2 tabular-nums font-semibold w-14 text-right", band(d.percent).text)}>
+                                {d.percent === null ? "—" : `${d.percent}%`}
+                              </td>
+                              <td className="px-2 py-2 text-muted-foreground tabular-nums whitespace-nowrap">
+                                {ago(d.last_patched)}
+                              </td>
+                              <td className="px-4 py-2 text-right whitespace-nowrap">
+                                {d.missing_count === 0
+                                  ? <span className="text-emerald-400">✓</span>
+                                  : <span className="text-muted-foreground tabular-nums">{d.missing_count} missing</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Missing advisories, severity-first (server-sorted). */}
+                <div className="bg-card border border-border rounded-xl dark:glass overflow-hidden">
+                  <p className="text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-muted-foreground/70 px-4 py-2.5 border-b border-border">
+                    Missing advisories
+                  </p>
+                  {stage.missing.length === 0 ? (
+                    <p className="text-xs text-muted-foreground px-4 py-6">
+                      {stage.ref_total === 0
+                        ? "No reference run to compare against yet."
+                        : "Every device here carries everything the reference stage applied."}
+                    </p>
+                  ) : (
+                    <div className="max-h-[46vh] overflow-y-auto divide-y divide-border/50">
+                      {stage.missing.map(m => (
+                        <div key={m.key} className="px-4 py-2.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={cn("inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[11px] font-medium", SEV[m.severity] ?? SEV.none)}>
+                              {m.severity}
+                            </span>
+                            <span className="font-mono text-[11px] text-foreground/90">
+                              {m.advisory_id ?? m.package_name}
+                            </span>
+                            {m.advisory_id && (
+                              <span className="text-[11px] text-muted-foreground">{m.package_name}</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mt-1 truncate"
+                             title={m.affected_minion_ids.join(", ")}>
+                            {m.affected_minion_ids.length} device{m.affected_minion_ids.length === 1 ? "" : "s"} behind
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

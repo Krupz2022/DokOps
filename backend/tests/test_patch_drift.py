@@ -101,7 +101,7 @@ import os
 import tempfile
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import create_engine, Session, SQLModel
+from sqlmodel import create_engine, select, Session, SQLModel
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from unittest.mock import patch as mock_patch
@@ -358,6 +358,27 @@ def test_live_schedule_is_attached_and_superseded_ones_ignored(client, engine):
     assert _stage(payload, "qa")["schedule"]["cron_expr"] == "0 2 * * 6"
     assert _stage(payload, "qa")["schedule"]["timezone"] == "Europe/London"
     assert _stage(payload, "dev")["schedule"] is None
+
+
+def test_stage_percent_ignores_devices_no_longer_in_the_group(client, engine):
+    # web-01 got patched, web-02 never did. web-01 is then decommissioned out
+    # of the qa group. The only device left in the group has zero coverage —
+    # the stage percent must reflect that, not the departed device's 100%.
+    pid, stages, minions = _seed(engine, devices_per_stage=2)
+    _run(engine, pid, stages["dev"], {minions["dev"][0]: [_adv("A-1", "nginx"), _adv("A-2", "curl")]})
+    _run(engine, pid, stages["qa"], {minions["qa"][0]: [_adv("A-1", "nginx"), _adv("A-2", "curl")]})
+
+    with Session(engine) as db:
+        member = db.exec(
+            select(MinionGroupMember).where(MinionGroupMember.minion_id == minions["qa"][0])
+        ).first()
+        db.delete(member)
+        db.commit()
+
+    qa = _stage(client.get(f"/api/v1/patches/pipelines/{pid}/drift").json(), "qa")
+    assert qa["devices_total"] == 1
+    assert qa["devices_covered"] == 0
+    assert qa["percent"] == 0
 
 
 def test_empty_pipeline_and_bad_input(client, engine):

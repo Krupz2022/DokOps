@@ -225,10 +225,10 @@ async def pipeline_drift(
                     ref_meta.update(advisory_meta(r.applied_advisories))
         ref_set = set(ref_meta)
 
-        own = device_keys(stage.id)
-        stage_set: set[str] = set().union(*own.values()) if own else set()
-        last_seen = last_patched_per_device(stage.id)
         member_ids = members_by_group.get(stage.group_id, [])
+        own = device_keys(stage.id)
+        stage_set: set[str] = set().union(*(own[m] for m in member_ids if m in own)) if own else set()
+        last_seen = last_patched_per_device(stage.id)
 
         devices: list[dict[str, Any]] = []
         covered = 0
@@ -291,8 +291,13 @@ async def pipeline_drift(
 
     # Cadence: advisories landed per ISO week over the last 12 weeks. Describes
     # the pipeline's rhythm, so it ignores the comparison window entirely.
-    floor = utcnow() - timedelta(weeks=12)
+    now = utcnow()
+    floor = now - timedelta(weeks=12)
     weeks: dict[str, int] = {}
+    for w in range(12):
+        day = now - timedelta(weeks=w)
+        monday = (day - timedelta(days=day.weekday())).date().isoformat()
+        weeks[monday] = 0
     for p in promos:
         done_at = as_utc(p.completed_at)
         if done_at is None or done_at < floor:

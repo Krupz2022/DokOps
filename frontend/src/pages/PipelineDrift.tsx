@@ -6,16 +6,16 @@ import cronstrue from "cronstrue";
 import api from "../lib/api";
 import { cn } from "../lib/utils";
 
-export interface MissingAdvisory {
+interface MissingAdvisory {
   key: string; advisory_id: string | null; package_name: string;
   severity: string; affected_minion_ids: string[];
 }
-export interface DeviceRow {
+interface DeviceRow {
   minion_id: string; hostname: string; status: string;
   percent: number | null; matched: number;
   last_patched: string | null; missing_count: number;
 }
-export interface Stage {
+interface Stage {
   id: string; name: string; order: number;
   group_id: string; group_name: string | null;
   reference_stage_id: string | null; reference_stage_name: string | null;
@@ -26,14 +26,14 @@ export interface Stage {
   missing: MissingAdvisory[];
   devices: DeviceRow[];
 }
-export interface DriftPayload {
+interface DriftPayload {
   pipeline: { id: string; name: string; org_name: string | null };
   window: string;
   cadence: { week: string; advisories: number }[];
   stages: Stage[];
 }
 
-export const SEV: Record<string, string> = {
+const SEV: Record<string, string> = {
   critical: "bg-red-500/10 text-red-400 border-red-500/25",
   high:     "bg-orange-500/10 text-orange-400 border-orange-500/25",
   medium:   "bg-amber-500/10 text-amber-400 border-amber-500/25",
@@ -50,14 +50,14 @@ const WINDOWS = [
 
 /* Drift bands. Emerald only at 95+, because "nearly caught up" on a security
    advisory is not caught up. */
-export function band(pct: number | null): { ring: string; text: string } {
+function band(pct: number | null): { ring: string; text: string } {
   if (pct === null)  return { ring: "rgb(100 116 139)", text: "text-muted-foreground" };
   if (pct >= 95)     return { ring: "rgb(16 185 129)",  text: "text-emerald-400" };
   if (pct >= 70)     return { ring: "rgb(245 158 11)",  text: "text-amber-400" };
   return               { ring: "rgb(239 68 68)",   text: "text-red-400" };
 }
 
-export function ago(iso: string | null): string {
+function ago(iso: string | null): string {
   if (!iso) return "never";
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
   if (days <= 0) return "today";
@@ -68,8 +68,9 @@ export function ago(iso: string | null): string {
 
 function cron(s: Stage["schedule"]): string {
   if (!s) return "manual";
-  try { return cronstrue.toString(s.cron_expr, { verbose: false }); }
-  catch { return s.cron_expr; }
+  const tz = s.timezone && s.timezone !== "UTC" ? ` ${s.timezone}` : "";
+  try { return cronstrue.toString(s.cron_expr, { verbose: false }) + tz; }
+  catch { return s.cron_expr + tz; }
 }
 
 /* Drift ring — conic-gradient, no chart library. A recharts RadialBarChart for
@@ -101,6 +102,7 @@ export default function PipelineDrift() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -118,11 +120,16 @@ export default function PipelineDrift() {
       .catch(() => live && setError("Could not load drift for this pipeline."))
       .finally(() => live && setLoading(false));
     return () => { live = false; };
-  }, [pipelineId, window_]);
+  }, [pipelineId, window_, nonce]);
 
   const stage = useMemo(
     () => data?.stages.find(s => s.id === selected) ?? null,
     [data, selected],
+  );
+
+  const hostnames = useMemo(
+    () => new Map(stage?.devices.map(d => [d.minion_id, d.hostname]) ?? []),
+    [stage],
   );
 
   return (
@@ -166,7 +173,7 @@ export default function PipelineDrift() {
           <div className="bg-card border border-border rounded-xl p-6 text-center">
             <p className="text-sm text-red-400 mb-3">{error}</p>
             <button
-              onClick={() => setParams({ window: window_ })}
+              onClick={() => setNonce(n => n + 1)}
               className="px-3 py-1.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium"
             >Retry</button>
           </div>
@@ -300,8 +307,12 @@ export default function PipelineDrift() {
                   </p>
                   {stage.missing.length === 0 ? (
                     <p className="text-xs text-muted-foreground px-4 py-6">
-                      {stage.ref_total === 0
+                      {stage.reference_stage_id === null
+                        ? "Baseline stage — nothing upstream to compare against."
+                        : stage.ref_total === 0
                         ? "No reference run to compare against yet."
+                        : stage.devices_total === 0
+                        ? "This stage's group has no devices."
                         : "Every device here carries everything the reference stage applied."}
                     </p>
                   ) : (
@@ -320,7 +331,7 @@ export default function PipelineDrift() {
                             )}
                           </div>
                           <p className="text-[11px] text-muted-foreground mt-1 truncate"
-                             title={m.affected_minion_ids.join(", ")}>
+                             title={m.affected_minion_ids.map(id => hostnames.get(id) ?? id).join(", ")}>
                             {m.affected_minion_ids.length} device{m.affected_minion_ids.length === 1 ? "" : "s"} behind
                           </p>
                         </div>

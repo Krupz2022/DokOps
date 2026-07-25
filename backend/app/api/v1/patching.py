@@ -17,6 +17,7 @@ from app.models.patch import (
 )
 from app.models.minion import Minion
 from app.models.user import User
+from app.services.patch_drift import WINDOWS, pipeline_drift
 
 router = APIRouter()
 
@@ -733,3 +734,21 @@ async def acknowledge_alert(
     db.add(alert)
     await db.commit()
     return alert
+
+
+# ── Drift dashboard ──────────────────────────────────────────────────────────
+
+@router.get("/pipelines/{pipeline_id}/drift")
+async def pipeline_drift_view(
+    pipeline_id: str,
+    window: str = "latest",
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_user),
+):
+    """Read-only advisory drift across a pipeline's stages."""
+    if window not in WINDOWS:
+        raise HTTPException(400, f"window must be one of {', '.join(WINDOWS)}")
+    data = await pipeline_drift(db, pipeline_id, window)
+    if data is None:
+        raise HTTPException(404, "Pipeline not found")
+    return data

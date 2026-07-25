@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Trash2, Plus, GitBranch, Zap, X, Check, Layers,
   Users, AlertTriangle, RefreshCw, UserX, Play,
-  ArrowRight, RotateCcw, Pencil, ChevronDown, ChevronRight,
+  ArrowRight, RotateCcw, Pencil, ChevronDown, ChevronRight, BarChart3,
 } from "lucide-react";
 import api from "../lib/api";
 
@@ -72,6 +73,7 @@ const SCOPE_OPTIONS = [
 ];
 
 export default function Pipelines() {
+  const navigate = useNavigate();
   const [orgs, setOrgs]             = useState<Org[]>([]);
   const [groups, setGroups]         = useState<Group[]>([]);
   const [pipelines, setPipelines]   = useState<Pipeline[]>([]);
@@ -400,6 +402,14 @@ export default function Pipelines() {
 
                 {/* Right: scope + reboot + delete */}
                 <div className="flex items-center gap-2 pl-3 border-l border-border/60 self-stretch py-3 shrink-0">
+                  <button
+                    onClick={() => navigate(`/patching/pipelines/${p.id}/dashboard`)}
+                    title="Patch drift dashboard"
+                    className="p-1.5 rounded-lg border bg-muted border-border text-muted-foreground/70 hover:text-primary hover:border-primary/40 transition-colors"
+                  >
+                    <BarChart3 className="w-3.5 h-3.5" />
+                  </button>
+
                   <div className="flex items-center gap-0.5 bg-muted rounded-lg p-0.5">
                     {SCOPE_OPTIONS.map(opt => (
                       <button key={opt.value}

@@ -30,6 +30,7 @@ const Vault = lazy(() => import("./pages/Vault"));
 const Organisations = lazy(() => import("./pages/Organisations"));
 const Patching = lazy(() => import("./pages/Patching"));
 const Pipelines = lazy(() => import("./pages/Pipelines"));
+const PipelineDrift = lazy(() => import("./pages/PipelineDrift"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const AlertIncidents = lazy(() => import("./pages/AlertIncidents"));
 const Analytics = lazy(() => import("./pages/Analytics"));
@@ -128,6 +129,7 @@ function App() {
                                             <Route path="/infrastructure/organisations" element={<AppLayout><Organisations /></AppLayout>} />
                                             <Route path="/patching" element={<AppLayout><Patching /></AppLayout>} />
                                             <Route path="/patching/pipelines" element={<AppLayout><Pipelines /></AppLayout>} />
+                                            <Route path="/patching/pipelines/:pipelineId/dashboard" element={<PipelineDrift />} />
                                             <Route path="/patching/schedules" element={<AppLayout><Schedules /></AppLayout>} />
                                             <Route path="/alerts" element={<AppLayout><AlertIncidents /></AppLayout>} />
                                             <Route path="/auth-callback" element={<AuthCallback />} />

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, BarChart3, Eye, RefreshCw } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer } from "recharts";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import cronstrue from "cronstrue";
 import api from "../lib/api";
 import { cn } from "../lib/utils";
@@ -227,26 +227,36 @@ export default function PipelineDrift() {
             ))}
 
             {/* Cadence — the one genuine chart on the page. */}
-            {data.cadence.length > 1 && (
+            {data.cadence.some(c => c.advisories > 0) && (
               <div className="ml-auto shrink-0 w-56 pl-6">
                 <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">
                   advisories / week
                 </p>
                 <div className="h-16">
+                  {/* Bars, not an area: weekly counts are discrete buckets, and
+                      interpolating between them draws a ramp through values that
+                      never existed. With a mostly-quiet pipeline that ramp is the
+                      whole picture, so the mark type is the difference between
+                      honest and misleading. */}
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data.cadence} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-                      <defs>
-                        <linearGradient id="cadence" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="rgb(56 189 248)" stopOpacity={0.5} />
-                          <stop offset="100%" stopColor="rgb(56 189 248)" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <Area
-                        type="monotone" dataKey="advisories"
-                        stroke="rgb(56 189 248)" strokeWidth={1.5}
-                        fill="url(#cadence)" isAnimationActive={false}
+                    <BarChart data={data.cadence} margin={{ top: 2, right: 0, bottom: 0, left: 0 }} barCategoryGap={2}>
+                      {/* Hidden, but it is what makes the tooltip say "2026-07-20"
+                          instead of the array index. */}
+                      <XAxis dataKey="week" hide />
+                      <Tooltip
+                        cursor={{ fill: "rgb(148 163 184 / 0.08)" }}
+                        contentStyle={{
+                          background: "rgb(2 6 23)", border: "1px solid rgb(51 65 85)",
+                          borderRadius: 8, fontSize: 11, padding: "4px 8px",
+                        }}
+                        labelStyle={{ color: "rgb(148 163 184)" }}
+                        itemStyle={{ color: "rgb(226 232 240)" }}
                       />
-                    </AreaChart>
+                      <Bar
+                        dataKey="advisories" fill="rgb(56 189 248)"
+                        radius={[2, 2, 0, 0]} isAnimationActive={false}
+                      />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>

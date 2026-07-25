@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, BarChart3, Eye, RefreshCw } from "lucide-react";
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import cronstrue from "cronstrue";
 import api from "../lib/api";
 import { cn } from "../lib/utils";
@@ -127,6 +127,35 @@ export default function PipelineDrift() {
     [data, selected],
   );
 
+  /* Fleet composition — the one honest part-of-whole on this page. Stage rings
+     each measure against a different denominator (qa vs dev, uat vs qa), so they
+     can never be summed into one pie. Devices can: every host in the pipeline,
+     counted once, split by how far behind it is. */
+  const fleet = useMemo(() => {
+    const worst = new Map<string, DeviceRow>();
+    for (const s of data?.stages ?? []) {
+      for (const d of s.devices) {
+        // A host can sit in two stages' groups; the worse reading wins, because
+        // this segment is a risk summary, not an average.
+        const prev = worst.get(d.minion_id);
+        if (!prev || (d.percent ?? -1) < (prev.percent ?? -1)) worst.set(d.minion_id, d);
+      }
+    }
+    const all = [...worst.values()];
+    const never = all.filter(d => d.last_patched === null).length;
+    const behind = all.filter(
+      d => d.last_patched !== null && d.percent !== null && d.percent < 100,
+    ).length;
+    return {
+      total: all.length,
+      segments: [
+        { name: "up to date", value: all.length - never - behind, fill: "rgb(16 185 129)" },
+        { name: "behind", value: behind, fill: "rgb(239 68 68)" },
+        { name: "never patched", value: never, fill: "rgb(245 158 11)" },
+      ].filter(s => s.value > 0),
+    };
+  }, [data]);
+
   const hostnames = useMemo(
     () => new Map(stage?.devices.map(d => [d.minion_id, d.hostname]) ?? []),
     [stage],
@@ -227,8 +256,41 @@ export default function PipelineDrift() {
             ))}
 
             {/* Cadence — the one genuine chart on the page. */}
+            {fleet.total > 0 && (
+              <div className="ml-auto shrink-0 flex items-center gap-3 pl-6">
+                <div className="w-16 h-16">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={fleet.segments} dataKey="value" nameKey="name"
+                        innerRadius={18} outerRadius={31} paddingAngle={2}
+                        startAngle={90} endAngle={-270}
+                        stroke="none" isAnimationActive={false}
+                      >
+                        {fleet.segments.map(s => <Cell key={s.name} fill={s.fill} />)}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="min-w-[7.5rem]">
+                  <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">
+                    {fleet.total} device{fleet.total === 1 ? "" : "s"}
+                  </p>
+                  {/* Count + label beside every swatch: the segments are never
+                      distinguished by colour alone. */}
+                  {fleet.segments.map(s => (
+                    <div key={s.name} className="flex items-center gap-1.5 text-[11px] leading-5">
+                      <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.fill }} />
+                      <span className="text-muted-foreground">{s.name}</span>
+                      <span className="ml-auto tabular-nums text-foreground">{s.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {data.cadence.some(c => c.advisories > 0) && (
-              <div className="ml-auto shrink-0 w-56 pl-6">
+              <div className="shrink-0 w-56 pl-6">
                 <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">
                   advisories / week
                 </p>

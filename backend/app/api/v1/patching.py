@@ -365,12 +365,41 @@ async def promote_stage(
             detail="Source stage has no successful promotion to promote from. Apply patches to this stage first.",
         )
 
+    # A security/all apply stores no custom_packages (only an explicit Custom run
+    # does), so the frozen list has to be reconstructed from what the source run
+    # actually applied. Without this, promoting after a Security or All-updates
+    # apply sent an EMPTY package list downstream — a silent no-op on apt and a
+    # hard `dnf` exit 2 on rpm hosts, while the promotion still recorded "done".
+    promoted_packages = source_promo.custom_packages
+    if not promoted_packages:
+        source_results = (await db.exec(
+            select(PatchPromotionResult).where(
+                PatchPromotionResult.promotion_id == source_promo.id,
+                PatchPromotionResult.status == "done",
+            )
+        )).all()
+        names = sorted({
+            entry["package_name"]
+            for r in source_results
+            for entry in json.loads(r.applied_advisories or "[]")
+            if isinstance(entry, dict) and entry.get("package_name")
+        })
+        promoted_packages = json.dumps(names) if names else None
+
+    # Promoting nothing is never what the operator meant. Fail loudly rather than
+    # dispatch an empty install and record it as a successful promotion.
+    if not promoted_packages:
+        raise HTTPException(
+            status_code=400,
+            detail="Source stage's last run applied no packages — nothing to promote.",
+        )
+
     promo = PatchPromotion(
         pipeline_id=pipeline_id,
         from_stage_id=stage_id,
         to_stage_id=next_stage.id,
         patch_scope="custom",
-        custom_packages=source_promo.custom_packages,
+        custom_packages=promoted_packages,
         triggered_by=current_user.username,
         status="running",
     )
@@ -381,7 +410,7 @@ async def promote_stage(
     result = await apply_patches(
         group_id=next_stage.group_id,
         scope="custom",
-        custom_packages=source_promo.custom_packages,
+        custom_packages=promoted_packages,
         actor=current_user.username,
         promotion_id=promo.id,
     )

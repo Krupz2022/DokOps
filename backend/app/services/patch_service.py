@@ -441,8 +441,52 @@ async def load_schedules(scheduler) -> None:
     _log.info("Loaded %d patch schedules", len(schedules))
 
 
-def _register_schedule(scheduler, sched: PatchSchedule) -> None:
+# Crontab day-of-week numbering, indexed by the number a crontab expression uses.
+_CRON_DOW_NAMES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def _translate_dow(field: str) -> str:
+    """Rewrite a crontab day-of-week field into APScheduler's name form.
+
+    APScheduler's ``day_of_week`` numbers weekdays 0=Monday..6=Sunday, but a
+    crontab expression means 0=Sunday..6=Saturday, and ``from_crontab`` passes
+    the field through untranslated. Every schedule therefore fired one day late
+    — picking Saturday scheduled Sunday. Names are unambiguous in both systems,
+    so convert rather than doing modular arithmetic on the numbers.
+
+    Non-numeric tokens (``*``, ``*/2``, ``mon``) are already unambiguous and
+    pass through untouched.
+    """
+    def one(token: str) -> str:
+        return _CRON_DOW_NAMES[int(token) % 7] if token.isdigit() else token
+
+    out = []
+    for chunk in field.split(","):
+        lo, sep, hi = chunk.partition("-")
+        out.append(f"{one(lo)}-{one(hi)}" if sep else one(lo))
+    return ",".join(out)
+
+
+def cron_trigger(cron_expr: str, timezone: str) -> "CronTrigger":
+    """Build a CronTrigger from a standard 5-field crontab expression.
+
+    Use this everywhere instead of ``CronTrigger.from_crontab`` — see
+    :func:`_translate_dow` for why that function cannot be trusted with the
+    day-of-week field.
+    """
     from apscheduler.triggers.cron import CronTrigger
+
+    fields = cron_expr.split()
+    if len(fields) != 5:
+        raise ValueError(f"Wrong number of fields; got {len(fields)}, expected 5")
+    minute, hour, day, month, dow = fields
+    return CronTrigger(
+        minute=minute, hour=hour, day=day, month=month,
+        day_of_week=_translate_dow(dow), timezone=timezone,
+    )
+
+
+def _register_schedule(scheduler, sched: PatchSchedule) -> None:
 
     async def _run(sched_id: str = sched.id):
         async with AsyncSessionLocal() as db:
@@ -453,7 +497,7 @@ def _register_schedule(scheduler, sched: PatchSchedule) -> None:
 
     scheduler.add_job(
         _run,
-        trigger=CronTrigger.from_crontab(sched.cron_expr, timezone=sched.timezone),
+        trigger=cron_trigger(sched.cron_expr, sched.timezone),
         id=f"patch_sched_{sched.id}",
         replace_existing=True,
     )

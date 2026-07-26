@@ -511,17 +511,18 @@ async def create_schedule(
     current_user: User = Depends(require_god_mode),
 ):
     from app.main import scheduler
-    from app.services.patch_service import _register_schedule
-    from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+    from app.services.patch_service import _register_schedule, cron_trigger as _cron_trigger
 
     # Fix 1: Validate pipeline/stage exist before creating the schedule
     stage = await db.get(PipelineStage, body.stage_id)
     if not stage or stage.pipeline_id != body.pipeline_id:
         raise HTTPException(status_code=404, detail="Stage not found in pipeline")
 
-    # Fix 2: Validate cron expression before DB commit
+    # Fix 2: Validate cron expression before DB commit.
+    # Validate through the same builder the scheduler uses, so an expression can
+    # never pass validation and then be scheduled differently (or vice versa).
     try:
-        _CronTrigger.from_crontab(body.cron_expr, timezone=body.timezone)
+        _cron_trigger(body.cron_expr, body.timezone)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {exc}")
 
@@ -562,7 +563,7 @@ async def update_schedule(
     _: User = Depends(require_god_mode),
 ):
     from app.main import scheduler
-    from app.services.patch_service import _register_schedule
+    from app.services.patch_service import _register_schedule, cron_trigger as _cron_trigger
 
     sched = await db.get(PatchSchedule, schedule_id)
     if not sched:

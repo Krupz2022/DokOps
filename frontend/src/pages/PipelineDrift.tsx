@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, BarChart3, Eye, RefreshCw } from "lucide-react";
+import { ArrowLeft, BarChart3, Eye, Info, RefreshCw } from "lucide-react";
 import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import cronstrue from "cronstrue";
 import api from "../lib/api";
@@ -212,8 +212,12 @@ export default function PipelineDrift() {
 
       {!loading && !error && data && data.stages.length > 0 && (
         <div className="flex-1 overflow-y-auto">
-          {/* ── Stage train ── */}
-          <div className="flex items-start gap-2 px-6 py-6 overflow-x-auto">
+          {/* ── Stage train ──
+              The horizontal scroll is confined to the cards. Putting it on this
+              row clipped the legend popover, because a non-visible overflow-x
+              forces overflow-y to clip too. */}
+          <div className="flex items-start gap-2 px-6 py-6">
+            <div className="flex items-start gap-2 overflow-x-auto min-w-0">
             {data.stages.map((s, i) => (
               <div key={s.id} className="flex items-center gap-2 shrink-0">
                 <button
@@ -243,8 +247,8 @@ export default function PipelineDrift() {
                 )}
               </div>
             ))}
+            </div>
 
-            {/* Cadence — the one genuine chart on the page. */}
             {fleet.total > 0 && (
               <div className="ml-auto shrink-0 flex items-center gap-3 pl-6">
                 <div className="w-16 h-16">
@@ -277,6 +281,38 @@ export default function PipelineDrift() {
                       </span>
                     </div>
                   ))}
+
+                  {/* What the two channels encode. Same group-hover idiom as the
+                      collapsed-sidebar tooltips. */}
+                  <div className="relative group mt-1.5 inline-flex items-center gap-1 cursor-help">
+                    <Info className="w-3 h-3 text-muted-foreground/50" />
+                    <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted-foreground/50">
+                      legend
+                    </span>
+                    <div className="absolute left-0 top-full mt-1.5 w-60 px-3 py-2.5 glass border border-border rounded-md
+                                    opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity
+                                    z-50 shadow-lg text-[11px] leading-relaxed text-foreground">
+                      <p className="mb-2">
+                        <span className="text-muted-foreground">Slice size</span> — devices in that stage.
+                      </p>
+                      <p className="mb-1.5">
+                        <span className="text-muted-foreground">Colour</span> — how far the stage has drifted
+                        from the stage before it:
+                      </p>
+                      {[
+                        { c: "rgb(16 185 129)", t: "95–100%", d: "caught up" },
+                        { c: "rgb(245 158 11)", t: "70–94%", d: "slipping" },
+                        { c: "rgb(239 68 68)", t: "below 70%", d: "behind" },
+                        { c: "rgb(100 116 139)", t: "base", d: "no stage before it" },
+                      ].map(r => (
+                        <div key={r.t} className="flex items-center gap-1.5 leading-5">
+                          <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: r.c }} />
+                          <span className="tabular-nums">{r.t}</span>
+                          <span className="text-muted-foreground">{r.d}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

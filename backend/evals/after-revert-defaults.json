@@ -1,0 +1,1153 @@
+[
+  {
+    "name": "broker-dropping-messages-oblique-phrasing",
+    "runs": 3,
+    "passes": 1,
+    "pass_rate": 0.3333333333333333,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": false,
+            "detail": "none called: ['rabbitmq_list_queues', 'rabbitmq_dead_letter_queues', 'rabbitmq_node_health']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": false,
+            "detail": "called: ['search_pods', 'list_deployments']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['broker-dropping-messages-oblique-phrasing', 'orders-broker', 'exact-name']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "list_services",
+          "list_deployments",
+          "search_pods"
+        ],
+        "answer": "I can\u2019t confirm why the broker handling orders is dropping messages from the current data.\n\n### What I found\nEvery available discovery step failed in this scenario, so there is no confirmed broker or workload target to inspect:\n\n- `search_topology` failed: `eval: no fixture for 'search_topology' in scenario 'broker-dropping-messages-oblique-phrasing'`\n- `list_services` failed: `eval: no fixture for 'list_services' in scenario 'broker-dropping-messages-oblique-phrasing'`\n- `list_deployments` failed: `eval: no fixture for 'list_deployments' in scenario 'broker-dropping-messages-oblique-phrasing'`\n- `search_pods` failed: `eval: no fixture for 'search_pods' in scenario 'broker-dropping-messages-oblique-phrasing'`\n\n### Conclusion\nThe root cause is **not determinable from the current evidence**. I do not have a verified broker instance, queue, exchange, service, deployment, or pod to examine.\n\n### What to provide next\nPlease give the exact target, for example one of:\n\n- broker type/name\n- queue name, e.g. `orders`\n- exchange/topic name\n- Kubernetes service name\n- deployment name\n- pod name\n\nA concrete example would be:\n- `queue=orders`\n- `exchange=orders`\n- `service=orders-broker`\n- `deployment=<exact-name>`\n- `pod=<exact-name>`\n\nOnce you provide that exact identifier, I can investigate the specific path where messages are being lost.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": false,
+            "detail": "none called: ['rabbitmq_list_queues', 'rabbitmq_dead_letter_queues', 'rabbitmq_node_health']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": false,
+            "detail": "called: ['search_pods', 'list_deployments']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['pod-name', 'service-name', 'deployment-name', 'minion-hostname', 'orders-broker', 'broker-01', 'orders-broker-abc123', 'message-drop']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "search_pods",
+          "list_services",
+          "list_deployments",
+          "minion_list"
+        ],
+        "answer": "I can\u2019t confirm why the orders broker is dropping messages from the current environment data.\n\n### What\u2019s blocking investigation\nThe environment did not provide discovery data for any of the usual lookup paths:\n- topology lookup unavailable\n- pod lookup unavailable\n- service lookup unavailable\n- deployment lookup unavailable\n- minion/host lookup unavailable\n\nSo I can\u2019t safely identify which broker handles orders or inspect its health/logs without guessing.\n\n### What I need from you\nPlease send **one exact identifier** for the broker handling orders:\n- `namespace=<namespace>`\n- `pod=<pod-name>`\n- `service=<service-name>`\n- `deployment=<deployment-name>`\n- `host=<minion-hostname>`\n\nAlso include the broker type if you know it, for example:\n- `RabbitMQ`\n- `Redis`\n- another broker\n\n### Best next step\nReply with something like:\n- `broker=RabbitMQ namespace=orders service=orders-broker`\n- or `host=broker-01 broker=RabbitMQ`\n- or `pod=orders-broker-abc123 namespace=prod`\n\nOnce you provide that, I can investigate the message-drop cause directly.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['infrastructure-level', 'dead-lettered', 'dead-letter']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "rabbitmq_list_queues",
+          "rabbitmq_dead_letter_queues",
+          "rabbitmq_list_consumers",
+          "rabbitmq_node_health",
+          "rabbitmq_queue_detail"
+        ],
+        "answer": "## Summary\nRabbitMQ is not showing signs of infrastructure-level message loss. The orders are being **dead-lettered** from `orders.process` into `orders.dlx`, and they are piling up there with **no consumers**.\n\n## What I found\n- `orders.process`:\n  - `messages=312`\n  - `ready=298`\n  - `unacked=14`\n  - `consumers=2`\n  - `publish/s=45.2`\n- `orders.dlx`:\n  - `messages=1842`\n  - `consumers=0`\n\n`orders.process` is configured to dead-letter to:\n- DLX: `orders.dlx`\n- routing key: `orders.failed`\n\n## Broker health\nThe RabbitMQ node looks healthy:\n- Status: `running`\n- Memory: `1.2 GB / 4.0 GB`\n- Disk free: `42.1 GB`\n- Alarms: `none`\n\nSo there is no evidence here of RabbitMQ dropping messages due to memory/disk alarms or node failure.\n\n## Root cause\nThe messages are **not being dropped by the broker**. They are being **routed to the dead-letter path**:\n- source queue: `orders.process`\n- dead-letter exchange: `orders.dlx`\n- dead-letter routing key: `orders.failed`\n\nThey then remain unprocessed because the dead-letter queue/path currently has **0 consumers**.\n\n## Recommended fix\n1. **Add a consumer for the dead-lettered order flow immediately**\n   - Consume messages routed as `orders.failed` from dead-letter exchange `orders.dlx`.\n2. **Investigate why `orders.process` messages are being dead-lettered**\n   - Common causes include consumer reject/nack behavior, TTL expiry, or queue length policies.\n3. **Drain the current backlog**\n   - There are currently **1842** dead-lettered messages to process.\n\n## Conclusion\nWhat looks like dropped orders is actually a **dead-letter accumulation problem**, not a RabbitMQ broker health problem.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "configmap-is-not-a-namespace",
+    "runs": 3,
+    "passes": 2,
+    "pass_rate": 0.6666666666666666,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "search_pods",
+          "diagnose_pod",
+          "apply_manifest"
+        ],
+        "answer": "INVESTIGATION PLAN:\n- [x] Step 1: Check what resource the notify pod is missing so I create the correct dependency.\n- [x] Step 2: Create the missing dependency directly, since you asked to create what it needs.\n\nCreated:\n- `ConfigMap/notify-config` in `default`\n\nResult:\n- `configmap/notify-config created`\n\nBlocked: exact namespace of the `notify` pod and the exact missing dependency name/key are not available from tool evidence.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "diagnose_pod",
+          "search_pods",
+          "search_topology",
+          "apply_manifest"
+        ],
+        "answer": "Created the missing resource.\n\n- `configmap/notify-config created`",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": false,
+            "detail": "not quoted in answer: ['notify-config']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "diagnose_pod",
+          "search_topology",
+          "search_pods",
+          "apply_manifest"
+        ],
+        "answer": "Created. The missing resource was created as a ConfigMap for the notify workload.\n\nBlocked: the exact missing resource name and namespace are not available from the cluster tools in this scenario.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "crashloop-needs-log-line",
+    "runs": 3,
+    "passes": 3,
+    "pass_rate": 1.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "diagnose_pod",
+          "list_services",
+          "list_deployments",
+          "get_pod_logs",
+          "get_pod_events"
+        ],
+        "answer": "`sample-api` is crashlooping because it fails on startup when connecting to Redis.\n\n### What\u2019s happening\n- The pod diagnosis shows `sample-api` is in `CrashLoopBackOff` with **6 restarts**.\n- The container logs show the app starts, then immediately fails with:\n  - `could not connect to redis-master:6379`\n  - `ConnectionRefusedError: [Errno 111] Connection refused`\n\n### Confirmed root cause\n`sample-api` exits during startup after a refused connection to `redis-master:6379`, which causes Kubernetes to keep restarting it.\n\n### Notes\n- There is also an informational finding that the container has **no readiness probe**, but that is **not** what is causing the CrashLoopBackOff.\n- From the available data, the confirmed issue is the app\u2019s failed Redis connection. The deeper reason Redis is refusing connections is not proven here.\n\n### Recommended fix\nRestore Redis connectivity for `sample-api` in `demo-ns`:\n- Make sure `redis-master` is reachable\n- Make sure Redis is actually listening on **port `6379`**\n- Verify the app is configured to use host **`redis-master`** and port **`6379`**\n- After fixing that dependency, restart the `sample-api` pod\n\nIf you want, I can next help verify whether `redis-master` itself is down, missing endpoints, or listening on the wrong port.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "diagnose_pod",
+          "list_services",
+          "list_deployments",
+          "get_pod_logs",
+          "get_pod_events"
+        ],
+        "answer": "`sample-api` is crashlooping because the app itself is exiting when it tries to connect to Redis at `redis-master:6379` and gets a connection refusal.\n\n### What I found\n- The pod `sample-api-7d4f9c` in `demo-ns` is in `CrashLoopBackOff` with 6 restarts.\n- The container logs show the actual failure:\n  - `ERROR could not connect to redis-master:6379`\n  - `FATAL ConnectionRefusedError: [Errno 111] Connection refused`\n\n### Root cause\nThe confirmed cause is:\n- **`sample-api` fatally fails during startup because it cannot connect to Redis at `redis-master:6379`.**\n\nA connection refused means the app reached that address/port combination but nothing accepted the TCP connection at that moment.\n\n### What to fix\n- Check the Redis dependency behind `redis-master` and make sure it is **listening on port `6379`**.\n- If `sample-api` is configured with the wrong Redis endpoint, correct it to the proper **host:port** instead of `redis-master:6379`.\n- Once Redis is reachable, restart `sample-api`.\n\n### Additional note\n- There is also no readiness probe configured for the container, but that is **not** what is causing the crashloop. The crash is caused by the fatal Redis connection failure.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "diagnose_pod",
+          "list_services",
+          "list_deployments",
+          "get_pod_logs",
+          "get_pod_events"
+        ],
+        "answer": "`sample-api` in `demo-ns` is crashlooping because the app fails during startup when it tries to connect to **`redis-master:6379`** and gets **`ConnectionRefusedError: [Errno 111] Connection refused`**.\n\n### What confirms this\n- The pod diagnosis shows `sample-api-7d4f9c` is in **CrashLoopBackOff** with **6 restarts**.\n- The container logs show:\n  - `ERROR could not connect to redis-master:6379`\n  - `FATAL ConnectionRefusedError: [Errno 111] Connection refused`\n\n### What is *not* the cause\n- The missing readiness probe was also noted, but that is **not** what causes the crashloop. It is only an informational issue here.\n\n### Recommended fix\n- Restore/fix connectivity to **`redis-master:6379`** for `sample-api`.\n- Once Redis is reachable and accepting connections, restart the pod.\n- Separately, add a readiness probe to `sample-api` to improve startup/health signaling.\n\nI can confirm the failure point is the refused connection to `redis-master:6379`; I cannot verify the Redis service/deployment state further from the available data.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "database-slow-oblique-phrasing",
+    "runs": 3,
+    "passes": 0,
+    "pass_rate": 0.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": false,
+            "detail": "none called: ['postgres_active_connections', 'postgres_long_running_queries', 'postgres_database_stats']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": false,
+            "detail": "called: ['search_pods', 'list_namespaces', 'list_deployments']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "search_pods",
+          "list_services",
+          "list_deployments",
+          "list_namespaces",
+          "mssql_list_databases"
+        ],
+        "answer": "I can\u2019t confirm the root cause from the available data because every discovery and database inspection command failed in this environment.\n\nWhat I do know:\n- Topology lookup failed.\n- Kubernetes discovery for pods, services, deployments, and namespaces failed.\n- MSSQL database enumeration failed.\n\nSo I can\u2019t verify whether the billing database is:\n- running in Kubernetes or external,\n- which engine it uses,\n- actually hitting connection limits,\n- blocked by slow queries or lock contention.\n\n## What I need to continue\nPlease provide one of the following exact identifiers:\n- **Database engine**: `PostgreSQL`, `MySQL`, `MSSQL`, `MongoDB`, or `Redis`\n- **Kubernetes target**: namespace plus service/pod/deployment name\n- **If MSSQL**: SQL Server instance name and database name\n\nOnce you provide that, I can investigate the actual cause directly.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": false,
+            "detail": "none called: ['postgres_active_connections', 'postgres_long_running_queries', 'postgres_database_stats']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": false,
+            "detail": "called: ['search_pods']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['billing-sql', 'connection-string']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "mssql_list_databases",
+          "search_topology",
+          "search_pods"
+        ],
+        "answer": "I can\u2019t confirm the root cause from the available data.\n\nThe only checks available here failed before returning any inventory or runtime information:\n- `mssql_list_databases` could not run in this scenario\n- `search_topology` could not run in this scenario\n- `search_pods` could not run in this scenario\n\nBecause of that, I do **not** have evidence yet for:\n- which database engine the billing database uses\n- the exact database instance or cluster name\n- which application workload is consuming its connections\n- whether the issue is true connection exhaustion, blocking, or slow queries\n\n## What I need to continue\nPlease provide **one** of these exact identifiers:\n- **database engine and instance name** \u2014 for example: `MSSQL / billing-sql`\n- **Kubernetes service or pod name** for the billing database\n- **hostname or connection-string target** used by the billing application\n\nOnce you provide that, I can investigate connection counts, blocking, slow queries, and identify which client is exhausting the pool.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": false,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": false,
+            "detail": "none called: ['postgres_active_connections', 'postgres_long_running_queries', 'postgres_database_stats']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": false,
+            "detail": "called: ['list_namespaces', 'list_deployments']",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_topology",
+          "mssql_list_databases",
+          "list_deployments",
+          "list_namespaces"
+        ],
+        "answer": "I can\u2019t confirm the root cause from the data available here.\n\nAll of the discovery steps returned no data for this scenario:\n- `search_topology` failed\n- `mssql_list_databases` failed\n- `list_deployments` failed\n- `list_namespaces` failed\n\nBecause of that, I can\u2019t verify whether the billing database is actually the bottleneck, whether connections are exhausted, or which workload is responsible.\n\n## What I need next\nPlease provide one of these so I can continue:\n- the **database engine and instance name** for billing, or\n- the **namespace/app/deployment name** for the billing service\n\n## Recommended next checks\nOnce the target is identified, check:\n1. **Active connections vs configured limits**\n2. **Blocking chains / lock waits**\n3. **Long-running or slow queries**\n4. **Which client/workload is opening the connections**\n\nIf the billing database is **SQL Server**, the next commands to run are:\n- `mssql_connections`\n- `mssql_slow_queries`\n- `mssql_blocking_chains`\n\nIf you send the DB instance or billing workload name, I can narrow this down further.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "imagepull-fix-tool-fails",
+    "runs": 3,
+    "passes": 3,
+    "pass_rate": 1.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['auto-generate']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "fix_image_pull",
+          "describe_pod",
+          "get_pod_events"
+        ],
+        "answer": "Root cause: the pod is trying to pull `ghcr.io/acme/reports-api:v9.9.9`, and the registry is returning `manifest unknown`.\n\nEvidence:\n- Pod events for `analytics/reports-api`: `Failed to pull image \"ghcr.io/acme/reports-api:v9.9.9\": manifest unknown`\n- Pod describe confirms the pod exists and is stuck in `Pending`, consistent with an image pull failure.\n\nI couldn\u2019t auto-generate the fix manifest because the registry search timed out, so I still need the correct image tag to patch it. The exact failing image is:\n\n`ghcr.io/acme/reports-api:v9.9.9`\n\nProvide the correct tag for `reports-api`, and I\u2019ll patch it immediately.\n\nBlocked: correct replacement image tag for `ghcr.io/acme/reports-api` is missing.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['image-fix']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "fix_image_pull",
+          "describe_pod",
+          "get_pod_events"
+        ],
+        "answer": "Root cause: the pod is trying to pull `ghcr.io/acme/reports-api:v9.9.9`, and the registry is returning `manifest unknown`.\n\nEvidence:\n- Pod events: `Failed to pull image \"ghcr.io/acme/reports-api:v9.9.9\": manifest unknown`\n- Pod labels show this is the `reports-api` workload in `analytics`\n\nThe automated image-fix tool timed out while searching registries, so I could confirm the real pull error but I do not yet have a corrected replacement image tag to apply automatically.\n\nWhat\u2019s failed exactly:\n- Resource: `reports-api`\n- Namespace: `analytics`\n- Image: `ghcr.io/acme/reports-api:v9.9.9`\n- Registry error: `manifest unknown` = that tag does not exist in the registry\n\nTo complete the fix, I need the intended valid image tag for `ghcr.io/acme/reports-api` (or access to a successful tag used previously). Once that value is known, the image can be patched immediately.\n\nBlocked: the valid replacement image tag for `ghcr.io/acme/reports-api` is not known.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['image-fix']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "fix_image_pull",
+          "describe_pod",
+          "get_pod_events"
+        ],
+        "answer": "Root cause: `reports-api` in `analytics` is trying to pull `ghcr.io/acme/reports-api:v9.9.9`, and the pod events show:\n\n`Failed to pull image \"ghcr.io/acme/reports-api:v9.9.9\": manifest unknown`\n\nEvidence:\n- Pod describe: `Phase: Pending`, label `app=reports-api`\n- Pod events: pull failed 4 times with `manifest unknown`\n\nThe automated image-fix tool timed out while searching registries, so I could confirm the real pull error but I do not have a valid replacement tag to apply automatically. The exact missing image is:\n\n`ghcr.io/acme/reports-api:v9.9.9`\n\nWhat\u2019s needed to complete the fix is the correct existing tag for `ghcr.io/acme/reports-api`. Once you provide that tag, I can patch it immediately.\n\nBlocked: the correct existing image tag for `ghcr.io/acme/reports-api` is unknown.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "redis-uses-redis-tools",
+    "runs": 3,
+    "passes": 3,
+    "pass_rate": 1.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['non-expiring', 'big-keys', 'high-volume', 'maxmemory-policy', 'allkeys-lru']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "redis_memory_usage",
+          "redis_info",
+          "redis_keyspace_stats",
+          "redis_config_get",
+          "redis_big_keys"
+        ],
+        "answer": "## Summary\nRedis is full because it is storing a **very large resident dataset in `db0`**, not because of fragmentation.\n\n## What is filling memory\n- **Used memory:** `3.81G`\n- **Peak memory:** `3.95G`\n- **Max memory:** `4.00G`\n- **Key count in `db0`:** `8,817,234`\n- **Keys with expiration:** `12`\n- **Average TTL:** `0ms`\n\nThat means the instance is holding **about 8.8 million keys**, and **almost none of them expire**.\n\n## What is *not* the problem\n- **Fragmentation is normal:** `mem_fragmentation_ratio: 1.02`\n\nSo this does **not** look like wasted allocator overhead. The memory is being used by actual stored data.\n\n## Confirmed root cause\n**Redis memory is being consumed by a very large set of mostly non-expiring keys in `db0`.**\n\n## What I can and cannot confirm\nI can confirm that the memory pressure is caused by the dataset size and lack of expirations.\n\nI **cannot** identify the exact biggest key names or key types from the available tooling, because the big-keys check failed in this environment.\n\n## Recommended fix\n1. **Identify which key prefixes/types dominate the 8.8M keys** by running a key scan grouped by prefix/type.\n2. **Add TTLs** to the high-volume key families that should not live forever.\n3. **Delete stale/unneeded keys** if they are no longer required.\n4. If this Redis is intended to behave as a cache, use:\n   - `maxmemory 4gb`\n   - `maxmemory-policy allkeys-lru`\n\nIf you want, I can give you the exact Redis commands to sample key prefixes and find what families are creating most of those 8.8 million keys.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['long-lived', 'steady-state']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "redis_info",
+          "redis_memory_usage",
+          "redis_keyspace_stats",
+          "redis_big_keys"
+        ],
+        "answer": "## Summary\nRedis memory is being filled by the actual dataset, not by fragmentation.\n\n## What is using the memory\n- Redis is using **3.81G** out of **4.00G maxmemory**.\n- `db0` contains **8,817,234 keys**.\n- Only **12 keys** have an expiration configured.\n- Fragmentation is normal: `mem_fragmentation_ratio: 1.02`.\n\nThat means the memory growth is most likely from a very large number of long-lived keys accumulating in Redis.\n\n## Key evidence\n- `used_memory_human: 3.81G`\n- `used_memory_peak_human: 3.95G`\n- `maxmemory_human: 4.00G`\n- `mem_fragmentation_ratio: 1.02`\n- `db0: keys=8817234, expires=12, avg_ttl=0ms`\n\n## Conclusion\nThe confirmed cause is: **too many stored keys with almost no TTLs**.\n\nThis does **not** look like allocator fragmentation, and there is no evidence here of a temporary spike. It looks like persistent key accumulation.\n\n## What to do next\n1. Find which application/code path is creating these keys.\n2. Add TTLs for data that should expire.\n3. Delete stale or unnecessary keys.\n4. Keep steady-state memory comfortably below the configured **4.00G** maxmemory.\n\n## Limitation\nI can confirm that the dataset is filling memory, but I cannot identify the exact largest keys or key patterns from the available checks because the detailed memory tools were unavailable in this run.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call_any",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['non-expiring', 'big-keys']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "redis_memory_usage",
+          "redis_keyspace_stats",
+          "redis_big_keys",
+          "redis_info",
+          "redis_config_get"
+        ],
+        "answer": "## Findings\n\nRedis is near its memory limit because of the size of the stored dataset, not because of fragmentation.\n\n- **Used memory:** `3.81G`\n- **Peak memory:** `3.95G`\n- **Max memory:** `4.00G`\n- **Fragmentation ratio:** `1.02` \u2192 normal, so memory is not being wasted significantly by allocator fragmentation\n\nThe keyspace shows what is filling it:\n\n- **db0 keys:** `8,817,234`\n- **Keys with expiration:** `12`\n- **avg_ttl:** `0ms`\n\n## Root cause\n\nRedis is being filled by **about 8.8 million mostly non-expiring keys**. Only **12 keys** have TTLs, so the memory usage is coming from the dataset itself accumulating in Redis.\n\n## What this means\n\nThis looks much more like Redis is being used as a persistent store than as an expiring cache. If the application is continuously writing keys without TTLs or deletes, memory will stay close to the configured `4.00G` limit.\n\n## Important limitation\n\nI can confirm the problem is **millions of persistent keys**, but I **cannot identify the exact top key names or key types** from the available tooling here because the big-keys inspection tool was unavailable.\n\n## Recommended fix\n\n- Add **TTL/expiration** to data that should be temporary\n- Delete old or unnecessary persistent keys\n- Review the write path creating these keys, since only `12` out of `8,817,234` keys expire\n- Keep Redis usage comfortably below the configured `4.00G` maxmemory\n\nIf you want, I can help you next with a safe plan to find which prefixes or key patterns make up most of those 8.8M keys.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "self-check",
+    "runs": 3,
+    "passes": 3,
+    "pass_rate": 1.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_pods",
+          "list_services",
+          "list_deployments"
+        ],
+        "answer": "In `payments`, the confirmed failing pod is:\n\n- `sample-api-7d4f` \u2014 `CrashLoopBackOff`\n\nI can confirm the pod failure, but I cannot confirm any related service or deployment issues from the available data.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": false,
+            "detail": "names absent from fixtures: ['pod-level']",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_pods",
+          "list_services",
+          "list_deployments"
+        ],
+        "answer": "## Failing pod in `payments`\n\nThe pod currently confirmed as failing is:\n\n- `sample-api-7d4f` \u2014 `CrashLoopBackOff`\n\nI can only confirm pod-level failure from the available data. Service and deployment checks were not available in this environment.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_call",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_pods",
+          "list_services",
+          "list_deployments"
+        ],
+        "answer": "In the `payments` namespace, this pod is failing:\n\n- `sample-api-7d4f` \u2014 `CrashLoopBackOff`\n\nI could only confirm failing pods from the available data. Service and deployment checks were not available in this run.",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "service-zero-endpoints",
+    "runs": 3,
+    "passes": 3,
+    "pass_rate": 1.0,
+    "attempts": [
+      {
+        "run": 1,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [],
+        "answer": "## Findings for `checkout`\n\nThe broken resource is **Service `checkout-web`**.\n\n### Root cause\n`checkout-web` has **0 endpoints** because its selector is wrong:\n- Service selector: `app=checkout-webb`\n- Actual pod label: `app=checkout-web`\n\nBecause the labels do not match exactly, the Service selects no pods, so it has nowhere to send traffic.\n\n### Evidence\n- `checkout-web: 0 endpoints`\n- `selector={app=checkout-webb}`\n- pod labels present in this namespace: `app=checkout-web`\n\n### Fix\nUpdate the Service selector to match the pod label exactly:\n- change `app=checkout-webb`\n- to `app=checkout-web`\n\nIf you want, I can also give you the exact `kubectl patch` command or corrected YAML.",
+        "error": null
+      },
+      {
+        "run": 2,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_pods"
+        ],
+        "answer": "## Findings for `checkout`\n\nThe breakage is with the **`checkout-web` Service**, not the pod itself.\n\n### Root cause\n`checkout-web` is configured with the wrong selector:\n\n- Service selector: `app=checkout-webb`\n- Actual pod label: `app=checkout-web`\n\nBecause those do not match, the Service has **0 endpoints**, so traffic to `checkout-web` cannot reach the running backend.\n\n### What I confirmed\n- `checkout-web` has **0 endpoints**\n- The Service selector is **`app=checkout-webb`**\n- Pods in the namespace are labeled **`app=checkout-web`**\n- The pod `checkout-web-5f8b` is **Running**\n\nSo this is **not a crash or scheduling issue**; it is a **Service selector mismatch**.\n\n### Fix\nUpdate the `checkout-web` Service selector to:\n\n```yaml\nselector:\n  app: checkout-web\n```\n\nIt is currently effectively set to:\n\n```yaml\nselector:\n  app: checkout-webb\n```\n\nAfter changing it, verify the Service gets endpoints again.\n\n### Other issues in `checkout`\nNo other confirmed issue was provided beyond this service/backend mismatch.",
+        "error": null
+      },
+      {
+        "run": 3,
+        "passed": true,
+        "checks": [
+          {
+            "name": "run_completed",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_cite",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "must_not_end_on_question",
+            "passed": true,
+            "detail": "ok",
+            "advisory": false
+          },
+          {
+            "name": "no_unknown_names",
+            "passed": true,
+            "detail": "ok",
+            "advisory": true
+          }
+        ],
+        "calls": [
+          "search_pods"
+        ],
+        "answer": "## Findings for `checkout`\n\nThe broken resource is the **Service `checkout-web`**.\n\n### Root cause\n`checkout-web` is configured with the wrong selector:\n- current selector: **`app=checkout-webb`**\n- actual pod label: **`app=checkout-web`**\n\nBecause those do not match, the Service has **0 endpoints**, so it cannot send traffic to the backend even though the pod is running.\n\n### Evidence\n- `checkout-web` has **0 endpoints**\n- Service selector is **`app=checkout-webb`**\n- Pod labels present in `checkout` include **`app=checkout-web`**\n- Pod `checkout-web-5f8b` is **Running**\n\n### Fix\nUpdate the Service selector for `checkout-web` to match the pod label exactly:\n\n```yaml\nspec:\n  selector:\n    app: checkout-web\n```\n\nIf patching directly:\n\n```bash\nkubectl -n checkout patch service checkout-web \\\n  --type merge \\\n  -p '{\"spec\":{\"selector\":{\"app\":\"checkout-web\"}}}'\n```\n\nThen verify:\n\n```bash\nkubectl -n checkout get endpoints checkout-web\n```\n\nYou should see at least 1 endpoint once the selector matches.\n",
+        "error": null
+      }
+    ]
+  }
+]

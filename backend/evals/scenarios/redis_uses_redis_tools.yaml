@@ -1,16 +1,45 @@
 name: redis-uses-redis-tools
 query: "redis memory usage looks high, what is filling it"
 cluster:
+  # Real redis_info / redis_keyspace_stats (app/tools/redis_tools.py:82,112)
+  # both return a plain formatted string, not a dict — and redis_info only
+  # ever includes the specific keys listed in its `sections` map (server/
+  # memory/clients/persistence/replication/stats). "evicted_keys" is not one
+  # of them; the real tool cannot report it, so it must not appear here.
+  # used_memory_human sitting close to maxmemory_human is the real signal for
+  # "memory usage looks high".
   redis_info:
     success: true
-    data:
-      used_memory_human: "3.81G"
-      maxmemory_human: "4.00G"
-      evicted_keys: 128442
+    data: |
+      [server]
+        redis_version: 7.2.4
+        uptime_in_seconds: 8823410
+        config_file: /etc/redis/redis.conf
+      [memory]
+        used_memory_human: 3.81G
+        used_memory_peak_human: 3.95G
+        maxmemory_human: 4.00G
+        mem_fragmentation_ratio: 1.02
+      [clients]
+        connected_clients: 214
+        blocked_clients: 0
+        maxclients: 10000
+      [persistence]
+        rdb_last_save_time: 1785734400
+        rdb_changes_since_last_save: 18234
+        aof_enabled: 0
+      [replication]
+        role: master
+        connected_slaves: 1
+        master_replid: 9f3a2b1c8e7d6f5a4b3c2d1e0f9a8b7c6d5e4f3a
+      [stats]
+        total_commands_processed: 918234512
+        instantaneous_ops_per_sec: 4213
+        keyspace_hits: 812734021
+        keyspace_misses: 19234123
   redis_keyspace_stats:
     success: true
-    data:
-      db0: {keys: 8817234, expires: 12, avg_ttl: 0}
+    data: "db0: keys=8817234, expires=12, avg_ttl=0ms"
 expect:
   must_call_any: [redis_info, redis_keyspace_stats]
   # AIService._CORE_K8S (app/services/ai_service.py) is always added to the

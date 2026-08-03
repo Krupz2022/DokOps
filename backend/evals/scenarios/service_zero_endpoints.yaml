@@ -6,59 +6,102 @@ cluster:
   # RULE, which requires diagnose_pod or diagnose_service to be called FIRST,
   # before anything else. Without these fixtures the model's first tool call
   # returns "eval: no fixture for 'diagnose_pod'", derailing the run for a
-  # reason unrelated to what this scenario tests. Kept consistent with the
-  # rest of the fixtures: the pod is healthy, the Service is the broken thing.
+  # reason unrelated to what this scenario tests.
+  #
+  # Both fixtures mirror the real diagnostic_engine output shape exactly (a
+  # plain formatted string — see DiagnosticEngine._format_findings /
+  # diagnose_pod / diagnose_service in app/services/diagnostic_service.py),
+  # not a structured dict. diagnose_service's real no_ready_endpoints Finding
+  # only ever reads "Service '<name>' has 0 ready endpoints — all traffic
+  # will fail" — it does not inspect or name the selector (that check lives
+  # entirely in _check_networking, which only runs against a Service's own
+  # matching pods, and none match here). Naming "checkout-webb" in this
+  # fixture would hand the model the answer before it does the selector/label
+  # comparison the regression is about, so it deliberately stays generic.
   diagnose_pod:
     success: true
-    data:
-      pod: checkout-web-5f8b
-      namespace: checkout
-      status: Running
-      issues: []
-      message: "no issues found; pod is healthy"
+    data: |
+      DIAGNOSIS: checkout-web-5f8b (Pod/checkout)
+      Checked: 10 categories | Issues found: 0
+      Clean: container_state, probes, networking, config_refs, storage, resources, scheduling, rbac, workload_health, security_context
   diagnose_service:
     success: true
-    data:
-      service: checkout-web
-      namespace: checkout
-      status: degraded
-      endpoint_ready_count: 0
-      issues:
-        - "zero ready endpoints: selector app=checkout-webb does not match any pod labels"
-      message: "service has zero ready endpoints"
+    data: |
+      DIAGNOSIS: checkout-web (Service/checkout)
+      Checked: 1 categories | Issues found: 1
+
+      [CRITICAL] networking / no_ready_endpoints
+        Service 'checkout-web' has 0 ready endpoints — all traffic will fail
+        Fix: Check pod readiness and service selector
   search_pods:
     success: true
     data:
       - name: checkout-web-5f8b
         namespace: checkout
         status: Running
+  # Real list_services (app/tools/k8s_tools.py:992) wraps results in
+  # {"services": [...], "total": N} and never includes a selector field at
+  # all — kubectl-style selector info simply is not part of that tool's
+  # payload. The Service's selector value ("checkout-webb") therefore must
+  # not appear here; it belongs only in get_resource_yaml below, where a real
+  # `kubectl get service -o yaml` would actually show it.
   list_services:
     success: true
     data:
-      - name: checkout-web
-        namespace: checkout
-        type: ClusterIP
-        ports: ["80/TCP"]
-        selector: {app: checkout-webb}
+      services:
+        - name: checkout-web
+          namespace: checkout
+          type: ClusterIP
+          cluster_ip: 10.96.44.10
+          ports: "http:80/TCP"
+      total: 1
   get_endpoints:
     success: true
     data:
       name: checkout-web
       namespace: checkout
       subsets: []
+      total_ready: 0
+      total_not_ready: 0
+  # Real list_deployments (app/tools/k8s_tools.py:2274) wraps results in
+  # {"deployments": [...], "count": N} with fields replicas/ready_replicas/
+  # available_replicas/updated_replicas — not desired/ready.
   list_deployments:
     success: true
     data:
-      - name: checkout-web
-        namespace: checkout
-        desired: 1
-        ready: 1
+      deployments:
+        - name: checkout-web
+          namespace: checkout
+          replicas: 1
+          ready_replicas: 1
+          available_replicas: 1
+          updated_replicas: 1
+      count: 1
+  # describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.get_pod_details)
+  # returns a plain "Phase: ...\nNode: ...\nCreated: ...\nLabels: ..." string
+  # — this is the real tool's only source for the pod's labels.
+  describe_pod:
+    success: true
+    data: "Phase: Running\nNode: node-7\nCreated: 2026-08-01 10:15:00+00:00\nLabels: {'app': 'checkout-web'}"
+  # get_resource_yaml (app/tools/k8s_tools.py:2301) is a thin wrapper over
+  # `kubectl get <kind> <name> -o yaml` and returns plain YAML text. This is
+  # the one fixture where the Service's selector legitimately belongs — a
+  # real `kubectl get service checkout-web -o yaml` genuinely shows it.
   get_resource_yaml:
     success: true
     data: |
+      apiVersion: v1
+      kind: Service
       metadata:
-        labels:
-          app: checkout-web
+        name: checkout-web
+        namespace: checkout
+      spec:
+        selector:
+          app: checkout-webb
+        type: ClusterIP
+        ports:
+          - port: 80
+            protocol: TCP
 expect:
   must_call: [list_services, get_endpoints]
   must_cite: ["checkout-webb"]

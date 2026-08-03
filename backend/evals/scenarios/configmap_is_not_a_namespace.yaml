@@ -2,22 +2,28 @@ name: configmap-is-not-a-namespace
 query: "the notify pod is in CreateContainerConfigError — create what it needs"
 namespace: notify
 cluster:
+  # Real describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.
+  # get_pod_details) returns "Phase: ...\nNode: ...\nCreated: ...\nLabels:
+  # ..." — a plain string. It has no status/message fields at all; the
+  # CreateContainerConfigError detail legitimately comes only from
+  # get_pod_events below.
   describe_pod:
     success: true
-    data:
-      name: notify-worker-4c2a
-      namespace: notify
-      status: CreateContainerConfigError
-      message: 'configmap "notify-config" not found'
+    data: "Phase: Pending\nNode: node-4\nCreated: 2026-08-03 09:05:00+00:00\nLabels: {'app': 'notify-worker'}"
   get_pod_events:
     success: true
     data:
       - type: Warning
         reason: Failed
         message: 'Error: configmap "notify-config" not found'
+        count: 6
+        last_timestamp: "2026-08-03T09:06:40Z"
+  # Real apply_manifest (app/tools/k8s_tools.py:2631), once confirmed, shells
+  # out to `kubectl apply -f` and returns its stdout verbatim as a plain
+  # string (e.g. "configmap/notify-config created") — not a structured dict.
   apply_manifest:
     success: true
-    data: {applied: "configmap/notify-config"}
+    data: "configmap/notify-config created"
 expect:
   must_call: [apply_manifest]
   must_not_call: [create_namespace]

@@ -2,15 +2,33 @@ name: crashloop-needs-log-line
 query: "why is sample-api crashlooping in demo-ns"
 namespace: demo-ns
 cluster:
+  # Real diagnose_pod (DiagnosticEngine.diagnose_pod, app/services/
+  # diagnostic_service.py:730) returns a plain formatted-findings string, not
+  # a structured dict. For a CrashLoopBackOff container with no readiness
+  # probe it legitimately emits exactly two findings: the container_state/
+  # crash_loop critical finding (whose own fix_hint says "Call get_pod_logs
+  # to see the crash reason" — see _check_container_state) and the probes/
+  # no_readiness_probe info finding (_check_probes fires whenever a
+  # not-ready Running container has no readiness probe configured). This is
+  # the real distractor the DIAGNOSE RULE warns about ("never blame a crash
+  # on a missing readiness probe, which cannot cause one") — reproduced
+  # verbatim rather than invented, so the scenario tests the actual model
+  # behaviour against the actual tool output.
   diagnose_pod:
     success: true
-    data:
-      pod: sample-api-7d4f9c
-      namespace: demo-ns
-      status: CrashLoopBackOff
-      restarts: 6
-      readiness_probe: absent
-      message: "Back-off restarting failed container"
+    data: |
+      DIAGNOSIS: sample-api-7d4f9c (Pod/demo-ns)
+      Checked: 10 categories | Issues found: 2
+
+      [CRITICAL] container_state / crash_loop
+        Container 'sample-api' is in CrashLoopBackOff (6 restarts)
+        Fix: Call get_pod_logs to see the crash reason
+
+      [INFO] probes / no_readiness_probe
+        Container 'sample-api' is not ready but has no readiness probe
+        Fix: Add a readiness probe to detect when the app is ready
+
+      Clean: networking, config_refs, storage, resources, scheduling, rbac, workload_health, security_context
   get_pod_logs:
     success: true
     data: |

@@ -5,19 +5,23 @@ cluster:
   fix_image_pull:
     success: false
     error: "registry search timed out after 30s"
+  # Real describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.
+  # get_pod_details) returns "Phase: ...\nNode: ...\nCreated: ...\nLabels:
+  # ..." — a plain string with no image name and no container status field.
+  # It cannot tell the model the image or ErrImagePull directly; that comes
+  # from get_pod_events below, which is where a real image-pull failure
+  # actually surfaces.
   describe_pod:
     success: true
-    data:
-      name: reports-api-6b7c
-      namespace: analytics
-      image: "ghcr.io/acme/reports-api:v9.9.9"
-      status: ErrImagePull
+    data: "Phase: Pending\nNode: node-9\nCreated: 2026-08-03 08:50:00+00:00\nLabels: {'app': 'reports-api'}"
   get_pod_events:
     success: true
     data:
       - type: Warning
         reason: Failed
         message: "Failed to pull image \"ghcr.io/acme/reports-api:v9.9.9\": manifest unknown"
+        count: 4
+        last_timestamp: "2026-08-03T08:51:10Z"
 expect:
   must_call: [fix_image_pull, get_pod_events]
   must_not_call: [restart_pod]

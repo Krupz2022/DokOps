@@ -6,25 +6,54 @@ Everything that would otherwise reach a live cluster, a live integration, or
 the network is patched to serve the scenario instead, so the cluster half of
 the run is fully deterministic.
 
-`_run_global_agentic_loop_inner` dispatches a model-requested tool call
-through one of four branches, and only the last of them goes through the
+`_run_global_agentic_loop_inner`'s tool-call dispatch (the if/elif chain in
+the loop body) resolves a model-requested tool call through one of SEVEN
+branches, in this order. Only one of them goes through the
 `app.tools.registry` module used by ordinary Kubernetes tools:
 
   1. RAG tools             (`app.tools.registry.execute_rag_tool`, gated on
                             the `rag_enabled` DB setting — currently false,
-                            not patched here; see task-2-report.md)
+                            not patched here; see task-2-report.md's "Scope
+                            decision: RAG_TOOL_REGISTRY dispatch branch")
   2. `mcp__`-prefixed tools (`mcp_client_service.execute_tool` -> real
                             HTTP/SSE/stdio transports)
   3. observability-registry tools (closures bound to real Prometheus/Loki/
                             Grafana/Elasticsearch/Datadog `base_url`s, called
                             directly — no registry function in between)
-  4. `TOOL_REGISTRY` tools  (`app.tools.registry.execute_tool_async` — the
+  4. `discover_tools`      (literal name match; calls
+                            `app.tools.registry.discover_tools` /
+                            `schema_for_tools`, which only ever add more
+                            `TOOL_REGISTRY` entries — i.e. branch 5's own
+                            fixtured tools — to `tools_schema`. No seam of
+                            its own: it cannot surface anything branch 5
+                            doesn't already cover.)
+  5. `TOOL_REGISTRY` tools  (`app.tools.registry.execute_tool_async` — the
                             k8s tool seam this harness fixtures)
+  6. `workflow_tool_executors` tools (`workflow_tool_executors[tool_name]`,
+                            a caller-supplied dict, called directly —
+                            UNREACHABLE from `run_scenario`, which calls
+                            `ai_service.run_global_agentic_loop(query=...,
+                            history=...)` and never passes
+                            `workflow_tools_schema` / `workflow_tool_executors`;
+                            both stay at their `None` default, so this
+                            branch's guard (`workflow_tool_executors and ...`)
+                            is always false in an eval run — and even a
+                            hallucinated name just falls through to branch 7)
+  7. custom tools (the `else`) — looked up by name in
+                            `self._get_custom_tools_definitions()` (operator-
+                            authored YAML toolsets, e.g. `app/toolsets/
+                            helm_toolset.yaml`, which run real subprocesses
+                            via `self._execute_custom_tool`) and, if no name
+                            matches, a static "tool does not exist" string.
+                            Both `_get_custom_tools_definitions` (so a custom
+                            tool never enters the schema) and
+                            `_execute_custom_tool` (a loud backstop) are
+                            patched below.
 
-Branches 2 and 3 do not go anywhere near a fixture unless independently
-patched, so every seam that can put a real network call or a five-minute
-`asyncio.wait_for` UI-approval timeout onto the eval path is listed in
-`SEAMS` below and patched in `_patched_cluster`.
+Branches 2, 3 and 7 do not go anywhere near a fixture unless independently
+patched, so every seam that can put a real network call, a real subprocess,
+or a five-minute `asyncio.wait_for` UI-approval timeout onto the eval path is
+listed in `SEAMS` below and patched in `_patched_cluster`.
 """
 import contextlib
 import importlib
@@ -162,6 +191,74 @@ async def _no_internal_rag(query: str, collection_name: str, n_results: int = 3)
     return ""
 
 
+def _no_custom_tools(_self) -> List[Dict[str, Any]]:
+    """Replaces AIService._get_custom_tools_definitions for the duration of
+    an eval run.
+
+    Custom tools are operator-authored YAML toolsets on disk (see
+    `app/toolsets/*.yaml` — this repo's `helm_toolset.yaml` alone defines 22
+    Helm tools, several of them destructive, e.g. `helm_upgrade_set_tag`
+    with NO `god_mode` key set, so `_execute_custom_tool`'s only in-band
+    guard does not gate it). Nothing else in this harness fixtures them:
+    they are read straight from disk, flattened into the tool schema, and
+    dispatched to a real `subprocess.run` with no seam of their own.
+
+    The always-on WRITE TOOL RULE tells the model to call a write tool
+    immediately without asking, so once a custom tool is in the schema, a
+    live `helm upgrade` against whatever `~/.kube/config` points at is one
+    tool call away — and it would leave no trace, because `Trace.calls` is
+    only appended by `_fixture_server` (the branch-6 seam below), which
+    custom tools never go through.
+
+    Returning [] here keeps custom tools out of `tools_schema` for every
+    call site that builds one from this method's return value (both the
+    GEMINI and OpenAI/Azure branches). See `_blocked_custom_tool` below for
+    the execution-time backstop if this seam is ever bypassed.
+    """
+    return []
+
+
+async def _blocked_custom_tool(
+    _self,
+    tool_def: Dict[str, Any],
+    params: Dict[str, Any],
+    cluster_id: Optional[str] = None,
+    cluster_context: Optional[str] = None,
+    god_mode_active: bool = False,
+) -> str:
+    """Replaces AIService._execute_custom_tool — the backstop for
+    `_no_custom_tools` above.
+
+    This must never run for real in an eval: `_no_custom_tools` empties the
+    schema, so the model should never be offered a custom tool to call, and
+    the dispatch loop only reaches `_execute_custom_tool` when a called tool
+    name matches an entry in `self._get_custom_tools_definitions()`. If this
+    function is ever entered anyway, that means a custom tool got into the
+    schema/dispatch path despite the seam above — a harness bug, not
+    scenario behaviour, and the author needs to see it.
+
+    Raising (rather than returning a quiet "blocked" string) is deliberate.
+    `_run_global_agentic_loop_inner` wraps its whole body in a single
+    `except Exception as e: yield {"type": "result", "message": f"Agent
+    error: {e}"}`, so this exception becomes the scenario's actual answer —
+    every `expect` assertion fails, and the distinctive message is what a
+    human sees in the console report / `last-run.json`. A quiet stub, by
+    contrast, would let the loop continue with a plausible-looking "blocked"
+    tool observation buried in the trace, which a human skimming the report
+    could easily miss — exactly the silent-escape failure mode this task
+    exists to close. This function must never execute a real command
+    (`subprocess`, `bash`, or otherwise) under any circumstances.
+    """
+    raise RuntimeError(
+        "eval harness bug: AIService._execute_custom_tool was reached for "
+        f"tool {tool_def.get('name')!r} — this means a custom tool made it "
+        "into the model's schema/dispatch despite "
+        "AIService._get_custom_tools_definitions being patched to return "
+        "[]. Fix the seam (see SEAMS in evals/harness.py) before rerunning "
+        "evals; this stub intentionally refuses to execute a real command."
+    )
+
+
 # Single source of truth for every seam that must be neutralised before the
 # real agent loop can run against canned fixtures instead of a live cluster.
 # Both `_patched_cluster` (applies the patches) and
@@ -212,6 +309,23 @@ SEAMS: List[Tuple[str, Callable[[Scenario, Trace], Any]]] = [
     # locally) but must not depend on that ambient DB state.
     ("app.services.rag_service.rag_service.retrieve",
      lambda scenario, trace: _no_internal_rag),
+    # CRITICAL: custom tool DEFINITIONS — operator-authored YAML toolsets
+    # (app/toolsets/*.yaml) reach the model as ordinary function-calling
+    # tools with no seam of their own. Emptying this list keeps them out of
+    # the schema for both provider branches and every call site that builds
+    # one from it (dispatch branch 7 in the module docstring above).
+    ("app.services.ai_service.AIService._get_custom_tools_definitions",
+     lambda scenario, trace: _no_custom_tools),
+    # CRITICAL: custom tool EXECUTION — backstop for the seam above. Custom
+    # tool commands run through real `subprocess.run` against whatever
+    # cluster ~/.kube/config points at, with no guard unless the toolset
+    # author remembered `god_mode: true` on that specific tool (this repo's
+    # helm_toolset.yaml does not, on the destructive helm_upgrade_set_tag).
+    # If this is ever reached, custom tools got into the schema despite the
+    # seam above — see _blocked_custom_tool for why it raises instead of
+    # quietly refusing.
+    ("app.services.ai_service.AIService._execute_custom_tool",
+     lambda scenario, trace: _blocked_custom_tool),
 ]
 
 

@@ -1,6 +1,33 @@
 name: service-zero-endpoints
 query: "investigate the checkout namespace, something seems broken"
 namespace: checkout
+# `presweep:` below is what app/services/presweep.py's build_presweep() actually
+# emits for this exact scenario, not an empty string. Production runs
+# _zero_endpoint_services() (presweep.py:226-258) on every namespace
+# investigation, deterministically, before the model gets a turn: it finds
+# checkout-web with 0 ready endpoints, reads the Service's own selector
+# (app=checkout-webb, from get_resource_yaml below) and the pod labels
+# actually present in the namespace (app=checkout-web, from describe_pod
+# below), and hands both to the model as verified fact. append_missing_findings
+# (presweep.py:104-176) then mechanically appends this finding to the drafted
+# answer if the model's own answer failed to cover it.
+#
+# An empty presweep here (the scenario's original state) tested the agent
+# with a safety net production always provides removed -- passing this
+# scenario meant the model derived the selector mismatch entirely on its own
+# from list_services/get_endpoints/get_resource_yaml, which is strictly
+# harder than what production ever asks of it. With the real presweep
+# present, this scenario instead verifies what production actually
+# guarantees: that the deterministic finding (the selector value, via
+# must_cite) reaches the final answer, whether the model quotes it directly
+# or append_missing_findings backstops it. Do not revert this to `presweep: ""`
+# -- that reintroduces the exact gap this scenario was rewritten to close.
+presweep: |
+  PRE-FLIGHT SWEEP of namespace 'checkout' — verified facts, already gathered for you. Do not re-fetch these with tools.
+  This is a HEAD START, NOT the scope of your investigation. It covers only service endpoints, deployment readiness, ReplicaSet failures and crash logs. Quote these facts directly — they are the answer, not a hint. The user asked about a SPECIFIC resource — answer about that resource. Other findings below are namespace context: mention them in at most one short 'other issues in checkout' note, without their log excerpts.
+  Services with NO ready endpoints (broken even if their pods are Running):
+    - checkout-web: 0 endpoints. selector={app=checkout-webb}
+    pod labels present in this namespace: app=checkout-web
 cluster:
   # The query's wording ("something seems broken") hits the always-on DIAGNOSE
   # RULE, which requires diagnose_pod or diagnose_service to be called FIRST,
@@ -103,6 +130,16 @@ cluster:
           - port: 80
             protocol: TCP
 expect:
-  must_call: [list_services, get_endpoints]
+  # must_cite is the assertion this scenario is actually about post-fix: does
+  # the selector value production's own presweep already computed reach the
+  # final answer (directly or via append_missing_findings' backstop).
   must_cite: ["checkout-webb"]
+  # must_call is left as-is (not required by this task), but note the risk it
+  # now carries: presweep's own text says "Quote these facts directly — they
+  # are the answer, not a hint" and "Do not re-fetch these with tools" for
+  # exactly the finding these two tools would produce. If a live run shows a
+  # correct agent skipping list_services/get_endpoints because presweep
+  # already answered the question, that is production-correct behaviour and
+  # this line should be relaxed or dropped rather than treated as a failure.
+  must_call: [list_services, get_endpoints]
   must_not_end_on_question: true

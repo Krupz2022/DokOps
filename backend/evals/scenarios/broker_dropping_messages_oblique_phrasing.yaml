@@ -13,7 +13,13 @@ name: broker-dropping-messages-oblique-phrasing
 # working", "failing", "broken", "investigate", "issue", "error", "crash",
 # "debug", "troubleshoot", "why", "check") so this scenario tests only the
 # tool-discovery pointer, not the separate always-on diagnose sweep.
-query: "the broker is dropping messages"
+#
+# "orders" names the workload the broker serves (matches the orders.process
+# / orders.dlx queues in the fixtures below) without naming "queue" itself
+# (a _SERVICE_TOOL_MAP keyword) or the engine -- a real complaint always
+# carries some identifying context, and a query with none is genuinely
+# ambiguous rather than testing oblique phrasing.
+query: "the broker handling orders is dropping messages"
 cluster:
   # Real rabbitmq_dead_letter_queues (app/tools/rabbitmq_tools.py:154-170)
   # returns {"success": True, "data": <plain formatted table string or the
@@ -52,16 +58,28 @@ cluster:
     success: true
     data: "Node: rabbit@broker-1\nStatus: running\nMemory: 1.2 GB / 4.0 GB\nDisk free: 42.1 GB\nAlarms: none"
 expect:
-  # Any one of these is real evidence the model reached the actual broker
-  # tools instead of substituting Kubernetes tools for a non-Kubernetes
-  # system -- mirrors redis_uses_redis_tools.yaml's must_call_any pattern.
+  # This is the real assertion: did the agent reach the actual broker tools
+  # instead of substituting Kubernetes tools for a non-Kubernetes system --
+  # mirrors redis_uses_redis_tools.yaml's must_call_any pattern.
   must_call_any: [rabbitmq_list_queues, rabbitmq_dead_letter_queues, rabbitmq_node_health]
-  # AIService._CORE_K8S (app/services/ai_service.py) -- always in the tool
+  # AIService._CORE_K8S (app/services/ai_service.py) is always in the tool
   # schema regardless of routing, so every name in it is reachable even for
-  # a pure broker question. Full list (17 names as of this writing);
-  # forbidding all of it, not a guessed subset, is what actually catches the
-  # reported wrong-tool-routing failure (e.g. search_pods called for a
-  # broker question).
+  # a pure broker question -- and the harness now serves a plausible,
+  # non-error default for any of them a scenario doesn't fixture (see
+  # evals/defaults.py), so calling one is no longer punished by a fake
+  # "environment is broken" response.
+  #
+  # search_topology and list_services are deliberately NOT forbidden here
+  # (removed from the full _CORE_K8S list this used to be). The query names
+  # a workload ("orders") but not which broker/system owns it, and using
+  # search_topology or list_services to work out what "orders" actually is
+  # before picking a tool family is defensible discovery for a vague query --
+  # forbidding it punished correct behaviour as hard as the old fixture-miss
+  # error did. The rest of _CORE_K8S has no such excuse: search_pods,
+  # get_pod_logs, describe_pod, diagnose_pod/service, scale_deployment, etc.
+  # are all ways of investigating this as a Kubernetes workload problem
+  # instead of a broker problem, which is exactly the wrong-tool-routing
+  # regression this scenario exists to catch.
   must_not_call:
     - get_cluster_health
     - search_pods
@@ -72,11 +90,9 @@ expect:
     - list_namespaces
     - diagnose_pod
     - diagnose_service
-    - search_topology
     - scale_deployment
     - deploy_application
     - create_namespace
-    - list_services
     - get_endpoints
     - list_deployments
     - fix_image_pull

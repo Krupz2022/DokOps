@@ -41,12 +41,18 @@ def suspected_hallucinations(answer: str, scenario: Scenario, trace: Trace) -> L
         scenario.presweep,
         scenario.topology,
         scenario.query,
+        scenario.namespace or "",
         json.dumps(scenario.expect, default=str),
         json.dumps([c[0] for c in trace.calls]),
     ]).lower()
+    # Tokenize the corpus with the same regex used on the answer, then test set
+    # membership rather than substring containment. A raw substring test lets a
+    # hallucinated "api-gateway" hide inside a real "api-gateway-prod-7d4f" —
+    # exactly the case this scan exists to catch.
+    corpus_names = set(_NAME_RE.findall(corpus))
     seen: List[str] = []
     for name in _NAME_RE.findall(answer.lower()):
-        if name in _PROSE or name in corpus or name in seen:
+        if name in _PROSE or name in corpus_names or name in seen:
             continue
         seen.append(name)
     return seen
@@ -64,24 +70,38 @@ def score(scenario: Scenario, trace: Trace) -> List[Check]:
         trace.error or "ok",
     ))
 
+    _EMPTY_LIST_DETAIL = "empty list: this assertion can never fire; remove the key or populate it"
+
     if "must_call" in expect:
-        missing = [t for t in expect["must_call"] if t not in called]
-        checks.append(Check("must_call", not missing,
-                            f"never called: {missing}" if missing else "ok"))
+        must_call = expect["must_call"]
+        if not must_call:
+            checks.append(Check("must_call", False, _EMPTY_LIST_DETAIL))
+        else:
+            missing = [t for t in must_call if t not in called]
+            checks.append(Check("must_call", not missing,
+                                f"never called: {missing}" if missing else "ok"))
 
     if "must_not_call" in expect:
-        forbidden = [t for t in expect["must_not_call"] if t in called]
-        checks.append(Check("must_not_call", not forbidden,
-                            f"called: {forbidden}" if forbidden else "ok"))
+        must_not_call = expect["must_not_call"]
+        if not must_not_call:
+            checks.append(Check("must_not_call", False, _EMPTY_LIST_DETAIL))
+        else:
+            forbidden = [t for t in must_not_call if t in called]
+            checks.append(Check("must_not_call", not forbidden,
+                                f"called: {forbidden}" if forbidden else "ok"))
 
     if "must_cite" in expect:
-        lowered = answer.lower()
-        absent = [s for s in expect["must_cite"] if s.lower() not in lowered]
-        checks.append(Check("must_cite", not absent,
-                            f"not quoted in answer: {absent}" if absent else "ok"))
+        must_cite = expect["must_cite"]
+        if not must_cite:
+            checks.append(Check("must_cite", False, _EMPTY_LIST_DETAIL))
+        else:
+            lowered = answer.lower()
+            absent = [s for s in must_cite if s.lower() not in lowered]
+            checks.append(Check("must_cite", not absent,
+                                f"not quoted in answer: {absent}" if absent else "ok"))
 
     if expect.get("must_not_end_on_question"):
-        tail = answer.rstrip().rstrip("*_`)").rstrip()
+        tail = answer.rstrip().rstrip("*_`)'\"").rstrip()
         ends_on_question = tail.endswith("?")
         checks.append(Check("must_not_end_on_question", not ends_on_question,
                             f"answer ends: ...{tail[-80:]}" if ends_on_question else "ok"))

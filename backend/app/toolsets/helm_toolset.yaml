@@ -87,15 +87,19 @@ helm_toolset:
     - name: helm_rollback
       description: "DESTRUCTIVE: Roll back a Helm release to a specific revision. Only execute after the user explicitly confirms the target revision. Use helm_history to identify valid revision numbers."
       command: "helm rollback {{ name }} {{ revision }} -n {{ namespace }}"
+      god_mode: true
 
     - name: helm_upgrade_set_tag
       description: "DESTRUCTIVE: Upgrade a Helm release setting a new image tag while reusing all other values. Triggers a rolling deployment. Requires God Mode confirmation."
       command: "helm upgrade {{ name }} {{ chart }} -n {{ namespace }} --set image.tag={{ tag }} --reuse-values"
+      god_mode: true
 
     - name: helm_upgrade_values_file
       description: "DESTRUCTIVE: Upgrade a Helm release using a values file path. Requires God Mode. Use helm_diff_upgrade first to preview changes."
       command: "helm upgrade {{ name }} {{ chart }} -n {{ namespace }} -f {{ values_file }}"
+      god_mode: true
 
     - name: helm_delete
       description: "DESTRUCTIVE: Permanently delete a Helm release and ALL its Kubernetes resources. This is irreversible. Only execute if the user has explicitly confirmed deletion by name. Requires God Mode."
       command: "helm delete {{ name }} -n {{ namespace }}"
+      god_mode: true

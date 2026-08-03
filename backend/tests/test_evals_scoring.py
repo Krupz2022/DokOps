@@ -95,6 +95,39 @@ def test_hallucination_scan_is_not_defeated_by_substring_containment():
     assert "api-gateway" in suspected_hallucinations(trace.answer, scenario, trace)
 
 
+def test_hallucination_scan_ignores_underscore_adjacent_names_in_corpus():
+    """Word boundaries do not fire between two word characters, and "_" is a
+    word character, so a hyphenated object name glued to snake_case text (e.g.
+    "restart_count_api-gateway") would never become its own corpus token
+    without normalization, and a correct answer using that name would be
+    flagged as a hallucination. Corpus-side "_" -> " " fixes this; the answer
+    side is deliberately left un-normalized (see the function's own comment)."""
+    scenario = Scenario(
+        name="t", query="why is sample-api failing", history=[], namespace="payments",
+        presweep="restart_count_api-gateway is elevated", topology="",
+        cluster={}, expect={}, path=pathlib.Path("t.yaml"),
+    )
+    trace = Trace(calls=[], answer="The failure is in api-gateway.")
+    assert suspected_hallucinations(trace.answer, scenario, trace) == []
+
+
+def test_hallucination_scan_still_flags_masked_name_after_underscore_fix():
+    """Guards test_hallucination_scan_is_not_defeated_by_substring_containment
+    (round 1's masking fix) against regression from the underscore-adjacency
+    fix directly above: the two pull in opposite directions — one widens what
+    counts as a corpus token, the other narrows it — and a change satisfying
+    one must not silently undo the other. "api-gateway-prod-7d4f" in the
+    corpus must still NOT mask a hallucinated "api-gateway" in the answer."""
+    scenario = Scenario(
+        name="t", query="why is the workload failing", history=[], namespace="payments",
+        presweep="", topology="",
+        cluster={"get_pod_logs": {"success": True, "data": "restart loop on api-gateway-prod-7d4f"}},
+        expect={}, path=pathlib.Path("t.yaml"),
+    )
+    trace = Trace(calls=[], answer="The failure is in api-gateway.")
+    assert suspected_hallucinations(trace.answer, scenario, trace) == ["api-gateway"]
+
+
 def test_hallucination_scan_accepts_names_present_in_fixture_data_still_holds_under_tokenization():
     """Regression guard: tokenizing the corpus must not turn a real multi-hyphen
     token like "redis-master" into a false positive when the answer mentions it

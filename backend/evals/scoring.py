@@ -49,7 +49,13 @@ def suspected_hallucinations(answer: str, scenario: Scenario, trace: Trace) -> L
     # membership rather than substring containment. A raw substring test lets a
     # hallucinated "api-gateway" hide inside a real "api-gateway-prod-7d4f" —
     # exactly the case this scan exists to catch.
-    corpus_names = set(_NAME_RE.findall(corpus))
+    #
+    # Corpus-only: replace "_" with a space before tokenizing. \b does not fire
+    # between two \w characters, and "_" is \w, so "restart_count_api-gateway"
+    # would otherwise never yield "api-gateway" as its own token, flagging a
+    # correct answer as a hallucination. The answer side is deliberately left
+    # untouched — a hallucinated "foo_bar-baz" should stay one token there.
+    corpus_names = set(_NAME_RE.findall(corpus.replace("_", " ")))
     seen: List[str] = []
     for name in _NAME_RE.findall(answer.lower()):
         if name in _PROSE or name in corpus_names or name in seen:

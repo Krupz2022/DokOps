@@ -134,12 +134,13 @@ expect:
   # the selector value production's own presweep already computed reach the
   # final answer (directly or via append_missing_findings' backstop).
   must_cite: ["checkout-webb"]
-  # must_call is left as-is (not required by this task), but note the risk it
-  # now carries: presweep's own text says "Quote these facts directly — they
-  # are the answer, not a hint" and "Do not re-fetch these with tools" for
-  # exactly the finding these two tools would produce. If a live run shows a
-  # correct agent skipping list_services/get_endpoints because presweep
-  # already answered the question, that is production-correct behaviour and
-  # this line should be relaxed or dropped rather than treated as a failure.
-  must_call: [list_services, get_endpoints]
+  # Deliberately NO must_call here. presweep above already supplies the
+  # selector/endpoint evidence and says so explicitly ("Quote these facts
+  # directly — they are the answer, not a hint" / "Do not re-fetch these with
+  # tools"). Requiring list_services/get_endpoints would fail an agent for
+  # correctly obeying that instruction instead of redundantly re-fetching data
+  # it was already handed -- a guaranteed false-fail, not a real assertion.
+  # The evidence path production actually guarantees is presweep ->
+  # append_missing_findings -> the answer, which must_cite checks. Do not add
+  # a must_call for these tools back.
   must_not_end_on_question: true

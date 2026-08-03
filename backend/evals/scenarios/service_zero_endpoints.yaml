@@ -2,6 +2,30 @@ name: service-zero-endpoints
 query: "investigate the checkout namespace, something seems broken"
 namespace: checkout
 cluster:
+  # The query's wording ("something seems broken") hits the always-on DIAGNOSE
+  # RULE, which requires diagnose_pod or diagnose_service to be called FIRST,
+  # before anything else. Without these fixtures the model's first tool call
+  # returns "eval: no fixture for 'diagnose_pod'", derailing the run for a
+  # reason unrelated to what this scenario tests. Kept consistent with the
+  # rest of the fixtures: the pod is healthy, the Service is the broken thing.
+  diagnose_pod:
+    success: true
+    data:
+      pod: checkout-web-5f8b
+      namespace: checkout
+      status: Running
+      issues: []
+      message: "no issues found; pod is healthy"
+  diagnose_service:
+    success: true
+    data:
+      service: checkout-web
+      namespace: checkout
+      status: degraded
+      endpoint_ready_count: 0
+      issues:
+        - "zero ready endpoints: selector app=checkout-webb does not match any pod labels"
+      message: "service has zero ready endpoints"
   search_pods:
     success: true
     data:

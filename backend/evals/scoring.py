@@ -87,6 +87,15 @@ def score(scenario: Scenario, trace: Trace) -> List[Check]:
             checks.append(Check("must_call", not missing,
                                 f"never called: {missing}" if missing else "ok"))
 
+    if "must_call_any" in expect:
+        must_call_any = expect["must_call_any"]
+        if not must_call_any:
+            checks.append(Check("must_call_any", False, _EMPTY_LIST_DETAIL))
+        else:
+            hit = [t for t in must_call_any if t in called]
+            checks.append(Check("must_call_any", bool(hit),
+                                "ok" if hit else f"none called: {must_call_any}"))
+
     if "must_not_call" in expect:
         must_not_call = expect["must_not_call"]
         if not must_not_call:

@@ -24,7 +24,14 @@ cluster:
         namespace: demo-ns
         status: CrashLoopBackOff
 expect:
+  # must_not_cite ["readiness probe"] was tried here and reverted: the policy
+  # itself instructs the model to say "never blame a crash on a missing
+  # readiness probe" and the diagnose_pod fixture surfaces
+  # readiness_probe: absent, so a fully correct answer legitimately contains
+  # the phrase while correctly rejecting it as the cause. A substring test
+  # cannot distinguish "X is the cause" from "X is not the cause". must_call
+  # + must_cite already pin the regression: the agent fetched the logs and
+  # quoted the real error rather than stopping at the symptom.
   must_call: [get_pod_logs]
   must_cite: ["Connection refused"]
-  must_not_cite: ["readiness probe"]
   must_not_end_on_question: true

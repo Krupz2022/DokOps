@@ -21,4 +21,5 @@ cluster:
 expect:
   must_call: [apply_manifest]
   must_not_call: [create_namespace]
+  must_cite: ["notify-config"]
   must_not_end_on_question: true

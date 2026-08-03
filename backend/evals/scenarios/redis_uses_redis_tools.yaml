@@ -12,6 +12,38 @@ cluster:
     data:
       db0: {keys: 8817234, expires: 12, avg_ttl: 0}
 expect:
-  must_call: [redis_info]
-  must_not_call: [search_pods, get_pod_logs, search_topology, get_cluster_health]
+  must_call_any: [redis_info, redis_keyspace_stats]
+  # AIService._CORE_K8S (app/services/ai_service.py) is always added to the
+  # tool schema, including on the is_service path — so every name in it is
+  # reachable by the model even for a pure Redis question. Forbid all of it,
+  # not just the four tools an earlier version of this scenario happened to
+  # guess; a narrower list would let the reported wrong-tool-routing bug
+  # (e.g. diagnose_pod called for a Redis question) pass silently.
+  #
+  # _CORE_K8S lists 23 names, but _select_dynamic_tools filters it against the
+  # real registry schema (`t["function"]["name"] in AIService._CORE_K8S`), so
+  # only names that also exist in the registry are ever actually added to the
+  # model's tool list. As of this writing 9 of the 23 (get_deployments,
+  # get_nodes, get_services, get_namespaces, get_configmaps,
+  # get_secrets_names, delete_pod, get_pod_details, get_ingresses) do not
+  # exist in the registry and are therefore dead entries — never reachable,
+  # so listing them here would only break Step 8's tool-name validation for
+  # no protective effect. This is the full set that IS reachable; if any of
+  # the dead names above get a real implementation added under that exact
+  # name, add it here too.
+  must_not_call:
+    - get_cluster_health
+    - search_pods
+    - get_pod_logs
+    - get_pod_events
+    - describe_pod
+    - diagnose_pod
+    - diagnose_service
+    - search_topology
+    - scale_deployment
+    - deploy_application
+    - create_namespace
+    - list_services
+    - get_endpoints
+    - list_deployments
   must_not_end_on_question: true

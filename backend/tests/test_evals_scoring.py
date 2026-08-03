@@ -179,6 +179,7 @@ def test_absent_assertion_key_adds_no_check():
     trace = Trace(calls=[], answer="ok")
     checks = _checks(_scenario(), trace)
     assert "must_call" not in checks
+    assert "must_call_any" not in checks
     assert "must_not_call" not in checks
     assert "must_cite" not in checks
     assert "must_not_cite" not in checks
@@ -194,6 +195,26 @@ def test_must_cite_fails_when_missing_from_answer():
     check = _checks(_scenario(must_cite=["Connection refused"]), trace)["must_cite"]
     assert not check.passed
     assert "Connection refused" in check.detail
+
+
+def test_must_call_any_passes_when_one_of_the_listed_tools_was_called():
+    trace = Trace(calls=[("redis_keyspace_stats", {})], answer="ok")
+    check = _checks(_scenario(must_call_any=["redis_info", "redis_keyspace_stats"]), trace)["must_call_any"]
+    assert check.passed
+
+
+def test_must_call_any_fails_when_none_of_the_listed_tools_were_called():
+    trace = Trace(calls=[("search_pods", {})], answer="ok")
+    check = _checks(_scenario(must_call_any=["redis_info", "redis_keyspace_stats"]), trace)["must_call_any"]
+    assert not check.passed
+    assert "redis_info" in check.detail and "redis_keyspace_stats" in check.detail
+
+
+def test_must_call_any_empty_list_fails_with_explanation():
+    trace = Trace(calls=[("redis_info", {})], answer="ok")
+    check = _checks(_scenario(must_call_any=[]), trace)["must_call_any"]
+    assert not check.passed
+    assert "empty list" in check.detail
 
 
 def test_must_not_cite_fails_when_forbidden_phrase_present():

@@ -25,10 +25,15 @@ async def _run_one(scenario: Scenario, runs: int) -> Dict[str, Any]:
     for i in range(runs):
         trace = await run_scenario(scenario)
         checks = score(scenario, trace)
+        # Advisory checks (e.g. no_unknown_names) are still computed and still
+        # recorded below, but never decide the verdict — only blocking checks do.
         attempts.append({
             "run": i + 1,
-            "passed": all(c.passed for c in checks),
-            "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in checks],
+            "passed": all(c.passed for c in checks if not c.advisory),
+            "checks": [
+                {"name": c.name, "passed": c.passed, "detail": c.detail, "advisory": c.advisory}
+                for c in checks
+            ],
             "calls": [name for name, _ in trace.calls],
             "answer": trace.answer,
             "error": trace.error,
@@ -52,13 +57,23 @@ def _report(results: List[Dict[str, Any]], threshold: float) -> int:
         failed += 0 if ok else 1
         print(f"{r['name']:<44} {r['passes']}/{r['runs']:<5} {'PASS' if ok else 'FAIL'}")
         if not ok:
-            # Show every distinct failing check across the attempts, once each.
+            # Show every distinct blocking failing check across the attempts, once each.
             seen = set()
             for attempt in r["attempts"]:
                 for c in attempt["checks"]:
+                    if c["advisory"]:
+                        continue
                     if not c["passed"] and (key := (c["name"], c["detail"])) not in seen:
                         seen.add(key)
                         print(f"    - {c['name']}: {c['detail']}")
+        # Advisory checks never affect the verdict above, but must still surface —
+        # print them under their own heading regardless of pass/fail.
+        advisory_seen = set()
+        for attempt in r["attempts"]:
+            for c in attempt["checks"]:
+                if c["advisory"] and not c["passed"] and (key := (c["name"], c["detail"])) not in advisory_seen:
+                    advisory_seen.add(key)
+                    print(f"    ~ [advisory] {c['name']}: {c['detail']}")
     rates = [r["pass_rate"] for r in results]
     print("-" * 70)
     print(f"{len(results) - failed}/{len(results)} scenarios at or above "

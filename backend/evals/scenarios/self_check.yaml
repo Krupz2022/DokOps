@@ -11,8 +11,13 @@ cluster:
   get_pod_logs:
     success: true
     data: "Traceback: ConnectionRefusedError: [Errno 111] Connection refused"
+# "which pods are failing" asks WHICH, not WHY — search_pods alone answers it;
+# demanding get_pod_logs (and a log-derived citation like "Connection refused")
+# over-asserted a root-cause investigation the query never asked for. The
+# get_pod_logs fixture above is left in place in case the agent chooses to dig
+# deeper anyway; it just is not required for a pass.
 expect:
-  must_call: [search_pods, get_pod_logs]
+  must_call: [search_pods]
   must_not_call: [restart_pod]
-  must_cite: ["Connection refused"]
+  must_cite: ["sample-api-7d4f"]
   must_not_end_on_question: true

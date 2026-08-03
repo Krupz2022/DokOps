@@ -29,6 +29,15 @@ class Check:
     name: str
     passed: bool
     detail: str
+    # Advisory checks are computed and reported like any other check, but a
+    # failing advisory check must never flip a scenario's verdict. Reserved
+    # for checks whose own docstring admits they are a shortlist for a human,
+    # not proof of a defect (see suspected_hallucinations below) — score()
+    # previously treated its output as a hard pass/fail gate, which is the
+    # exact contradiction this field exists to remove. run.py's threshold
+    # logic must filter these out before computing pass/fail; it must keep
+    # printing them under their own heading so a human still sees them.
+    advisory: bool = False
 
 
 def suspected_hallucinations(answer: str, scenario: Scenario, trace: Trace) -> List[str]:
@@ -131,8 +140,14 @@ def score(scenario: Scenario, trace: Trace) -> List[Check]:
         checks.append(Check("must_not_end_on_question", not ends_on_question,
                             f"answer ends: ...{tail[-80:]}" if ends_on_question else "ok"))
 
+    # Advisory only: suspected_hallucinations's own docstring says it is "a
+    # shortlist for a human to read", not proof — it flags ordinary hyphenated
+    # English (config-reference, image-pull, ...) as readily as a real
+    # fabrication. It must stay visible in the report but must not fail a
+    # scenario that got every real assertion right.
     suspects = suspected_hallucinations(answer, scenario, trace)
     checks.append(Check("no_unknown_names", not suspects,
-                        f"names absent from fixtures: {suspects}" if suspects else "ok"))
+                        f"names absent from fixtures: {suspects}" if suspects else "ok",
+                        advisory=True))
 
     return checks

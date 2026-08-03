@@ -34,4 +34,13 @@ this goes wrong, both seen in this directory before being caught by review:
   produce it, the scenario can pass without the behaviour under test ever
   happening.
 
+**Advisory checks never fail a scenario.** Some checks (`no_unknown_names`
+today) are a shortlist for a human to read, not proof of a defect — they are
+still computed and still printed in the console report and `last-run.json`
+(under an `[advisory]` heading / `"advisory": true` field), but a failing
+advisory check cannot flip a scenario's pass/fail verdict. Only non-advisory
+checks feed the threshold in `run.py`. If you add a new check whose own
+definition admits false positives are expected, mark it advisory rather than
+letting it gate the verdict.
+
 Run: `cd backend && python -m evals.run`

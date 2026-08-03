@@ -152,3 +152,6 @@ clusters-page.png
 login.png
 modal-*.png
 readme-options.png
+
+# Eval harness run output (non-deterministic, not a fixture or baseline)
+backend/evals/last-run.json

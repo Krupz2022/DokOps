@@ -1,0 +1,90 @@
+"""Run the behavioural evals.
+
+    cd backend && python -m evals.run                  # every scenario, 3 runs each
+    cd backend && python -m evals.run --only crashloop # substring filter on name
+    cd backend && python -m evals.run --runs 5
+
+Costs real LLM tokens and is non-deterministic by design. Never wire into CI.
+"""
+import argparse
+import asyncio
+import json
+import pathlib
+import statistics
+from typing import Any, Dict, List
+
+from evals.harness import Scenario, load_scenarios, run_scenario
+from evals.scoring import score
+
+SCENARIO_DIR = pathlib.Path(__file__).parent / "scenarios"
+OUTPUT = pathlib.Path(__file__).parent / "last-run.json"
+
+
+async def _run_one(scenario: Scenario, runs: int) -> Dict[str, Any]:
+    attempts: List[Dict[str, Any]] = []
+    for i in range(runs):
+        trace = await run_scenario(scenario)
+        checks = score(scenario, trace)
+        attempts.append({
+            "run": i + 1,
+            "passed": all(c.passed for c in checks),
+            "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in checks],
+            "calls": [name for name, _ in trace.calls],
+            "answer": trace.answer,
+            "error": trace.error,
+        })
+    passes = sum(1 for a in attempts if a["passed"])
+    return {
+        "name": scenario.name,
+        "runs": runs,
+        "passes": passes,
+        "pass_rate": passes / runs if runs else 0.0,
+        "attempts": attempts,
+    }
+
+
+def _report(results: List[Dict[str, Any]], threshold: float) -> int:
+    print(f"\n{'scenario':<44} {'pass':>7}  verdict")
+    print("-" * 70)
+    failed = 0
+    for r in results:
+        ok = r["pass_rate"] >= threshold
+        failed += 0 if ok else 1
+        print(f"{r['name']:<44} {r['passes']}/{r['runs']:<5} {'PASS' if ok else 'FAIL'}")
+        if not ok:
+            # Show every distinct failing check across the attempts, once each.
+            seen = set()
+            for attempt in r["attempts"]:
+                for c in attempt["checks"]:
+                    if not c["passed"] and (key := (c["name"], c["detail"])) not in seen:
+                        seen.add(key)
+                        print(f"    - {c['name']}: {c['detail']}")
+    rates = [r["pass_rate"] for r in results]
+    print("-" * 70)
+    print(f"{len(results) - failed}/{len(results)} scenarios at or above "
+          f"{threshold:.0%}; median pass rate {statistics.median(rates):.0%}")
+    return failed
+
+
+async def _main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--only", default="", help="substring filter on scenario name")
+    ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--threshold", type=float, default=1.0,
+                    help="fraction of runs that must pass (default 1.0 — flaky is failing)")
+    args = ap.parse_args()
+
+    scenarios = [s for s in load_scenarios(SCENARIO_DIR) if args.only in s.name]
+    if not scenarios:
+        print(f"no scenarios matching {args.only!r}")
+        return 1
+
+    results = [await _run_one(s, args.runs) for s in scenarios]
+    OUTPUT.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    failed = _report(results, args.threshold)
+    print(f"\nfull output: {OUTPUT}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(_main()))

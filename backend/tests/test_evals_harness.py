@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from evals.harness import Scenario, Trace, load_scenarios, run_scenario
+from evals.harness import SEAMS, Scenario, Trace, _resolve_seam_owner, load_scenarios, run_scenario
 
 pytestmark = pytest.mark.asyncio
 
@@ -90,3 +90,27 @@ async def test_loop_exception_is_captured_as_error_not_raised():
 
     assert trace.error is not None and "provider down" in trace.error
     assert trace.answer == ""
+
+
+def test_all_seam_targets_still_resolve():
+    """Rename-detector for SEAMS, the harness's single source of truth for
+    every patch target `_patched_cluster` neutralises (k8s tool dispatch, MCP
+    schema + execution, the observability tool registry, presweep/topology,
+    external + internal RAG, the prerequisite check).
+
+    None of the other tests in this file exercise `_patched_cluster` for real
+    — they all replace `run_global_agentic_loop` wholesale, so execution
+    never reaches the inner loop and none of these targets are ever
+    consulted. Without this test, a rename on any of them would leave every
+    other test green while silently losing seam coverage (e.g. an MCP tool
+    call reaching a real server, or an observability tool call reaching a
+    real Prometheus/Loki/Grafana/Elasticsearch/Datadog endpoint).
+
+    This is deliberately the cheap check: it does not run the loop or apply
+    the patches, it only confirms each (owner, attribute) pair in SEAMS still
+    exists to be patched.
+    """
+    assert SEAMS, "SEAMS must not be empty"
+    for dotted_path, _factory in SEAMS:
+        owner, attr = _resolve_seam_owner(dotted_path)
+        assert hasattr(owner, attr), f"seam target no longer resolves: {dotted_path}"

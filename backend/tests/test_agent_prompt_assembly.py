@@ -131,3 +131,50 @@ def test_diagnose_rule_demands_logs_after_diagnosis():
     prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
     assert "AFTER the\ndiagnosis, DO fetch them" in prompt
     assert "never blame a crash on a missing readiness probe" in prompt
+
+
+def test_core_k8s_names_all_resolve_to_real_tools():
+    """Every _CORE_K8S name must exist in the live tool registry.
+
+    Regression: 9 of 23 _CORE_K8S entries (delete_pod, get_configmaps,
+    get_deployments, get_ingresses, get_namespaces, get_nodes,
+    get_pod_details, get_secrets_names, get_services) named tools that were
+    never registered — e.g. list_deployments/list_services exist but
+    get_deployments/get_services do not. _select_dynamic_tools filters
+    _CORE_K8S against registry.build_openai_tools_schema(), so a dead name is
+    silently inert: it shrinks the "always-on core" without any error,
+    anywhere, ever. This is the regression guard that would have caught it.
+    """
+    real_names = {t["function"]["name"] for t in registry.build_openai_tools_schema()}
+    dead = sorted(AIService._CORE_K8S - real_names)
+    assert not dead, f"_CORE_K8S names tools absent from the registry: {dead}"
+
+
+def test_fix_image_pull_offered_for_image_pull_backoff_query():
+    """fix_image_pull must be in the schema for an ImagePullBackOff-shaped query.
+
+    Regression: the always-on image-pull policy (_FRAG_IMAGE_PULL) tells the
+    model to call fix_image_pull IMMEDIATELY on ImagePullBackOff/ErrImagePull
+    and never call describe_pod first. But any image-pull query sets
+    is_service=True (via _SERVICE_TOOL_MAP's 'image pull'/'imagepullbackoff'/
+    'errimagepull' entries), which takes the branch in _select_dynamic_tools
+    that skips the relevance-scored k8s_rest tail entirely — and
+    fix_image_pull was not in _CORE_K8S, so it was never offered. The model
+    then fell back to search_pods -> describe_pod -> get_pod_events in all 3
+    baseline eval runs of this scenario, not because it disobeyed the policy,
+    but because the tool was absent from its schema. This exercises the real
+    selection path (_select_dynamic_tools against the real registry schema),
+    not a mock of it.
+    """
+    full_k8s_schema = registry.build_openai_tools_schema()
+    selected = AIService._select_dynamic_tools(
+        query="fix the image pull error on reports-api in analytics",
+        obs_tools_schema=[],
+        full_k8s_schema=full_k8s_schema,
+        mcp_schema=[],
+        custom_tools_schema=[],
+    )
+    selected_names = {t["function"]["name"] for t in selected}
+    assert "fix_image_pull" in selected_names, (
+        "fix_image_pull not offered to the model for an image-pull query"
+    )

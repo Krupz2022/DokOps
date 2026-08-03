@@ -867,14 +867,46 @@ Rules:
     # ── Dynamic tool selection ──────────────────────────────────────────────────
 
     # Core K8s tools always included for k8s/general queries
+    #
+    # Fix (2026-08-03 eval baseline): 9 of the previous 23 names here did not
+    # resolve against registry.build_openai_tools_schema() and were silently
+    # dropped by _select_dynamic_tools's live-schema filter — the "always-on
+    # core" was functionally 14 tools, not 23. Per-name disposition:
+    #   get_deployments   -> removed (stale dup; real name list_deployments already here)
+    #   get_services      -> removed (stale dup; real name list_services already here)
+    #   get_pod_details   -> removed (stale dup; describe_pod already here covers it)
+    #   get_nodes         -> replaced with get_node_status (called with no node_name
+    #                        it lists every node — same foundational-inventory role
+    #                        as search_pods/list_deployments/list_services)
+    #   get_namespaces    -> replaced with list_namespaces (pairs with create_namespace,
+    #                        already core; namespace inventory is foundational)
+    #   get_configmaps    -> removed, no replacement. Namespace-scoped and not needed
+    #                        on every query; still reachable via the relevance-scored
+    #                        k8s_rest tail (list_configmaps) when a query mentions it.
+    #   get_secrets_names -> removed, no replacement. Same reasoning as configmaps,
+    #                        plus secret enumeration on every single query is not
+    #                        something to make always-on by accident.
+    #   get_ingresses     -> removed, no replacement. Not foundational like pods/
+    #                        deployments/services/nodes/namespaces; reachable via the
+    #                        relevance-scored tail (list_ingresses) when relevant.
+    #   delete_pod        -> removed, no replacement. No delete_pod tool exists in the
+    #                        registry at all (closest is restart_pod, a different
+    #                        action). Even if one did, a destructive tool being
+    #                        always-on is a deliberate call this fix does not make.
+    #
+    # fix_image_pull was added separately: the image-pull policy fragment
+    # (_FRAG_IMAGE_PULL) is always-on and demands the model call it immediately
+    # on ImagePullBackOff/ErrImagePull, so the tool must be always-on too — an
+    # is_service=True query (image-pull keywords route through _SERVICE_TOOL_MAP)
+    # takes the branch that skips the relevance-scored k8s_rest tail entirely,
+    # so fix_image_pull was never reachable there.
     _CORE_K8S = {
         "get_cluster_health", "search_pods", "get_pod_logs", "get_pod_events",
-        "describe_pod", "get_deployments", "get_nodes", "get_services",
-        "get_namespaces", "get_configmaps", "get_secrets_names",
+        "describe_pod", "get_node_status", "list_namespaces",
         "diagnose_pod", "diagnose_service", "search_topology",
         "scale_deployment", "deploy_application", "create_namespace",
-        "delete_pod", "get_pod_details", "get_ingresses",
         "list_services", "get_endpoints", "list_deployments",
+        "fix_image_pull",
     }
 
     _DISCOVER_TOOL_SCHEMA = {

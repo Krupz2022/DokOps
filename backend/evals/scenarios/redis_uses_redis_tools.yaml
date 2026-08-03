@@ -1,0 +1,17 @@
+name: redis-uses-redis-tools
+query: "redis memory usage looks high, what is filling it"
+cluster:
+  redis_info:
+    success: true
+    data:
+      used_memory_human: "3.81G"
+      maxmemory_human: "4.00G"
+      evicted_keys: 128442
+  redis_keyspace_stats:
+    success: true
+    data:
+      db0: {keys: 8817234, expires: 12, avg_ttl: 0}
+expect:
+  must_call: [redis_info]
+  must_not_call: [search_pods, get_pod_logs, search_topology, get_cluster_health]
+  must_not_end_on_question: true

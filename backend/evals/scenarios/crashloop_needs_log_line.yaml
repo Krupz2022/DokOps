@@ -1,0 +1,30 @@
+name: crashloop-needs-log-line
+query: "why is sample-api crashlooping in demo-ns"
+namespace: demo-ns
+cluster:
+  diagnose_pod:
+    success: true
+    data:
+      pod: sample-api-7d4f9c
+      namespace: demo-ns
+      status: CrashLoopBackOff
+      restarts: 6
+      readiness_probe: absent
+      message: "Back-off restarting failed container"
+  get_pod_logs:
+    success: true
+    data: |
+      [2026-08-03T09:14:02Z] INFO  starting sample-api v2.3.1
+      [2026-08-03T09:14:02Z] ERROR could not connect to redis-master:6379
+      [2026-08-03T09:14:02Z] FATAL ConnectionRefusedError: [Errno 111] Connection refused
+  search_pods:
+    success: true
+    data:
+      - name: sample-api-7d4f9c
+        namespace: demo-ns
+        status: CrashLoopBackOff
+expect:
+  must_call: [get_pod_logs]
+  must_cite: ["Connection refused"]
+  must_not_cite: ["readiness probe"]
+  must_not_end_on_question: true

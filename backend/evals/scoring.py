@@ -106,6 +106,16 @@ def score(scenario: Scenario, trace: Trace) -> List[Check]:
             checks.append(Check("must_cite", not absent,
                                 f"not quoted in answer: {absent}" if absent else "ok"))
 
+    if "must_not_cite" in expect:
+        must_not_cite = expect["must_not_cite"]
+        if not must_not_cite:
+            checks.append(Check("must_not_cite", False, _EMPTY_LIST_DETAIL))
+        else:
+            lowered = answer.lower()
+            present = [s for s in must_not_cite if s.lower() in lowered]
+            checks.append(Check("must_not_cite", not present,
+                                f"answer contains: {present}" if present else "ok"))
+
     if expect.get("must_not_end_on_question"):
         tail = answer.rstrip().rstrip("*_`)'\"").rstrip()
         ends_on_question = tail.endswith("?")

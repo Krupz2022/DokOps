@@ -181,6 +181,7 @@ def test_absent_assertion_key_adds_no_check():
     assert "must_call" not in checks
     assert "must_not_call" not in checks
     assert "must_cite" not in checks
+    assert "must_not_cite" not in checks
 
 
 def test_must_not_call_passes_when_forbidden_tool_not_used():
@@ -193,3 +194,21 @@ def test_must_cite_fails_when_missing_from_answer():
     check = _checks(_scenario(must_cite=["Connection refused"]), trace)["must_cite"]
     assert not check.passed
     assert "Connection refused" in check.detail
+
+
+def test_must_not_cite_fails_when_forbidden_phrase_present():
+    trace = Trace(calls=[], answer="Likely caused by a missing readiness probe.")
+    check = _checks(_scenario(must_not_cite=["readiness probe"]), trace)["must_not_cite"]
+    assert not check.passed
+
+
+def test_must_not_cite_passes_when_forbidden_phrase_absent():
+    trace = Trace(calls=[], answer="Connection refused on redis-master:6379.")
+    assert _checks(_scenario(must_not_cite=["readiness probe"]), trace)["must_not_cite"].passed
+
+
+def test_must_not_cite_empty_list_fails_with_explanation():
+    trace = Trace(calls=[], answer="ok")
+    check = _checks(_scenario(must_not_cite=[]), trace)["must_not_cite"]
+    assert not check.passed
+    assert "empty list" in check.detail

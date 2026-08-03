@@ -1,0 +1,41 @@
+name: service-zero-endpoints
+query: "investigate the checkout namespace, something seems broken"
+namespace: checkout
+cluster:
+  search_pods:
+    success: true
+    data:
+      - name: checkout-web-5f8b
+        namespace: checkout
+        status: Running
+  list_services:
+    success: true
+    data:
+      - name: checkout-web
+        namespace: checkout
+        type: ClusterIP
+        ports: ["80/TCP"]
+        selector: {app: checkout-webb}
+  get_endpoints:
+    success: true
+    data:
+      name: checkout-web
+      namespace: checkout
+      subsets: []
+  list_deployments:
+    success: true
+    data:
+      - name: checkout-web
+        namespace: checkout
+        desired: 1
+        ready: 1
+  get_resource_yaml:
+    success: true
+    data: |
+      metadata:
+        labels:
+          app: checkout-web
+expect:
+  must_call: [list_services, get_endpoints]
+  must_cite: ["checkout-webb"]
+  must_not_end_on_question: true

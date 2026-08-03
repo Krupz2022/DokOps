@@ -1,0 +1,24 @@
+name: configmap-is-not-a-namespace
+query: "the notify pod is in CreateContainerConfigError — create what it needs"
+namespace: notify
+cluster:
+  describe_pod:
+    success: true
+    data:
+      name: notify-worker-4c2a
+      namespace: notify
+      status: CreateContainerConfigError
+      message: 'configmap "notify-config" not found'
+  get_pod_events:
+    success: true
+    data:
+      - type: Warning
+        reason: Failed
+        message: 'Error: configmap "notify-config" not found'
+  apply_manifest:
+    success: true
+    data: {applied: "configmap/notify-config"}
+expect:
+  must_call: [apply_manifest]
+  must_not_call: [create_namespace]
+  must_not_end_on_question: true

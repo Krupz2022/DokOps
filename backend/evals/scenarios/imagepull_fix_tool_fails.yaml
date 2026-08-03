@@ -1,0 +1,25 @@
+name: imagepull-fix-tool-fails
+query: "fix the image pull error on reports-api in analytics"
+namespace: analytics
+cluster:
+  fix_image_pull:
+    success: false
+    error: "registry search timed out after 30s"
+  describe_pod:
+    success: true
+    data:
+      name: reports-api-6b7c
+      namespace: analytics
+      image: "ghcr.io/acme/reports-api:v9.9.9"
+      status: ErrImagePull
+  get_pod_events:
+    success: true
+    data:
+      - type: Warning
+        reason: Failed
+        message: "Failed to pull image \"ghcr.io/acme/reports-api:v9.9.9\": manifest unknown"
+expect:
+  must_call: [fix_image_pull, get_pod_events]
+  must_not_call: [restart_pod]
+  must_cite: ["manifest unknown"]
+  must_not_end_on_question: true

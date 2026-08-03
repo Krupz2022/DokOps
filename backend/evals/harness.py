@@ -35,8 +35,6 @@ from unittest.mock import patch
 
 import yaml
 
-from evals.defaults import core_tool_default
-
 
 @dataclass
 class Scenario:
@@ -85,18 +83,9 @@ def _fixture_server(scenario: Scenario, trace: Trace):
         trace.calls.append((tool_name, inputs))
         if tool_name in scenario.cluster:
             return scenario.cluster[tool_name]
-        # An unfixtured call to one of AIService._CORE_K8S's always-on tools gets
-        # a plausible, non-alarming default (see evals/defaults.py) instead of the
-        # generic miss below -- these are injected into every query's schema
-        # regardless of routing, so the model reaching for one is not a defect
-        # the scenario should have to anticipate. The default mirrors what the
-        # real tool returns for its own "nothing here" case, never richer.
-        if (default := core_tool_default(tool_name, inputs)) is not None:
-            return default
-        # ponytail: a genuinely unfixtured, non-core tool returns an explicit miss
-        # rather than raising. The call is still recorded, so must_not_call
-        # assertions fire on it and the report shows the author which fixture the
-        # model wanted but did not get and did not already have a safe default for.
+        # ponytail: an unfixtured tool returns an explicit miss rather than raising.
+        # The call is still recorded, so must_not_call assertions fire on it and the
+        # report shows the author which fixture the model wanted but did not get.
         return {
             "success": False,
             "error": f"eval: no fixture for '{tool_name}' in scenario '{scenario.name}'",

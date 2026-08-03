@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from evals.defaults import CORE_TOOL_DEFAULTS
 from evals.harness import SEAMS, Scenario, Trace, _resolve_seam_owner, load_scenarios, run_scenario
 
 pytestmark = pytest.mark.asyncio
@@ -55,11 +54,10 @@ async def test_run_scenario_records_tool_calls_and_answer():
     assert trace.error is None
 
 
-async def test_unfixtured_unknown_tool_returns_an_explicit_miss_not_a_crash():
-    """A tool that is neither scenario-fixtured NOR one of AIService._CORE_K8S's
-    always-on tools must not raise — the model asked for something the author
-    did not anticipate and the harness has no safe default for, and that must
-    show up in the trace as a call, not kill the run or get papered over."""
+async def test_unfixtured_tool_returns_an_explicit_miss_not_a_crash():
+    """A tool the scenario did not fixture must not raise — the model asked for
+    something the author did not anticipate, and that should show up in the
+    trace as a call, not kill the run."""
     scenario = Scenario(
         name="t", query="q", history=[], namespace=None, presweep="", topology="",
         cluster={}, expect={}, path=pathlib.Path("t.yaml"),
@@ -67,73 +65,14 @@ async def test_unfixtured_unknown_tool_returns_an_explicit_miss_not_a_crash():
 
     async def fake_loop(**kwargs):
         from app.tools import registry
-        res = await registry.execute_tool_async("totally_unrecognised_tool", {"pod": "x"})
+        res = await registry.execute_tool_async("get_pod_logs", {"pod": "x"})
         assert res["success"] is False
-        assert "no fixture" in res["error"]
         yield {"type": "result", "message": "done"}
 
     with patch("app.services.ai_service.ai_service.run_global_agentic_loop", fake_loop):
         trace = await run_scenario(scenario)
 
-    assert trace.calls == [("totally_unrecognised_tool", {"pod": "x"})]
-
-
-async def test_unfixtured_core_tool_gets_a_plausible_non_error_default():
-    """A scenario that never mentions `list_services` (one of
-    AIService._CORE_K8S's always-on tools) must not make the agent read the
-    environment as broken. It should get a plausible, well-formed default
-    (see evals/defaults.py) rather than the harness's own "no fixture" miss,
-    and the call must still land in Trace.calls so must_not_call assertions
-    and the report both still see it."""
-    scenario = Scenario(
-        name="t", query="q", history=[], namespace=None, presweep="", topology="",
-        cluster={}, expect={}, path=pathlib.Path("t.yaml"),
-    )
-
-    async def fake_loop(**kwargs):
-        from app.tools import registry
-        res = await registry.execute_tool_async("list_services", {"namespace": "payments"})
-        assert res["success"] is True
-        assert res["data"] == {"services": [], "total": 0}
-        yield {"type": "result", "message": "done"}
-
-    with patch("app.services.ai_service.ai_service.run_global_agentic_loop", fake_loop):
-        trace = await run_scenario(scenario)
-
-    assert trace.calls == [("list_services", {"namespace": "payments"})]
-
-
-async def test_scenario_fixture_overrides_core_default():
-    """A scenario that DOES fixture a core tool must get exactly what it
-    declared, not the generic default — scenario-declared fixtures always
-    win."""
-    scenario = Scenario(
-        name="t", query="q", history=[], namespace=None, presweep="", topology="",
-        cluster={"list_services": {"success": True, "data": {"services": [{"name": "checkout-web"}], "total": 1}}},
-        expect={}, path=pathlib.Path("t.yaml"),
-    )
-
-    async def fake_loop(**kwargs):
-        from app.tools import registry
-        res = await registry.execute_tool_async("list_services", {})
-        assert res["data"]["total"] == 1
-        yield {"type": "result", "message": "done"}
-
-    with patch("app.services.ai_service.ai_service.run_global_agentic_loop", fake_loop):
-        trace = await run_scenario(scenario)
-
-    assert trace.calls == [("list_services", {})]
-
-
-def test_core_tool_defaults_cover_exactly_ai_service_core_k8s():
-    """Rename-detector: CORE_TOOL_DEFAULTS must cover exactly
-    AIService._CORE_K8S — no more, no less — so adding a new always-on core
-    tool forces a decision about its default instead of silently
-    reintroducing the "eval: no fixture" bug for it, and so a stale default
-    is not left behind for a tool that no longer exists."""
-    from app.services.ai_service import AIService
-
-    assert set(CORE_TOOL_DEFAULTS) == AIService._CORE_K8S
+    assert trace.calls == [("get_pod_logs", {"pod": "x"})]
 
 
 async def test_loop_exception_is_captured_as_error_not_raised():

@@ -34,19 +34,6 @@ this goes wrong, both seen in this directory before being caught by review:
   produce it, the scenario can pass without the behaviour under test ever
   happening.
 
-**Always-on core tools get a default even if you don't fixture them.**
-`AIService._CORE_K8S` (app/services/ai_service.py) is injected into every
-query's tool schema regardless of routing, so the model can reach for any of
-those 17 names in a scenario that has nothing to do with Kubernetes. Calling
-one is not a defect the scenario needs to catch by forbidding it -- see
-`evals/defaults.py` and `harness._fixture_server`, which serve a plausible,
-well-formed "nothing here" response for any of them you don't fixture,
-instead of the "eval: no fixture" miss below. A `cluster:` fixture for one of
-these still always wins over its default. Only forbid a core tool via
-`must_not_call` when calling it would genuinely mean the agent misrouted the
-question (e.g. reaching for `search_pods` to answer a database question) --
-not merely because it's in the core set.
-
 **Advisory checks never fail a scenario.** Some checks (`no_unknown_names`
 today) are a shortlist for a human to read, not proof of a defect — they are
 still computed and still printed in the console report and `last-run.json`

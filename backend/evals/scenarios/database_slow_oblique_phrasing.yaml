@@ -1,0 +1,90 @@
+name: database-slow-oblique-phrasing
+# Deliberately does NOT say "postgres" or any AIService._SERVICE_TOOL_MAP
+# keyword. This is the exact 78fb39f regression (2026-06-18): a client says
+# "the database is slow", not "postgres has long running queries", so the
+# keyword gate that both selects postgres_* tools AND includes the SERVICE
+# TOOL RULE fragment never fires. Before the always-on TOOL DISCOVERY RULE
+# pointer (backend/app/prompts/dokops.md, `base` section), the model had no
+# initial tools and no instruction that postgres_* tools exist, and fell
+# back to Kubernetes tools. The pointer's only job is to make the model call
+# discover_tools instead -- this scenario fails without it.
+#
+# Also deliberately does NOT use any of the DIAGNOSE RULE trigger phrases
+# ("what's wrong", "not working", "failing", "broken", "investigate",
+# "issue", "error", "crash", "debug", "troubleshoot", "why", "check") --
+# using one would pull diagnose_pod/diagnose_service into scope for an
+# unrelated reason and muddy what this scenario is actually testing.
+query: "the database is slow, connections seem exhausted"
+cluster:
+  # Real postgres_active_connections (app/tools/postgres_tools.py:109-128)
+  # returns {"success": True, "data": <plain formatted table string>,
+  # "error": None, "source": "postgres"} via the shared _fmt() helper
+  # (postgres_tools.py:80-89) -- a header row, a dashed separator, one row
+  # per group, then a blank line + "(N rows)". Never a list/dict of records.
+  # Columns are exactly the SQL's SELECT list: datname, usename, state,
+  # wait_event_type, wait_event, count, max_age_s -- nothing else (no
+  # inferred cause, no root-cause text; that's for the model to state).
+  postgres_active_connections:
+    success: true
+    data: |
+      datname   usename   state                wait_event_type  wait_event  count  max_age_s
+      -------   -------   -------------------  ---------------  ----------  -----  ---------
+      billing   app_svc   active               Client           ClientRead  238    612
+      billing   app_svc   idle in transaction  Lock             tuple       54     1840
+      billing   app_svc   idle                                                     19     3
+
+      (3 rows)
+  # Real postgres_long_running_queries (postgres_tools.py:131-154) returns
+  # the same {"success", "data", "error", "source"} shape; data is the
+  # "No queries running > Ns." string when rows is empty, or the _fmt table
+  # with columns pid, usename, datname, state, duration_s, query_snippet.
+  postgres_long_running_queries:
+    success: true
+    data: |
+      pid    usename  datname  state   duration_s  query_snippet
+      -----  -------  -------  ------  ----------  -------------------------------------------
+      48213  app_svc  billing  active  612         UPDATE invoices SET status = $1 WHERE id...
+      48390  app_svc  billing  active  480         SELECT * FROM ledger_entries WHERE account...
+
+      (2 rows)
+  # Real postgres_database_stats (postgres_tools.py:313-333) -- same shape,
+  # columns datname, numbackends, xact_commit, xact_rollback, blks_read,
+  # blks_hit, cache_hit_pct, deadlocks, temp_files, temp_bytes.
+  postgres_database_stats:
+    success: true
+    data: |
+      datname  numbackends  xact_commit  xact_rollback  blks_read  blks_hit  cache_hit_pct  deadlocks  temp_files  temp_bytes
+      -------  -----------  -----------  -------------  ---------  --------  -------------  ---------  ----------  ----------
+      billing  292          8213044      1820           921834     88213221  99.0           0          14          62914560
+
+      (1 row)
+expect:
+  # Any one of these is real evidence the model reached the actual database
+  # tools instead of substituting Kubernetes tools for a non-Kubernetes
+  # system -- mirrors redis_uses_redis_tools.yaml's must_call_any pattern.
+  must_call_any: [postgres_active_connections, postgres_long_running_queries, postgres_database_stats]
+  # AIService._CORE_K8S (app/services/ai_service.py) -- always in the tool
+  # schema regardless of routing, so every name in it is reachable even for
+  # a pure database question. This is the full list (17 names as of this
+  # writing); forbidding all of it, not a guessed subset, is what actually
+  # catches the reported wrong-tool-routing failure (e.g. search_pods called
+  # for a database question).
+  must_not_call:
+    - get_cluster_health
+    - search_pods
+    - get_pod_logs
+    - get_pod_events
+    - describe_pod
+    - get_node_status
+    - list_namespaces
+    - diagnose_pod
+    - diagnose_service
+    - search_topology
+    - scale_deployment
+    - deploy_application
+    - create_namespace
+    - list_services
+    - get_endpoints
+    - list_deployments
+    - fix_image_pull
+  must_not_end_on_question: true

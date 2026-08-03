@@ -1,0 +1,83 @@
+name: broker-dropping-messages-oblique-phrasing
+# Deliberately does NOT say "rabbitmq", "queue", "vhost", "amqp", "exchange"
+# or "binding" -- none of AIService._SERVICE_TOOL_MAP's rabbitmq_ keywords.
+# Same 78fb39f regression as database_slow_oblique_phrasing.yaml: "the
+# broker is dropping messages" is exactly how a client phrases this, and the
+# keyword gate that selects rabbitmq_* tools AND includes the SERVICE TOOL
+# RULE fragment never fires on it. Before the always-on TOOL DISCOVERY RULE
+# pointer (backend/app/prompts/dokops.md, `base` section), the model had no
+# rabbitmq_* tools and no instruction that they exist, and fell back to
+# Kubernetes tools. This scenario fails without the pointer.
+#
+# Also avoids every DIAGNOSE RULE trigger phrase ("what's wrong", "not
+# working", "failing", "broken", "investigate", "issue", "error", "crash",
+# "debug", "troubleshoot", "why", "check") so this scenario tests only the
+# tool-discovery pointer, not the separate always-on diagnose sweep.
+query: "the broker is dropping messages"
+cluster:
+  # Real rabbitmq_dead_letter_queues (app/tools/rabbitmq_tools.py:154-170)
+  # returns {"success": True, "data": <plain formatted table string or the
+  # literal "No dead-letter queues configured." when none exist>, "error":
+  # None, "source": "rabbitmq"} via the shared _fmt() helper
+  # (rabbitmq_tools.py:83-92). Columns are exactly name, vhost, messages,
+  # dlx, dlrk -- the tool reports a message COUNT sitting in the DLX, never
+  # a cause (no "consumer crashed" or "TTL expired" text -- that inference
+  # is the model's job, not the fixture's).
+  rabbitmq_dead_letter_queues:
+    success: true
+    data: |
+      name             vhost  messages  dlx          dlrk
+      ---------------  -----  --------  -----------  --------------
+      orders.process   /      1842      orders.dlx   orders.failed
+
+      (1 row)
+  # Real rabbitmq_list_queues (rabbitmq_tools.py:112-127) -- same envelope;
+  # columns name, vhost, messages, ready, unacked, consumers, state,
+  # publish/s, built straight from the RabbitMQ management API's /queues
+  # response (message_stats/publish_details/rate), never anything richer.
+  rabbitmq_list_queues:
+    success: true
+    data: |
+      name             vhost  messages  ready  unacked  consumers  state    publish/s
+      ---------------  -----  --------  -----  -------  ---------  -------  ---------
+      orders.process   /      312       298    14       2          running  45.2
+      orders.dlx       /      1842      1842   0        0          running  12.8
+
+      (2 rows)
+  # Real rabbitmq_node_health (rabbitmq_tools.py:210-230) returns a plain
+  # joined-lines string ("\n".join(lines)), not a table -- left generic and
+  # healthy so it cannot itself explain the drop; the DLX/queue fixtures
+  # above are where the real evidence lives.
+  rabbitmq_node_health:
+    success: true
+    data: "Node: rabbit@broker-1\nStatus: running\nMemory: 1.2 GB / 4.0 GB\nDisk free: 42.1 GB\nAlarms: none"
+expect:
+  # Any one of these is real evidence the model reached the actual broker
+  # tools instead of substituting Kubernetes tools for a non-Kubernetes
+  # system -- mirrors redis_uses_redis_tools.yaml's must_call_any pattern.
+  must_call_any: [rabbitmq_list_queues, rabbitmq_dead_letter_queues, rabbitmq_node_health]
+  # AIService._CORE_K8S (app/services/ai_service.py) -- always in the tool
+  # schema regardless of routing, so every name in it is reachable even for
+  # a pure broker question. Full list (17 names as of this writing);
+  # forbidding all of it, not a guessed subset, is what actually catches the
+  # reported wrong-tool-routing failure (e.g. search_pods called for a
+  # broker question).
+  must_not_call:
+    - get_cluster_health
+    - search_pods
+    - get_pod_logs
+    - get_pod_events
+    - describe_pod
+    - get_node_status
+    - list_namespaces
+    - diagnose_pod
+    - diagnose_service
+    - search_topology
+    - scale_deployment
+    - deploy_application
+    - create_namespace
+    - list_services
+    - get_endpoints
+    - list_deployments
+    - fix_image_pull
+  must_not_end_on_question: true

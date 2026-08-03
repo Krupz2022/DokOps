@@ -20,6 +20,16 @@ against the real registry schema, then the real build_agent_system_prompt --
 exactly what test_phase_1_5_tools_are_actually_offered_to_the_model in
 test_agent_prompt_assembly.py does for the endpoints-sweep regression. This
 is what would have caught the 78fb39f regression in June.
+
+Fix wave 3 (2026-08-04): the pointer reached the model (all 8 phrasings
+below carried it) but was purely informational -- the model responded by
+enumerating the service families and asking the user which one applied,
+ending its turn on a question in direct violation of the always-on PHASE 4
+rule. The pointer was rewritten to be directive: call discover_tools FIRST,
+and do not ask the user which product/engine it is. The assertions below
+pin that directive wording specifically, so a regression back to the old
+"call discover_tools before answering" informational phrasing (which said
+nothing about calling it FIRST, nor forbade asking the user) fails loudly.
 """
 import pytest
 
@@ -40,7 +50,10 @@ OBLIQUE_PHRASINGS = [
     "the appliance in the DC is offline",
 ]
 
-_POINTER_PHRASE = "call discover_tools before answering"
+_POINTER_PHRASE = "call discover_tools FIRST"
+# The directive addition from fix wave 3: forbids the passive
+# enumerate-and-ask-the-user response the eval caught.
+_PROHIBITION_PHRASE = "Do NOT ask the user which product/engine it is"
 
 
 @pytest.mark.parametrize("query", OBLIQUE_PHRASINGS)
@@ -61,6 +74,11 @@ def test_oblique_phrasing_still_gets_the_tool_discovery_pointer(query):
         f"query {query!r}: always-on TOOL DISCOVERY RULE pointer missing from the "
         "assembled prompt -- the model has no way to learn non-Kubernetes tools exist"
     )
+    assert _PROHIBITION_PHRASE in prompt, (
+        f"query {query!r}: pointer no longer forbids asking the user which "
+        "product/engine it is -- this is exactly what let the model end its "
+        "turn on a question instead of calling discover_tools (fix wave 3)"
+    )
     # discover_tools must actually be callable for the pointer's instruction
     # to be genuine, not just words -- confirms the escape hatch this pointer
     # relies on (always appended in _select_dynamic_tools) is really there.
@@ -69,6 +87,36 @@ def test_oblique_phrasing_still_gets_the_tool_discovery_pointer(query):
         f"query {query!r}: prompt tells the model to call discover_tools but "
         "discover_tools is not in its tool schema"
     )
+
+
+def test_pointer_is_directive_not_informational():
+    """Fix wave 3: the eval showed the model treating the old pointer as pure
+    awareness -- it enumerated the RabbitMQ/Redis/Postgres/etc. families and
+    asked the user to pick one, ending its turn on a question (a direct
+    PHASE 4 violation: 'Never end your turn with a question you have a tool
+    to answer'). The rewritten pointer must give an imperative sequencing
+    instruction (call discover_tools FIRST) AND an explicit prohibition on
+    asking the user, not just mention that discover_tools exists. Reverting
+    to the old informational wording ('...call discover_tools before
+    answering -- never substitute Kubernetes tools...') fails this test:
+    that sentence names discover_tools but never says FIRST and never
+    forbids asking the user which product/engine it is."""
+    prompt = build_agent_system_prompt(investigation=False, selected_tools=[])
+    pointer_start = prompt.index("TOOL DISCOVERY RULE")
+    paragraph_end = prompt.index("\n\n", pointer_start)
+    pointer_text = prompt[pointer_start:paragraph_end]
+
+    assert _POINTER_PHRASE in pointer_text, (
+        "pointer must instruct the model to call discover_tools FIRST, "
+        "sequencing it ahead of any answer -- not merely note it exists"
+    )
+    assert _PROHIBITION_PHRASE in pointer_text, (
+        "pointer must explicitly forbid asking the user which product/engine "
+        "it is when discover_tools could establish that"
+    )
+    # Both directives must live in the same paragraph as the pointer's
+    # discover_tools mention, not be scattered elsewhere in the prompt.
+    assert "discover_tools" in pointer_text
 
 
 def test_pointer_names_every_non_kubernetes_tool_family():

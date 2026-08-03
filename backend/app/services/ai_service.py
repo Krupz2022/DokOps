@@ -1082,13 +1082,23 @@ Rules:
                     selected.append(t)
 
         # K8s tools: core always (unless pure service query), extras only when write intent or not obs-only
+        # Service tools (redis_*, rabbitmq_*, couchdb_*, ...) have their own selection
+        # path above (matched_service_prefixes), gated on a keyword match. k8s_write
+        # and k8s_rest must both exclude them here, or a service tool leaks into every
+        # write-intent query regardless of which service (if any) it named -- and
+        # because k8s_write's keyword list includes "delete"/"patch"/"restart", the
+        # tools that leak through this way are exactly the destructive ones
+        # (redis_delete_key, couchdb_delete_db, rabbitmq_delete_queue, ...) while every
+        # read-only service tool stays correctly gated. Least-privilege-by-default
+        # (CLAUDE.md section 3) requires that asymmetry not exist.
+        _all_service_prefixes = set(AIService._SERVICE_TOOL_MAP.values())
         k8s_core    = [t for t in full_k8s_schema if t["function"]["name"] in AIService._CORE_K8S]
         k8s_minion  = [t for t in full_k8s_schema if "minion" in t["function"]["name"]]
         k8s_write   = [t for t in full_k8s_schema if t["function"]["name"] not in AIService._CORE_K8S
                        and "minion" not in t["function"]["name"]
+                       and not any(t["function"]["name"].startswith(pfx) for pfx in _all_service_prefixes)
                        and any(w in t["function"]["name"] for w in ("scale", "deploy", "delete", "create", "patch", "apply", "restart"))]
         # k8s_rest excludes service tools (they have their own selection path above)
-        _all_service_prefixes = set(AIService._SERVICE_TOOL_MAP.values())
         k8s_rest    = [t for t in full_k8s_schema if t["function"]["name"] not in AIService._CORE_K8S
                        and "minion" not in t["function"]["name"]
                        and t not in k8s_write

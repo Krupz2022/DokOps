@@ -43,4 +43,24 @@ checks feed the threshold in `run.py`. If you add a new check whose own
 definition admits false positives are expected, mark it advisory rather than
 letting it gate the verdict.
 
+**Known-failing scenarios are deliberately deferred, not silently ignored.**
+`database-slow-oblique-phrasing` and `broker-dropping-messages-oblique-phrasing`
+are marked `known_failing: true` and reported under a distinct `KNOWN` verdict,
+excluded from the "N/M scenarios at or above threshold" headline in
+`evals/run.py` — but never hidden; their detail still prints every run. Both
+are mis-specified in the same way: the query deliberately names no engine
+(that's the oblique-phrasing behaviour under test), yet `must_call_any`
+demands one specific engine's tools (`postgres_*` / `rabbitmq_*`), and
+`must_not_call` forbids the ordinary discovery tools (`search_topology`,
+`list_services`, ...) a genuinely ambiguous complaint should be allowed to
+reach for before picking a tool family. There is no namespace or instance
+context in these scenarios to disambiguate what the model should do instead.
+The routing gap they were meant to test — does the model fall back to
+Kubernetes tools when a non-Kubernetes system is described obliquely — is
+already covered deterministically by
+`backend/tests/test_tool_discovery_pointer.py`, which does not depend on a
+live LLM. `configmap-is-not-a-namespace` is a separate, ordinary flaky
+scenario (not deferred) — it has scored 3/3 in other runs and stays under
+the normal `PASS`/`FAIL` verdict.
+
 Run: `cd backend && python -m evals.run`

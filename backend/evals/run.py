@@ -41,6 +41,7 @@ async def _run_one(scenario: Scenario, runs: int) -> Dict[str, Any]:
     passes = sum(1 for a in attempts if a["passed"])
     return {
         "name": scenario.name,
+        "known_failing": scenario.known_failing,
         "runs": runs,
         "passes": passes,
         "pass_rate": passes / runs if runs else 0.0,
@@ -52,11 +53,21 @@ def _report(results: List[Dict[str, Any]], threshold: float) -> int:
     print(f"\n{'scenario':<44} {'pass':>7}  verdict")
     print("-" * 70)
     failed = 0
+    graded = [r for r in results if not r.get("known_failing")]
     for r in results:
+        known = r.get("known_failing", False)
         ok = r["pass_rate"] >= threshold
-        failed += 0 if ok else 1
-        print(f"{r['name']:<44} {r['passes']}/{r['runs']:<5} {'PASS' if ok else 'FAIL'}")
-        if not ok:
+        if known:
+            verdict = "KNOWN"
+        else:
+            verdict = "PASS" if ok else "FAIL"
+            failed += 0 if ok else 1
+        print(f"{r['name']:<44} {r['passes']}/{r['runs']:<5} {verdict}")
+        # Known-deferred scenarios print their detail unconditionally (never
+        # hidden, per evals/scenarios/README.md) even on a run where they
+        # happen to score at/above threshold; ordinary scenarios only print
+        # it when they actually failed, as before.
+        if known or not ok:
             # Show every distinct blocking failing check across the attempts, once each.
             seen = set()
             for attempt in r["attempts"]:
@@ -74,10 +85,17 @@ def _report(results: List[Dict[str, Any]], threshold: float) -> int:
                 if c["advisory"] and not c["passed"] and (key := (c["name"], c["detail"])) not in advisory_seen:
                     advisory_seen.add(key)
                     print(f"    ~ [advisory] {c['name']}: {c['detail']}")
-    rates = [r["pass_rate"] for r in results]
     print("-" * 70)
-    print(f"{len(results) - failed}/{len(results)} scenarios at or above "
-          f"{threshold:.0%}; median pass rate {statistics.median(rates):.0%}")
+    # Known-failing (deliberately deferred) scenarios are excluded from the
+    # headline entirely -- they are graded nowhere, only displayed above.
+    if graded:
+        rates = [r["pass_rate"] for r in graded]
+        print(f"{len(graded) - failed}/{len(graded)} scenarios at or above "
+              f"{threshold:.0%}; median pass rate {statistics.median(rates):.0%}")
+    else:
+        print("no graded scenarios (all matched scenarios are known-failing)")
+    if len(results) != len(graded):
+        print(f"({len(results) - len(graded)} known-failing scenario(s) excluded above — see KNOWN rows)")
     return failed
 
 

@@ -76,6 +76,13 @@ class Scenario:
     cluster: Dict[str, Any]
     expect: Dict[str, Any]
     path: pathlib.Path
+    # Deliberately deferred, not just currently failing — e.g. mis-specified
+    # (the query names no engine while must_call_any demands one specific
+    # engine). run.py reports these under a distinct KNOWN verdict and
+    # excludes them from the "N/M scenarios at or above threshold" headline,
+    # but never hides them. See evals/scenarios/README.md for the current
+    # list and why each is deferred.
+    known_failing: bool = False
 
 
 @dataclass
@@ -100,6 +107,7 @@ def load_scenarios(directory: pathlib.Path) -> List[Scenario]:
                 cluster=raw.get("cluster") or {},
                 expect=raw.get("expect") or {},
                 path=path,
+                known_failing=bool(raw.get("known_failing", False)),
             )
         )
     return scenarios

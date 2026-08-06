@@ -10,7 +10,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 from kubernetes_asyncio.client.rest import ApiException
 from app.core.datetimes import utcnow
-from app.services.k8s_service import k8s_service
+from app.services.k8s_service import k8s_service, last_exit_suffix
 
 
 logger = logging.getLogger(__name__)
@@ -163,13 +163,11 @@ async def get_cluster_health() -> Dict[str, Any]:
                         if reason in ("CrashLoopBackOff", "Error", "OOMKilled", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"):
                             # waiting.reason for a crash loop is always CrashLoopBackOff.
                             # The cause (OOMKilled, exit 137) is in last_state.
-                            last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
-                            kill = getattr(last_term, "reason", None)
                             unhealthy_pods.append({
                                 "name": name,
                                 "namespace": namespace,
                                 "phase": phase,
-                                "issue": f"{reason} (last exit {kill})" if kill else reason,
+                                "issue": f"{reason}{last_exit_suffix(cs)}",
                                 "restarts": cs.restart_count,
                             })
                             break
@@ -245,11 +243,15 @@ async def search_pods(keyword: str = "", namespace: Optional[str] = None) -> Dic
             real_status = phase
             container_statuses = p.status.container_statuses or []
             for cs in container_statuses:
-                if cs.state.waiting and cs.state.waiting.reason:
-                    real_status = cs.state.waiting.reason
+                waiting = getattr(cs.state, "waiting", None)
+                terminated = getattr(cs.state, "terminated", None)
+                if waiting and getattr(waiting, "reason", None):
+                    # waiting.reason for a crash loop is always CrashLoopBackOff.
+                    # The cause (OOMKilled, exit 137) is in last_state.
+                    real_status = f"{waiting.reason}{last_exit_suffix(cs)}"
                     break
-                if cs.state.terminated and cs.state.terminated.reason:
-                    real_status = cs.state.terminated.reason
+                if terminated and getattr(terminated, "reason", None):
+                    real_status = terminated.reason
                     break
 
             is_unhealthy = phase not in ("Running", "Succeeded") or real_status != phase
@@ -670,9 +672,10 @@ async def get_pvc_status(pvc_name: str, namespace: str) -> Dict[str, Any]:
         try:
             found = await core_api.list_namespaced_event(
                 namespace, field_selector=f"involvedObject.kind=PersistentVolumeClaim,involvedObject.name={pvc_name}")
+            recent = sorted(found.items, key=lambda e: str(getattr(e, "last_timestamp", None) or getattr(e, "event_time", None) or ""))[-10:]
             events = [
                 {"type": e.type, "reason": e.reason, "message": e.message, "count": e.count}
-                for e in found.items
+                for e in recent
             ]
         except Exception as e:
             logger.debug("get_pvc_status: events unavailable for %s: %s", pvc_name, e)
@@ -744,10 +747,7 @@ async def list_pods_on_node(node_name: str, namespace: Optional[str] = None) -> 
             for cs in (p.status.container_statuses or []):
                 waiting = getattr(cs.state, "waiting", None) if cs.state else None
                 if getattr(waiting, "reason", None):
-                    real_status = waiting.reason
-                    last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
-                    if getattr(last_term, "reason", None):
-                        real_status = f"{real_status} (last exit {last_term.reason})"
+                    real_status = f"{waiting.reason}{last_exit_suffix(cs)}"
                     break
 
             data.append({

@@ -338,6 +338,64 @@ async def test_pod_events_fall_back_to_event_time():
     assert result["data"][0]["last_timestamp"] == "2026-08-06T09:00:00Z"
 
 
+async def test_k8s_tools_search_pods_names_the_kill_reason_in_the_status():
+    """search_pods has TWO implementations. app.tools.k8s_tools.search_pods is
+    the one actually wired into the tool registry and called by the agent
+    (K8sService.search_pods above is only reachable via an unused API route).
+    An earlier task fixed the kill-reason suffix on the dead path and missed
+    this one — the agent's real answer for 'which pods are failing' stayed a
+    bare CrashLoopBackOff."""
+    from app.tools.k8s_tools import search_pods
+
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="checkoutapi-vw2m5", namespace="uat"),
+        spec=SimpleNamespace(node_name="aks-node-b"),
+        status=SimpleNamespace(phase="Running", container_statuses=[
+            _container_status("checkoutapi", waiting="CrashLoopBackOff",
+                              last_reason="OOMKilled", restart_count=591)]),
+    )
+    api = MagicMock()
+    api.list_pod_for_all_namespaces = AsyncMock(return_value=SimpleNamespace(items=[pod]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await search_pods("failing")
+
+    assert result["data"][0]["status"] == "CrashLoopBackOff (last exit OOMKilled)"
+
+
+async def test_pvc_status_caps_events_to_the_most_recent_ten():
+    """A PVC failing against a broken StorageClass can accumulate hundreds of
+    distinct ProvisioningFailed events (varying messages defeat API-server
+    dedup), injecting tens of KB into the LLM context. Bound it like
+    get_pod_details already bounds pod events."""
+    from app.tools.k8s_tools import get_pvc_status
+
+    pvc = SimpleNamespace(
+        metadata=SimpleNamespace(name="data-checkout-0", namespace="uat"),
+        spec=SimpleNamespace(storage_class_name="managed-premium", volume_name=None,
+                             volume_mode="Filesystem",
+                             resources=SimpleNamespace(requests={"storage": "100Gi"})),
+        status=SimpleNamespace(phase="Pending", capacity=None, access_modes=None, conditions=[]),
+    )
+    events = [
+        SimpleNamespace(type="Warning", reason="ProvisioningFailed", count=1,
+                        message=f"attempt {i}",
+                        last_timestamp=f"2026-08-06T00:{i:02d}:00Z", event_time=None)
+        for i in range(15)
+    ]
+    api = MagicMock()
+    api.read_namespaced_persistent_volume_claim = AsyncMock(return_value=pvc)
+    api.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=events))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_pvc_status("data-checkout-0", "uat")
+
+    out_events = result["data"]["events"]
+    assert len(out_events) == 10
+    assert out_events[0]["message"] == "attempt 5"    # oldest kept
+    assert out_events[-1]["message"] == "attempt 14"  # most recent
+
+
 async def test_replicasets_surface_the_replica_failure_reason():
     """A Deployment that produced no pods is explained by ReplicaFailure, whose
     message is the API server's verbatim rejection."""

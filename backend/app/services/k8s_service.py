@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 # Uses ContextVar so concurrent asyncio tasks each see their own value.
 active_cluster_ctx: ContextVar[Optional[str]] = ContextVar("active_cluster_ctx", default=None)
 
+
+def last_exit_suffix(cs) -> str:
+    """' (last exit OOMKilled)' — the crash-loop cause state.waiting never carries.
+
+    Named so the sites that need it can be found by grep: the copy in the agent's
+    own search_pods was missed precisely because the pattern had no name.
+    """
+    reason = getattr(getattr(getattr(cs, "last_state", None), "terminated", None), "reason", None)
+    return f" (last exit {reason})" if reason else ""
+
+
 class K8sService:
     def __init__(self):
         self.mock_mode = True  # safe default; real init happens in initialize()
@@ -796,10 +807,7 @@ class K8sService:
                         for cs in pod.status.container_statuses:
                             if cs.state.waiting and cs.state.waiting.reason:
                                 display_status = cs.state.waiting.reason
-                                last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
-                                kill = getattr(last_term, "reason", None)
-                                if kill:
-                                    display_status = f"{display_status} (last exit {kill})"
+                                display_status = f"{display_status}{last_exit_suffix(cs)}"
                                 break
 
                     results.append({

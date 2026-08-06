@@ -2383,8 +2383,28 @@ async def get_pod_metrics(pod_name: str, namespace: str) -> Dict[str, Any]:
             group=_METRICS_GROUP, version=_METRICS_VERSION,
             namespace=namespace, plural="pods", name=pod_name,
         )
+        # Usage alone cannot answer "is this a lot". The limit is one read away and
+        # this tool is the one the registry points at for OOM triage.
+        limits_by_container: Dict[str, dict] = {}
+        requests_by_container: Dict[str, dict] = {}
+        try:
+            core_api = k8s_service._get_api("CoreV1Api")
+            pod = await core_api.read_namespaced_pod(pod_name, namespace)
+            for c in (pod.spec.containers or []):
+                res = getattr(c, "resources", None)
+                limits_by_container[c.name] = dict(getattr(res, "limits", None) or {})
+                requests_by_container[c.name] = dict(getattr(res, "requests", None) or {})
+        except Exception as e:
+            logger.debug("get_pod_metrics: pod spec unreadable for %s: %s", pod_name, e)
+
         containers = [
-            {"name": c["name"], "cpu": c["usage"]["cpu"], "memory": c["usage"]["memory"]}
+            {
+                "name": c["name"],
+                "cpu": c["usage"]["cpu"],
+                "memory": c["usage"]["memory"],
+                "limits": limits_by_container.get(c["name"], {}),
+                "requests": requests_by_container.get(c["name"], {}),
+            }
             for c in data.get("containers", [])
         ]
         return {

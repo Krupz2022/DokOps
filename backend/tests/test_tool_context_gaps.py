@@ -140,3 +140,56 @@ async def test_node_status_surfaces_cordon():
 
     assert result["data"][0]["schedulable"] is False
     assert result["data"][0]["status"] == "Ready"
+
+
+async def test_pod_metrics_carries_the_limit_to_compare_against():
+    """Registry: 'use when diagnosing OOMKilled'. Usage with no limit beside it
+    cannot answer 'is this a lot' — the exact gap that made the agent patch an
+    env var instead of the 50Mi limit."""
+    from app.tools.k8s_tools import get_pod_metrics
+
+    metrics = {
+        "metadata": {"name": "checkoutapi-vw2m5", "namespace": "uat"},
+        "containers": [{"name": "checkoutapi", "usage": {"cpu": "12m", "memory": "48Mi"}}],
+    }
+    pod = SimpleNamespace(spec=SimpleNamespace(containers=[
+        _spec_container("checkoutapi", limits={"memory": "50Mi"}, requests={"memory": "50Mi"})]))
+
+    custom = MagicMock()
+    custom.get_namespaced_custom_object = AsyncMock(return_value=metrics)
+    core = MagicMock()
+    core.read_namespaced_pod = AsyncMock(return_value=pod)
+
+    def _api(kind, context=None):
+        return custom if kind == "CustomObjectsApi" else core
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", side_effect=_api):
+        result = await get_pod_metrics("checkoutapi-vw2m5", "uat")
+
+    container = result["data"]["containers"][0]
+    assert container["memory"] == "48Mi"
+    assert container["limits"] == {"memory": "50Mi"}
+
+
+async def test_pod_metrics_still_returns_usage_when_the_pod_spec_is_unreadable():
+    """The limit join is a convenience. Losing it must not lose the metrics."""
+    from app.tools.k8s_tools import get_pod_metrics
+
+    metrics = {
+        "metadata": {"name": "checkoutapi-vw2m5", "namespace": "uat"},
+        "containers": [{"name": "checkoutapi", "usage": {"cpu": "12m", "memory": "48Mi"}}],
+    }
+    custom = MagicMock()
+    custom.get_namespaced_custom_object = AsyncMock(return_value=metrics)
+    core = MagicMock()
+    core.read_namespaced_pod = AsyncMock(side_effect=Exception("403 forbidden"))
+
+    def _api(kind, context=None):
+        return custom if kind == "CustomObjectsApi" else core
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", side_effect=_api):
+        result = await get_pod_metrics("checkoutapi-vw2m5", "uat")
+
+    assert result["success"] is True
+    assert result["data"]["containers"][0]["memory"] == "48Mi"
+    assert result["data"]["containers"][0]["limits"] == {}

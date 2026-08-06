@@ -441,12 +441,20 @@ async def get_deployment_status(deployment_name: str, namespace: str) -> Dict[st
 
         conditions = [{"type": c.type, "status": c.status, "reason": c.reason, "message": c.message} for c in (dep.status.conditions or [])]
         image_per_container = {c.name: c.image for c in dep.spec.template.spec.containers}
-        
+
+        generation = getattr(dep.metadata, "generation", None)
+        observed = getattr(dep.status, "observed_generation", None)
         data = {
             "desired_replicas": dep.spec.replicas,
             "ready_replicas": dep.status.ready_replicas or 0,
             "available_replicas": dep.status.available_replicas or 0,
             "updated_replicas": dep.status.updated_replicas or 0,
+            "unavailable_replicas": getattr(dep.status, "unavailable_replicas", None) or 0,
+            "generation": generation,
+            "observed_generation": observed,
+            # False means the controller has not yet acted on the current spec —
+            # the "my change was accepted but nothing happened" case.
+            "spec_observed": None if generation is None or observed is None else observed >= generation,
             "conditions": conditions,
             "strategy": dep.spec.strategy.type,
             "image_per_container": image_per_container

@@ -295,3 +295,26 @@ async def test_pvc_status_explains_why_it_is_pending():
     assert result["data"]["requested_storage"] == "100Gi"
     assert "no persistent volumes available" in str(result["data"]["events"])
     assert result["data"]["conditions"][0]["reason"] == "ProvisioningFailed"
+
+
+async def test_deployment_status_shows_the_controller_has_not_observed_the_spec():
+    """observed_generation < generation means the change was accepted and never
+    acted on — invisible in the old payload."""
+    from app.tools.k8s_tools import get_deployment_status
+
+    dep = SimpleNamespace(
+        metadata=SimpleNamespace(name="checkoutapi", generation=9),
+        spec=SimpleNamespace(replicas=1, strategy=SimpleNamespace(type="RollingUpdate"),
+                             template=SimpleNamespace(spec=SimpleNamespace(
+                                 containers=[SimpleNamespace(name="checkoutapi", image="checkout:2.2")]))),
+        status=SimpleNamespace(ready_replicas=0, available_replicas=0, updated_replicas=0,
+                               unavailable_replicas=1, observed_generation=7, conditions=[]),
+    )
+    api = MagicMock()
+    api.read_namespaced_deployment = AsyncMock(return_value=dep)
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_deployment_status("checkoutapi", "uat")
+
+    assert result["data"]["unavailable_replicas"] == 1
+    assert result["data"]["spec_observed"] is False

@@ -392,8 +392,28 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
                 if not line.strip().startswith(("at ", "--- End of"))
             ]
             snippet = "\n      ".join((body or (log or "").strip().splitlines())[-8:])
-            if snippet:
-                lines.append(f"  - {pod.metadata.name}/{status.name} ({reason or 'restarting'}):")
+            # ponytail: the kill reason costs one getattr and is the whole diagnosis.
+            # An OOM kill writes NOTHING to the log — the kernel SIGKILLs the process
+            # mid-run, so the tail just stops on an ordinary startup line. Without the
+            # reason the agent reads that clean tail as "no cause in the logs" and
+            # stops, which it did on a container 591 restarts deep whose memory limit
+            # had been dropped to 50Mi. state.waiting only ever says CrashLoopBackOff.
+            last_term = getattr(getattr(status, "last_state", None), "terminated", None)
+            kill = getattr(last_term, "reason", None)
+            code = getattr(last_term, "exit_code", None)
+            tag = (reason or "restarting") + (f", last exit {kill}" if kill else "")
+            if code is not None and kill:
+                tag += f" ({code})"
+            if kill == "OOMKilled":
+                lines.append(
+                    f"  - {pod.metadata.name}/{status.name} ({tag}): killed at its memory "
+                    "limit. Any log below is cut short by the kill, NOT an application "
+                    "error — check the container's memory limit against actual usage."
+                )
+                if snippet:
+                    lines.append(f"      {snippet}")
+            elif snippet:
+                lines.append(f"  - {pod.metadata.name}/{status.name} ({tag}):")
                 lines.append(f"      {snippet}")
             break
     return lines
@@ -540,6 +560,15 @@ async def _workload_config_lines(name: str, namespace: str, core) -> list[str]:
     lines = [f"CONFIG SOURCES for deployment/{name} (resolved — do not re-fetch):"]
     for container in data.get("containers", []):
         lines.append(f"  container {container.get('container_name')}:")
+        # Printed before the env block on purpose: for an OOM this is the answer, and
+        # buried under 40 env vars it reads as trivia. "no memory limit set" is itself
+        # a finding — an unbounded container is killed by the node, not by its limit.
+        limits, requests = container.get("limits") or {}, container.get("requests") or {}
+        if limits or requests:
+            lines.append(
+                f"    resources: limits {limits or 'none set'} | requests {requests or 'none set'}"
+                " (patch with patch_deployment_resources)"
+            )
         env_vars = container.get("env_vars", [])
         for entry in env_vars[:_MAX_ENV_SHOWN]:
             lines.append(f"    {_format_env(entry)}")

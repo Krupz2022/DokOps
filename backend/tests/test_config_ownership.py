@@ -224,6 +224,31 @@ async def test_config_sources_names_the_owner_of_each_value():
 
 
 @pytest.mark.asyncio
+async def test_memory_limit_reaches_context_beside_the_env_vars():
+    """The checkoutapi case: asked to fix an OOMKilled pod, the agent proposed
+    patching a .NET GC env var. It was not being dumb — the 40-entry env list was
+    in its context and the memory limit was not, because resources lived only in
+    describe_pod_scheduling. The limit is the fix; it has to be handed over too."""
+    import copy
+    config = copy.deepcopy(_WORKLOAD_CONFIG)
+    config["data"]["containers"][0]["limits"] = {"memory": "50Mi"}
+    config["data"]["containers"][0]["requests"] = {"memory": "50Mi"}
+    apps = _deployment_lister("checkout-api")
+    core = _core_with(configmaps={"checkout-files": {}})
+
+    def _api(kind, context=None):
+        return apps if kind == "AppsV1Api" else core
+
+    with patch("app.services.presweep.k8s_service._get_api", side_effect=_api), \
+         patch("app.tools.k8s_tools.get_workload_config",
+               AsyncMock(return_value=config)):
+        out = await build_config_sources("payments", "fix the OOM in checkout-api")
+
+    assert "50Mi" in out
+    assert "patch_deployment_resources" in out
+
+
+@pytest.mark.asyncio
 async def test_config_sources_empty_when_query_names_no_workload():
     """No workload named — costs one list call and adds nothing to context."""
     apps = _deployment_lister("checkout-api")

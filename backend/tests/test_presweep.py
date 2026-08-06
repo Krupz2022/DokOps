@@ -569,6 +569,32 @@ async def test_reports_crash_log_line():
     assert "could not connect to postgres" in out
 
 
+@pytest.mark.asyncio
+async def test_oom_kill_is_named_even_though_the_log_is_clean():
+    """The checkoutapi case: memory limit dropped to 50Mi, 591 restarts. An OOM
+    kill is a SIGKILL, so the log tail holds ordinary startup lines and no error
+    at all — and state.waiting says only CrashLoopBackOff. The agent read that
+    clean tail and answered 'the cause is not determinable'. The reason lives in
+    lastState.terminated and must reach the presweep text."""
+    container = _crashing_container()
+    container.last_state = SimpleNamespace(
+        terminated=SimpleNamespace(reason="OOMKilled", exit_code=137)
+    )
+    core = _fake_core(
+        endpoints=[], services=[],
+        pods=[_pod("checkoutapi-cb6b877fd-vw2m5", {"app": "checkoutapi"}, container)],
+    )
+    core.read_namespaced_pod_log = AsyncMock(
+        return_value="Minimum worker threads: 100\nMinimum completion port: 2"
+    )
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "OOMKilled" in out
+    assert "137" in out
+    assert "memory limit" in out
+
+
 _DOTNET_CRASH = """Updating ca-certificates...
 Starting Service...
 Initial configuration loaded: {

@@ -69,7 +69,7 @@ def test_check_container_state_crashloop():
     pod = _make_pod_with_cs("CrashLoopBackOff", restart_count=5)
     findings = engine._check_container_state(pod)
     assert len(findings) == 1
-    assert findings[0].check == "crashloop"
+    assert findings[0].check == "crash_loop"
     assert findings[0].severity == "critical"
     assert "5" in findings[0].message
 
@@ -79,7 +79,7 @@ def test_check_container_state_oomkilled():
     pod = _make_pod_with_cs("CrashLoopBackOff", last_reason="OOMKilled")
     findings = engine._check_container_state(pod)
     assert len(findings) == 1
-    assert findings[0].check == "oomkilled"
+    assert findings[0].check == "oom_killed"
     assert findings[0].severity == "critical"
 
 
@@ -88,7 +88,7 @@ def test_check_container_state_image_pull():
     pod = _make_pod_with_cs("ImagePullBackOff")
     findings = engine._check_container_state(pod)
     assert len(findings) == 1
-    assert findings[0].check == "image_pull"
+    assert findings[0].check == "image_pull_failure"
 
 
 def test_check_container_state_err_image_pull():
@@ -96,14 +96,14 @@ def test_check_container_state_err_image_pull():
     pod = _make_pod_with_cs("ErrImagePull")
     findings = engine._check_container_state(pod)
     assert len(findings) == 1
-    assert findings[0].check == "image_pull"
+    assert findings[0].check == "image_pull_failure"
 
 
 def test_check_container_state_init_failing():
     engine = DiagnosticEngine()
     pod = _make_pod_with_cs("Running", init_reason="CrashLoopBackOff")
     findings = engine._check_container_state(pod)
-    assert any(f.check == "init_container_failing" for f in findings)
+    assert any(f.check == "init_container_failure" for f in findings)
 
 
 def test_check_container_state_healthy_returns_empty():

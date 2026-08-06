@@ -330,7 +330,19 @@ async def get_pod_status(pod_name: str, namespace: Optional[str] = None) -> Dict
                     state["waiting"] = {"reason": cs.state.waiting.reason, "message": cs.state.waiting.message}
                 elif cs.state.terminated:
                     state["terminated"] = {"exit_code": cs.state.terminated.exit_code, "reason": cs.state.terminated.reason, "message": cs.state.terminated.message}
-                
+
+                # OOMKilled is never a waiting reason. In a crash loop state.waiting
+                # always reads CrashLoopBackOff and the actual kill reason (OOMKilled,
+                # exit 137) lives in lastState.terminated. Dropping it meant the agent
+                # could only ever report the loop, never what caused it.
+                _last = getattr(cs, "last_state", None)
+                if _last is not None and getattr(_last, "terminated", None):
+                    state["last_terminated"] = {
+                        "exit_code": _last.terminated.exit_code,
+                        "reason": _last.terminated.reason,
+                        "message": _last.terminated.message,
+                    }
+
                 container_statuses.append({
                     "name": cs.name,
                     "ready": cs.ready,
@@ -1330,6 +1342,10 @@ async def get_workload_config(deployment_name: str, namespace: str) -> Dict[str,
             for vm in (container.volume_mounts or []):
                 volume_mounts.append({"name": vm.name, "mount_path": vm.mount_path, "sub_path": vm.sub_path})
 
+            # Resources belong with the rest of a container's config. They lived only
+            # in describe_pod_scheduling, so an agent handed this workload's config saw
+            # 40 env vars and no memory limit — and "fix the OOM" became an env-var edit.
+            res = getattr(container, "resources", None)
             containers.append({
                 "container_name": container.name,
                 "image": container.image,
@@ -1337,6 +1353,8 @@ async def get_workload_config(deployment_name: str, namespace: str) -> Dict[str,
                 "env_from_configmaps": env_from_configmaps,
                 "env_from_secrets": env_from_secrets,
                 "volume_mounts": volume_mounts,
+                "limits": dict(getattr(res, "limits", None) or {}),
+                "requests": dict(getattr(res, "requests", None) or {}),
             })
 
         data = {

@@ -91,17 +91,26 @@ class DiagnosticEngine:
                     ))
                 elif reason == "CrashLoopBackOff":
                     restarts = cs.restart_count or 0
-                    findings.append(Finding(
-                        category="container_state", severity="critical", check="crash_loop",
-                        message=f"Container '{cs.name}' is in CrashLoopBackOff ({restarts} restarts)",
-                        fix_hint="Call get_pod_logs to see the crash reason",
-                    ))
-                elif reason == "OOMKilled":
-                    findings.append(Finding(
-                        category="container_state", severity="critical", check="oom_killed",
-                        message=f"Container '{cs.name}' was OOMKilled — memory limit too low",
-                        fix_hint="Increase memory limit via patch_deployment_resources",
-                    ))
+                    # An OOM kill surfaces as CrashLoopBackOff here — the kill reason
+                    # is in lastState.terminated. Checking state.waiting for
+                    # "OOMKilled" was dead code; it is never a waiting reason.
+                    _last = getattr(cs, "last_state", None)
+                    _term = getattr(_last, "terminated", None) if _last is not None else None
+                    if getattr(_term, "reason", None) == "OOMKilled":
+                        findings.append(Finding(
+                            category="container_state", severity="critical", check="oom_killed",
+                            message=(
+                                f"Container '{cs.name}' was OOMKilled — memory limit too low "
+                                f"({restarts} restarts)"
+                            ),
+                            fix_hint="Increase memory limit via patch_deployment_resources",
+                        ))
+                    else:
+                        findings.append(Finding(
+                            category="container_state", severity="critical", check="crash_loop",
+                            message=f"Container '{cs.name}' is in CrashLoopBackOff ({restarts} restarts)",
+                            fix_hint="Call get_pod_logs to see the crash reason",
+                        ))
                 elif reason in ("ContainerCreating", "PodInitializing"):
                     pass
                 elif reason:

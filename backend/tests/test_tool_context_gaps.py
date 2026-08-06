@@ -220,3 +220,25 @@ async def test_cluster_health_names_the_kill_reason_in_the_issue():
     issue = result["data"]["unhealthy_pods"][0]["issue"]
     assert "CrashLoopBackOff" in issue
     assert "OOMKilled" in issue
+
+
+async def test_search_pods_names_the_kill_reason_in_the_status():
+    """search_pods has the same waiting-reason-only defect as get_cluster_health,
+    on a separate code path (K8sService method, not a k8s_tools function)."""
+    from app.services.k8s_service import K8sService
+
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="checkoutapi-vw2m5", namespace="uat"),
+        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.5", container_statuses=[
+            _container_status("checkoutapi", waiting="CrashLoopBackOff",
+                              last_reason="OOMKilled", restart_count=591)]),
+    )
+    api = MagicMock()
+    api.list_pod_for_all_namespaces = AsyncMock(return_value=SimpleNamespace(items=[pod]))
+
+    svc = K8sService()
+    with patch.object(svc, "_ensure_context_loaded", new=AsyncMock()), \
+         patch.object(svc, "_get_api", return_value=api):
+        results = await svc.search_pods("failing pods")
+
+    assert results[0]["status"] == "CrashLoopBackOff (last exit OOMKilled)"

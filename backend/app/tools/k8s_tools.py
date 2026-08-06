@@ -698,11 +698,23 @@ async def list_pods_on_node(node_name: str, namespace: Optional[str] = None) -> 
                     if ref.kind == "ReplicaSet":
                         # Hacky way to guess deployment name from RS name
                         dep_name = "-".join(ref.name.split("-")[:-1])
-            
+
+            # phase is "Running" for a crashlooping pod — the waiting reason is
+            # what makes node triage useful.
+            real_status = p.status.phase
+            for cs in (p.status.container_statuses or []):
+                waiting = getattr(cs.state, "waiting", None) if cs.state else None
+                if getattr(waiting, "reason", None):
+                    real_status = waiting.reason
+                    last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
+                    if getattr(last_term, "reason", None):
+                        real_status = f"{real_status} (last exit {last_term.reason})"
+                    break
+
             data.append({
                 "name": p.metadata.name,
                 "namespace": p.metadata.namespace,
-                "status": p.status.phase,
+                "status": real_status,
                 "restarts": sum([cs.restart_count for cs in p.status.container_statuses]) if p.status.container_statuses else 0,
                 "deployment_name": dep_name
             })

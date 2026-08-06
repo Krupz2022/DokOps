@@ -242,3 +242,26 @@ async def test_search_pods_names_the_kill_reason_in_the_status():
         results = await svc.search_pods("failing pods")
 
     assert results[0]["status"] == "CrashLoopBackOff (last exit OOMKilled)"
+
+
+async def test_list_pods_on_node_shows_crash_state_not_running_phase():
+    """A CrashLoopBackOff pod has phase Running. Node triage listed it as
+    healthy, so 'what is broken on this node' returned nothing."""
+    from app.tools.k8s_tools import list_pods_on_node
+
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="checkoutapi-vw2m5", namespace="uat",
+                                 owner_references=[SimpleNamespace(kind="ReplicaSet", name="checkoutapi-cb6b877fd")]),
+        status=SimpleNamespace(phase="Running", container_statuses=[
+            _container_status("checkoutapi", waiting="CrashLoopBackOff",
+                              last_reason="OOMKilled", restart_count=591)]),
+    )
+    api = MagicMock()
+    api.list_pod_for_all_namespaces = AsyncMock(return_value=SimpleNamespace(items=[pod]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await list_pods_on_node("aks-node-b")
+
+    entry = result["data"][0]
+    assert "CrashLoopBackOff" in entry["status"]
+    assert entry["restarts"] == 591

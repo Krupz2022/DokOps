@@ -531,7 +531,7 @@ class K8sService:
 
             try:
                 events = await core_api.list_namespaced_event(
-                    namespace, field_selector=f"involvedObject.name={pod_name}")
+                    namespace, field_selector=f"involvedObject.kind=Pod,involvedObject.name={pod_name}")
                 recent = sorted(
                     events.items,
                     key=lambda e: str(getattr(e, "last_timestamp", None)

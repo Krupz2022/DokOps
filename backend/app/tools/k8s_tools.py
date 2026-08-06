@@ -650,7 +650,7 @@ async def get_pvc_status(pvc_name: str, namespace: str) -> Dict[str, Any]:
         events = []
         try:
             found = await core_api.list_namespaced_event(
-                namespace, field_selector=f"involvedObject.name={pvc_name}")
+                namespace, field_selector=f"involvedObject.kind=PersistentVolumeClaim,involvedObject.name={pvc_name}")
             events = [
                 {"type": e.type, "reason": e.reason, "message": e.message, "count": e.count}
                 for e in found.items

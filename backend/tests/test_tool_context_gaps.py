@@ -278,7 +278,9 @@ async def test_pvc_status_explains_why_it_is_pending():
                              volume_mode="Filesystem",
                              resources=SimpleNamespace(requests={"storage": "100Gi"})),
         status=SimpleNamespace(phase="Pending", capacity=None, access_modes=None,
-                               conditions=[]),
+                               conditions=[SimpleNamespace(type="Pending", status="True",
+                                                          reason="ProvisioningFailed",
+                                                          message="waiting for a volume to be created")]),
     )
     api = MagicMock()
     api.read_namespaced_persistent_volume_claim = AsyncMock(return_value=pvc)
@@ -292,3 +294,4 @@ async def test_pvc_status_explains_why_it_is_pending():
 
     assert result["data"]["requested_storage"] == "100Gi"
     assert "no persistent volumes available" in str(result["data"]["events"])
+    assert result["data"]["conditions"][0]["reason"] == "ProvisioningFailed"

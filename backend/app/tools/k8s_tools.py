@@ -161,11 +161,15 @@ async def get_cluster_health() -> Dict[str, Any]:
                     if cs.state and cs.state.waiting:
                         reason = cs.state.waiting.reason or ""
                         if reason in ("CrashLoopBackOff", "Error", "OOMKilled", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"):
+                            # waiting.reason for a crash loop is always CrashLoopBackOff.
+                            # The cause (OOMKilled, exit 137) is in last_state.
+                            last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
+                            kill = getattr(last_term, "reason", None)
                             unhealthy_pods.append({
                                 "name": name,
                                 "namespace": namespace,
                                 "phase": phase,
-                                "issue": reason,
+                                "issue": f"{reason} (last exit {kill})" if kill else reason,
                                 "restarts": cs.restart_count,
                             })
                             break

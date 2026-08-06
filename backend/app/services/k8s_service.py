@@ -796,6 +796,10 @@ class K8sService:
                         for cs in pod.status.container_statuses:
                             if cs.state.waiting and cs.state.waiting.reason:
                                 display_status = cs.state.waiting.reason
+                                last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
+                                kill = getattr(last_term, "reason", None)
+                                if kill:
+                                    display_status = f"{display_status} (last exit {kill})"
                                 break
 
                     results.append({

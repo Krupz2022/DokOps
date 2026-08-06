@@ -193,3 +193,30 @@ async def test_pod_metrics_still_returns_usage_when_the_pod_spec_is_unreadable()
     assert result["success"] is True
     assert result["data"]["containers"][0]["memory"] == "48Mi"
     assert result["data"]["containers"][0]["limits"] == {}
+
+
+async def test_cluster_health_names_the_kill_reason_in_the_issue():
+    """'Which pods are failing' answered 'CrashLoopBackOff' for an OOM, because
+    the list view read state.waiting only — same defect get_pod_status had."""
+    from app.tools.k8s_tools import get_cluster_health
+
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="checkoutapi-vw2m5", namespace="uat"),
+        status=SimpleNamespace(phase="Running", container_statuses=[
+            _container_status("checkoutapi", waiting="CrashLoopBackOff",
+                              last_reason="OOMKilled", restart_count=591)]),
+    )
+    node = SimpleNamespace(
+        metadata=SimpleNamespace(name="n1"),
+        status=SimpleNamespace(conditions=[SimpleNamespace(type="Ready", status="True")]))
+
+    api = MagicMock()
+    api.list_node = AsyncMock(return_value=SimpleNamespace(items=[node]))
+    api.list_pod_for_all_namespaces = AsyncMock(return_value=SimpleNamespace(items=[pod]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_cluster_health()
+
+    issue = result["data"]["unhealthy_pods"][0]["issue"]
+    assert "CrashLoopBackOff" in issue
+    assert "OOMKilled" in issue

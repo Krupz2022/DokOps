@@ -1,0 +1,143 @@
+name: config-change-lands-on-owner
+# Observed failure: asked to change a setting, the agent went straight for
+# patch_deployment_env. That tool sets `value_from = None`, so a var sourced
+# from a configMapKeyRef was DETACHED from its ConfigMap rather than changed —
+# the ConfigMap kept the stale value for every other consumer and the next helm
+# sync reverted the literal. Nothing had ever told the agent where the value
+# lived: ConfigMaps are in the topology graph but get_cluster_overview does not
+# render them, and the two candidate tools describe the same intent.
+#
+# What this scenario measures is layer 1 only: given the owner map in context,
+# does the agent write to the owner? The deterministic backstop
+# (_env_var_owner refusing the detaching patch) is covered by
+# tests/test_config_ownership.py and does not need real LLM tokens.
+query: "set the log level to debug for checkout-api in payments"
+namespace: payments
+# Verbatim shape of presweep.build_config_sources — the block the agent now
+# gets before it chooses a tool. This is production behaviour being fixtured,
+# not the fixture doing the model's thinking: it states ownership, never which
+# tool to call.
+config_sources: |
+  CONFIG SOURCES for deployment/checkout-api (resolved — do not re-fetch):
+    container checkout:
+      LOG_LEVEL <- configmap/checkout-config key 'log_level'
+      PORT = '8080' (literal in the deployment — patch it HERE)
+      envFrom: configmap/checkout-flags — ALL its keys become env vars
+    mounted as files:
+      configmap/checkout-files at /etc/app (keys: app.yaml, features.json)
+  To CHANGE a value, write to the object that OWNS it — the ConfigMap or Secret
+  named above, not the deployment. Patching the deployment detaches it from its
+  source: the ConfigMap keeps the old value for every other consumer, and the
+  next helm/GitOps sync reverts you.
+cluster:
+  # Real update_configmap (app/tools/k8s_tools.py:1881), once confirmed, returns
+  # a plain sentence plus the rollout note — not a structured dict. The note is
+  # part of the real return and matters: it tells the agent the change is not
+  # live until the restarted workloads finish rolling out.
+  update_configmap:
+    success: true
+    data: >-
+      ConfigMap 'checkout-config' updated: log_level=debug. Rolled-restarted 1
+      consuming workload(s): deployment/checkout-api. The change is NOT live
+      until these finish rolling out — do not report success until the pods are
+      Ready.
+  # Present so choosing it is a real option the model can take, not a tool that
+  # happens to be missing. Picking it is the failure being measured.
+  patch_deployment_env:
+    success: true
+    data: "Env var 'LOG_LEVEL' updated in deployment 'checkout-api/checkout' in namespace 'payments'. Rolling restart triggered."
+  # The TOPOLOGY RULE in app/prompts/dokops.md tells the agent to call
+  # search_topology before assuming anything about a resource, so it does — and
+  # an unfixtured miss returns {"success": false, "error": "eval: no fixture..."}.
+  # Leaving it out cost two of the first three runs: the model read the miss as
+  # its tools being unavailable and answered "I don't currently have a write tool
+  # available here" instead of writing.
+  #
+  # Real search_topology (app/tools/k8s_tools.py:2820 -> topology_service.
+  # search_topology) returns a plain STRING, not a dict.
+  #
+  # checkout-config is deliberately ABSENT below. topology_service builds
+  # ConfigMap edges only for volumes and envFrom (topology_service.py:143-182) —
+  # there is no edge for env[].valueFrom.configMapKeyRef, so the real graph
+  # cannot show the ConfigMap that owns LOG_LEVEL. A fixture that showed it would
+  # be more informative than production and would hand the model the answer.
+  search_topology:
+    success: true
+    data: |-
+      TOPOLOGY: checkout-api (Deployment/payments)
+        Status: 2/2
+        → owns: checkout-api-7d9f6b8c4-2xk9p (Pod)
+        → owns: checkout-api-7d9f6b8c4-m4rt2 (Pod)
+      TOPOLOGY: checkout-api-7d9f6b8c4-2xk9p (Pod/payments)
+        Status: Running
+        ← owns: checkout-api (Deployment)
+        → mounts: checkout-flags (ConfigMap)
+        → mounts: checkout-files (ConfigMap)
+  # get_workload_config is the tool that CAN find the owner without the
+  # config_sources block — it reads the pod spec and reports every valueFrom.
+  # It must be fixtured, and fixtured honestly, or a Layer-1-off run fails for
+  # the artificial reason that the discovery tool was broken rather than because
+  # the agent failed to use it. With this present, a Layer-1-off run that still
+  # fails is evidence the agent does not reliably reach for it.
+  #
+  # Real shape: app/tools/k8s_tools.py:1275 — a dict keyed deployment/namespace/
+  # volume_configmaps/volume_secrets/containers, each container carrying
+  # env_vars with a per-entry "source".
+  get_workload_config:
+    success: true
+    data:
+      deployment: checkout-api
+      namespace: payments
+      volume_configmaps:
+        - volume_name: files
+          configmap_name: checkout-files
+      volume_secrets: []
+      containers:
+        - container_name: checkout
+          image: registry.example/checkout-api:1.9.2
+          env_vars:
+            - name: LOG_LEVEL
+              source: configMapKeyRef
+              configmap_name: checkout-config
+              key: log_level
+            - name: PORT
+              source: literal
+              value: "8080"
+          env_from_configmaps:
+            - configmap_name: checkout-flags
+              prefix: null
+          env_from_secrets: []
+          volume_mounts:
+            - name: files
+              mount_path: /etc/app
+              sub_path: null
+  # Real describe_pod returns a plain STRING (see configmap_is_not_a_namespace.yaml).
+  describe_pod:
+    success: true
+    data: "Phase: Running\nNode: node-2\nCreated: 2026-08-05 08:12:00+00:00\nLabels: {'app': 'checkout-api'}"
+  # Real get_blast_radius (topology_service.py:509) also returns a plain string.
+  get_blast_radius:
+    success: true
+    data: |-
+      BLAST RADIUS: checkout-api (Deployment/payments)
+      If this resource is degraded or deleted, the following are affected:
+        → owns: checkout-api-7d9f6b8c4-2xk9p (Pod)
+        → owns: checkout-api-7d9f6b8c4-m4rt2 (Pod)
+  # Real list_deployments (app/tools/k8s_tools.py:2274) wraps its list under
+  # "deployments" with a "count" — not a bare list.
+  list_deployments:
+    success: true
+    data:
+      deployments:
+        - name: checkout-api
+          namespace: payments
+          replicas: 2
+          ready_replicas: 2
+          available_replicas: 2
+          updated_replicas: 2
+      count: 1
+expect:
+  must_call: [update_configmap]
+  must_not_call: [patch_deployment_env]
+  must_cite: ["checkout-config"]
+  must_not_end_on_question: true

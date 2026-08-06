@@ -65,8 +65,15 @@ _FACT_TOKEN = re.compile(r"\b(?:[\w.\-/]*\d[\w.\-/]*|[A-Z][a-z]+(?:[A-Z][a-z]+)+
 
 def _is_covered(bullet: str, subject: str, lowered_answer: str) -> bool:
     """True only if the answer names the resource AND reports something concrete
-    about it. "api-gateway is not creating pods" does not cover a quota rejection."""
-    if subject.lower() not in lowered_answer:
+    about it. "api-gateway is not creating pods" does not cover a quota rejection.
+
+    The name test matches on '-'-boundary prefixes rather than the exact string:
+    a sweep bullet is keyed by the full pod name ("sample-catalog-api-785d…-56xrs")
+    while a good answer refers to the workload ("sample-catalog-api"). Requiring
+    an exact match made every such answer read as uncovered, so the footer
+    re-appended the very crash log the answer had just quoted — the same log shown
+    to the user twice."""
+    if not _subject_matches_query(subject, lowered_answer):
         return False
     detail = bullet[bullet.index(subject) + len(subject):]
     facts = {t.lower() for t in _FACT_TOKEN.findall(detail)}
@@ -79,10 +86,18 @@ def _subject_matches_query(subject: str, lowered_query: str) -> bool:
     """True when the query names this swept resource. Pod names carry hash
     suffixes ("api-785d7689bc-b2xjj"), so match on progressively shorter
     '-'-boundary prefixes: "sample-catalog-api" in the query matches the
-    full pod name."""
+    full pod name.
+
+    Shortening stops at the two generated segments a pod name adds (ReplicaSet
+    hash + pod suffix), and never below two segments. Shortening all the way
+    down made siblings collide: asked for a fix for documents-api, the answer
+    came back with documents-worker's crash log appended, because both reduce
+    to "documents".
+    """
     name = subject.lower().split("/")[0].strip()
     parts = name.split("-")
-    for end in range(len(parts), 0, -1):
+    floor = max(len(parts) - 2, min(2, len(parts)))
+    for end in range(len(parts), floor - 1, -1):
         candidate = "-".join(parts[:end])
         if len(candidate) >= 4 and candidate in lowered_query:
             return True
@@ -94,7 +109,9 @@ def sweep_subjects(presweep: str) -> list[str]:
     return [m.group(1) for line in presweep.splitlines() if (m := _BULLET.match(line))]
 
 
-def append_missing_findings(presweep: str, answer: str, query: str = "") -> str:
+def append_missing_findings(
+    presweep: str, answer: str, query: str = "", recent_text: str = ""
+) -> str:
     """Append any pre-flight finding the drafted answer failed to report.
 
     Discovery being deterministic is not enough on its own: with the sweep in
@@ -112,11 +129,25 @@ def append_missing_findings(presweep: str, answer: str, query: str = "") -> str:
         return answer
 
     lowered = answer.lower()
-    lowered_query = (query or "").lower()
     lines = presweep.splitlines()
-    targeted = bool(lowered_query) and any(
-        _subject_matches_query(s, lowered_query) for s in sweep_subjects(presweep)
-    )
+    subjects = sweep_subjects(presweep)
+
+    def _targets(text: str) -> bool:
+        low = (text or "").lower()
+        return bool(low) and any(_subject_matches_query(s, low) for s in subjects)
+
+    # A follow-up ("whats the fix?", "and now?") names no resource, so scoping on
+    # the current message alone fell back to namespace-wide coverage and dumped an
+    # unrelated container's crash log into a conversation about one pod. Fall back
+    # to the immediately preceding exchange, same as namespace resolution does.
+    # ponytail: last exchange only, not the whole thread — a long conversation
+    # mentions everything, which would make every turn look targeted. Widen only
+    # if follow-ups are still coming back unscoped.
+    lowered_query = (query or "").lower()
+    targeted = _targets(lowered_query)
+    if not targeted and _targets(recent_text):
+        lowered_query = (recent_text or "").lower()
+        targeted = True
 
     missing: list[str] = []
     for i, line in enumerate(lines):
@@ -352,7 +383,15 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
                     )
                 except Exception:
                     continue
-            snippet = "\n      ".join((log or "").strip().splitlines()[-8:])
+            # ponytail: stack frames are padding — a .NET/Java trace states its cause
+            # in the header and spends 15 lines unwinding. Tailing raw lines fed the
+            # agent frames only, and "Connection refused (consul-server:8501)" became
+            # "fails during host build". Fall back to raw lines if filtering empties it.
+            body = [
+                line for line in (log or "").strip().splitlines()
+                if not line.strip().startswith(("at ", "--- End of"))
+            ]
+            snippet = "\n      ".join((body or (log or "").strip().splitlines())[-8:])
             if snippet:
                 lines.append(f"  - {pod.metadata.name}/{status.name} ({reason or 'restarting'}):")
                 lines.append(f"      {snippet}")
@@ -403,7 +442,7 @@ async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_
 
 
 async def build_presweep(
-    namespace: str, *, query: str = "", max_log_pods: int = 3, tail_lines: int = 30
+    namespace: str, *, query: str = "", max_log_pods: int = 3, tail_lines: int = 80
 ) -> str:
     """Return a context block of facts for `namespace`, or '' if nothing to report.
 
@@ -447,6 +486,156 @@ async def build_presweep(
         f"This is a HEAD START, NOT the scope of your investigation. It covers only "
         f"service endpoints, deployment readiness, ReplicaSet failures and crash logs. "
         f"Quote these facts directly — they are the answer, not a hint. {scope_line}\n{body}\n"
+    )
+
+
+# ── where a workload's config actually lives ─────────────────────────────────
+#
+# Asked to change a setting, the agent went straight for patch_deployment_env
+# because nothing ever told it the value was owned elsewhere: ConfigMaps are in
+# the topology graph but get_cluster_overview never renders them, and the two
+# candidate tools ("use when the user asks to change a config value" vs "use to
+# fix misconfigured credentials, service URLs, or feature flags") describe the
+# same intent with no ordering between them. Resolving the owner is a lookup,
+# not a judgement, so it is done here and handed over — same bargain as the
+# sweep above.
+
+# Var names whose literal value must not be echoed back. Over-redaction is the
+# safe failure (CLAUDE.md §3a): a redacted URL is an inconvenience, a printed
+# password is an incident.
+_SECRETISH = re.compile(r"pass|secret|token|credential|private|api[_-]?key|(?:^|_)key(?:$|_)", re.I)
+
+# A container with 200 env vars would crowd out the rest of the context.
+_MAX_ENV_SHOWN = 40
+
+
+def _format_env(entry: dict) -> str:
+    """One 'NAME <- owner' line. The arrow means 'owned elsewhere', '=' means
+    'lives in the deployment' — the whole distinction the agent was missing."""
+    name = entry.get("name", "?")
+    source = entry.get("source")
+    if source == "configMapKeyRef":
+        return f"{name} <- configmap/{entry.get('configmap_name')} key '{entry.get('key')}'"
+    if source == "secretKeyRef":
+        return f"{name} <- secret/{entry.get('secret_name')} key '{entry.get('key')}'"
+    if source == "fieldRef":
+        return f"{name} <- fieldRef {entry.get('field_path')} (Kubernetes sets it per pod)"
+    if source == "resourceFieldRef":
+        return f"{name} <- resourceFieldRef {entry.get('resource')} (Kubernetes sets it)"
+    if source == "literal":
+        shown = "<redacted>" if _SECRETISH.search(name) else repr(entry.get("value"))
+        return f"{name} = {shown} (literal in the deployment — patch it HERE)"
+    return f"{name} <- {source or 'unknown source'}"
+
+
+async def _workload_config_lines(name: str, namespace: str, core) -> list[str]:
+    """Render one deployment's config ownership, or [] if it cannot be read."""
+    from app.tools.k8s_tools import get_workload_config  # lazy: keeps presweep standalone
+
+    result = await get_workload_config(name, namespace)
+    if not result.get("success"):
+        return []
+    data = result["data"]
+
+    lines = [f"CONFIG SOURCES for deployment/{name} (resolved — do not re-fetch):"]
+    for container in data.get("containers", []):
+        lines.append(f"  container {container.get('container_name')}:")
+        env_vars = container.get("env_vars", [])
+        for entry in env_vars[:_MAX_ENV_SHOWN]:
+            lines.append(f"    {_format_env(entry)}")
+        if len(env_vars) > _MAX_ENV_SHOWN:
+            lines.append(f"    … and {len(env_vars) - _MAX_ENV_SHOWN} more (use get_workload_config)")
+        for ref in container.get("env_from_configmaps", []):
+            prefix = f", prefixed '{ref['prefix']}'" if ref.get("prefix") else ""
+            lines.append(f"    envFrom: configmap/{ref['configmap_name']} — ALL its keys "
+                         f"become env vars{prefix}")
+        for ref in container.get("env_from_secrets", []):
+            prefix = f", prefixed '{ref['prefix']}'" if ref.get("prefix") else ""
+            lines.append(f"    envFrom: secret/{ref['secret_name']} — ALL its keys become "
+                         f"env vars{prefix}")
+
+    # Mount paths live on the container, the ConfigMap name on the volume — join
+    # them so "the setting is in a file" is answerable without another round trip.
+    mount_paths = {
+        mount["name"]: mount["mount_path"]
+        for container in data.get("containers", [])
+        for mount in container.get("volume_mounts", [])
+    }
+    mounted: list[str] = []
+    for volume in data.get("volume_configmaps", []):
+        where = mount_paths.get(volume["volume_name"], "(not mounted)")
+        keys = ""
+        if core is not None:
+            try:
+                config_map = await core.read_namespaced_config_map(
+                    volume["configmap_name"], namespace)
+                # Key names only. ConfigMap VALUES are never pulled into context here.
+                if names := sorted((config_map.data or {}).keys()):
+                    keys = f" (keys: {', '.join(names)})"
+            except Exception as e:
+                logger.debug("config sources: cannot read cm %s: %s",
+                             volume["configmap_name"], e)
+        mounted.append(f"    configmap/{volume['configmap_name']} at {where}{keys}")
+    for volume in data.get("volume_secrets", []):
+        where = mount_paths.get(volume["volume_name"], "(not mounted)")
+        mounted.append(f"    secret/{volume['secret_name']} at {where}")
+    if mounted:
+        lines.append("  mounted as files:")
+        lines.extend(mounted)
+
+    return lines
+
+
+async def build_config_sources(
+    namespace: str, query: str, *, max_workloads: int = 3
+) -> str:
+    """Where each of a workload's config values actually lives, or '' if the
+    query names no workload in `namespace`.
+
+    Deliberately NOT gated on a config-change intent classifier, for the reason
+    already written at the presweep call site: the classifier is a coin flip. One
+    extra deployment read on any query naming a workload is cheaper than a
+    heuristic that silently misses.
+
+    ponytail: Deployments only — get_workload_config reads
+    read_namespaced_deployment. Add StatefulSet/DaemonSet there if a config
+    question about one ever comes up; do not build a workload abstraction first.
+    """
+    apps = k8s_service._get_api("AppsV1Api")
+    if apps is None or not (query or "").strip():
+        return ""
+    core = k8s_service._get_api("CoreV1Api")
+
+    try:
+        deployments = await apps.list_namespaced_deployment(namespace)
+    except Exception as e:
+        logger.debug("config sources: cannot list deployments in %s: %s", namespace, e)
+        return ""
+
+    lowered = query.lower()
+    matched = [
+        d.metadata.name for d in deployments.items
+        if _subject_matches_query(d.metadata.name, lowered)
+    ][:max_workloads]
+    if not matched:
+        return ""
+
+    blocks: list[str] = []
+    for name in matched:
+        try:
+            if lines := await _workload_config_lines(name, namespace, core):
+                blocks.append("\n".join(lines))
+        except Exception as e:
+            logger.debug("config sources: failed for %s/%s: %s", namespace, name, e)
+
+    if not blocks:
+        return ""
+    return (
+        "\n\n".join(blocks)
+        + "\nTo CHANGE a value, write to the object that OWNS it — the ConfigMap or "
+        "Secret named above, not the deployment. Patching the deployment detaches it "
+        "from its source: the ConfigMap keeps the old value for every other consumer, "
+        "and the next helm/GitOps sync reverts you.\n"
     )
 
 

@@ -909,6 +909,13 @@ Rules:
         "fix_image_pull",
     }
 
+    # Reachable whenever presweep.build_config_sources resolved an owner map. Both
+    # the write tool and the two read tools that let the agent confirm the current
+    # value first — offering the write alone invites a blind overwrite.
+    _CONFIG_OWNER_TOOLS = frozenset({
+        "update_configmap", "get_configmap", "get_workload_config",
+    })
+
     _DISCOVER_TOOL_SCHEMA = {
         "type": "function",
         "function": {
@@ -1019,7 +1026,14 @@ Rules:
         max_total: int = 64,
         min_score: int = 1,
         history: Optional[list] = None,
+        force_tools: frozenset = frozenset(),
     ) -> list:
+        """force_tools: names that must be in the result whatever the scoring says,
+        for turns where the caller has already established relevance deterministically.
+        Relevance here is word overlap with a tool's description, which cannot see that
+        "set the log level to debug" is a ConfigMap write — update_configmap scores 0
+        on that query. Without a way to override, such a tool is reachable only if the
+        model happens to call discover_tools, which it does inconsistently."""
         q = query.lower()
 
         is_obs      = any(kw in q for kw in AIService._OBS_KEYWORDS)
@@ -1097,6 +1111,11 @@ Rules:
         k8s_write   = [t for t in full_k8s_schema if t["function"]["name"] not in AIService._CORE_K8S
                        and "minion" not in t["function"]["name"]
                        and not any(t["function"]["name"].startswith(pfx) for pfx in _all_service_prefixes)
+                       # Deliberately NOT matching "update": update_* tools stay in
+                       # k8s_rest so relevance ranking can reach them on turns with no
+                       # write keyword ("set LOG_LEVEL to debug in that configmap").
+                       # Moving them here makes them k8s_write-only, i.e. gated behind
+                       # is_write — which is exactly how they became unreachable.
                        and any(w in t["function"]["name"] for w in ("scale", "deploy", "delete", "create", "patch", "apply", "restart"))]
         # k8s_rest excludes service tools (they have their own selection path above)
         k8s_rest    = [t for t in full_k8s_schema if t["function"]["name"] not in AIService._CORE_K8S
@@ -1111,15 +1130,18 @@ Rules:
             selected.extend(k8s_core)
             if is_write:
                 selected.extend(k8s_write)
-            if not is_obs:
-                # Relevance-ranked rest: include every tool that matches the query,
-                # not an arbitrary first-15 slice.
-                qwords = set(q.split())
-                scored_rest = sorted(
-                    ((AIService._score_tool(qwords, t), t) for t in k8s_rest),
-                    key=lambda pair: pair[0], reverse=True,
-                )
-                selected.extend(t for score, t in scored_rest if score >= min_score)
+            # Relevance-ranked rest: include every tool that matches the query,
+            # not an arbitrary first-15 slice. This used to be gated on `not is_obs`
+            # to keep obs-only turns cheap, but _OBS_KEYWORDS matches as a substring,
+            # so "LOG_LEVEL" set is_obs and dropped the whole tail — including the
+            # ConfigMap write tool. A tool scoring >= min_score matched the query
+            # words; that is relevant whether or not the turn also mentions logs.
+            qwords = set(q.split())
+            scored_rest = sorted(
+                ((AIService._score_tool(qwords, t), t) for t in k8s_rest),
+                key=lambda pair: pair[0], reverse=True,
+            )
+            selected.extend(t for score, t in scored_rest if score >= min_score)
         else:
             # Service query: still include core k8s for context but skip the long k8s_rest tail
             selected.extend(k8s_core)
@@ -1133,6 +1155,12 @@ Rules:
             combined = (fn["name"] + " " + fn.get("description", "")).lower()
             if any(w in combined for w in query_words if len(w) > 3):
                 selected.append(ct)
+
+        # Caller-established relevance, added regardless of score or query path
+        # (is_service/is_minion skip the scored tail entirely).
+        if force_tools:
+            selected.extend(t for t in full_k8s_schema
+                            if t["function"]["name"] in force_tools)
 
         # MCP tools always included (usually small set)
         selected.extend(mcp_schema)
@@ -1174,7 +1202,9 @@ Rules:
         # query that happens not to mention "logs"/"elastic" must still be able to
         # cross-reference application logs, so they must survive the cap like core does.
         obs_names = {t["function"]["name"] for t in obs_tools_schema}
-        protected = AIService._CORE_K8S | obs_names
+        # force_tools joins the protected set: a tool the caller proved relevant must
+        # not be evicted by the cap on the strength of a word-overlap score of 0.
+        protected = AIService._CORE_K8S | obs_names | set(force_tools)
         core = [t for t in deduped if t["function"]["name"] in protected]
         rest = [t for t in deduped if t["function"]["name"] not in protected]
         rest.sort(key=lambda t: AIService._score_tool(qwords, t), reverse=True)
@@ -1746,6 +1776,71 @@ When done, give a per-pod root cause analysis.
             _obs_prompt = _int_mgr.get_tools_description_for_prompt(registry=_obs_registry)
             _agent_log.info("[AGENT] obs tools loaded: %d", len(_obs_registry))
 
+            # Deterministic pre-flight. The agent follows a discovery checklist
+            # unreliably (three identical runs each checked a different subset), so
+            # the judgement-free lookups are done here and handed over as facts.
+            # Deliberately NOT gated on investigation_mode: the classifier is itself
+            # unreliable ("why is api-gateway not running" scored investigate once and
+            # simple the next time, and the simple run then had no facts to work from).
+            # The sweep is a handful of read-only API calls and returns "" when the
+            # namespace is healthy, so running it whenever a namespace is named costs
+            # little and removes a dependency on a coin-flip.
+            #
+            # Runs BEFORE the tool schema is built, not after: _config_sources being
+            # non-empty is the signal that this turn is about a workload's config, and
+            # tool selection needs it. Measured: for "set the log level to debug for
+            # checkout-api in payments", _score_tool gives update_configmap 0 (none of
+            # the query words appear in its description) and "set" is not a write
+            # keyword, so every config tool was dropped and the agent truthfully
+            # answered "I don't have a write tool here" — after correctly identifying
+            # the owning ConfigMap.
+            _presweep = ""
+            _config_sources = ""
+            _recent_text = ""
+            from app.services.presweep import (
+                build_config_sources, build_presweep, resolve_namespace,
+            )
+            from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
+            _ns = await resolve_namespace(query)
+            if not _ns and history:
+                # Follow-up turns ("please fix this") name no namespace; recover it
+                # from recent conversation text instead of silently skipping the sweep.
+                # Exclude prior-evidence blocks: they are verbatim tool output, and
+                # strict=True below still guards against a "namespace: X" fragment
+                # living INSIDE that output (e.g. a describe result) being read as
+                # if the user had named it — resolve only against real cluster
+                # namespaces, never the unvalidated regex.
+                _hist_text = " ".join(
+                    str(m.get("content") or "")[:2000]
+                    for m in history[-10:]
+                    if not str(m.get("content") or "").startswith(PRIOR_EVIDENCE_PREFIX)
+                )
+                _ns = await resolve_namespace(_hist_text, strict=True)
+            if _ns:
+                try:
+                    # Scope text = this question plus the immediately preceding
+                    # exchange, so a follow-up that names no resource ("whats the
+                    # fix?") still scopes to whatever the conversation is about.
+                    _recent_text = " ".join(
+                        str(m.get("content") or "")[:1000] for m in (history or [])[-2:]
+                    )
+                    _presweep = await build_presweep(
+                        _ns, query=f"{query} {_recent_text}" if _recent_text else query
+                    )
+                except Exception as e:  # never let a sweep break the turn
+                    _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
+                # Kept OUT of _presweep on purpose: that string is fed to
+                # append_missing_findings, whose _BULLET regex would read these
+                # lines as unreported findings and staple them onto every answer.
+                try:
+                    _config_sources = await build_config_sources(
+                        _ns, f"{query} {_recent_text}" if _recent_text else query
+                    )
+                except Exception as e:
+                    _agent_log.warning("[AGENT] config sources failed for %s: %s", _ns, e)
+                _agent_log.info("[AGENT] presweep ns=%s chars=%d config_sources chars=%d",
+                                _ns, len(_presweep), len(_config_sources))
+
             # NOTE: Gemini loads the full tool schema and skips _select_dynamic_tools,
             # so relevance ranking + discover_tools (OpenAI/Azure paths) do not apply here.
             if provider == "GEMINI":
@@ -1777,6 +1872,10 @@ When done, give a per-pod root cause analysis.
                 tools_schema = self._select_dynamic_tools(
                     query, _obs_tools_schema, _full_k8s_schema, _mcp_schema, _custom_schema,
                     history=history,
+                    # A non-empty owner map means this turn is about a workload's
+                    # config — established by reading the pod spec, not by guessing
+                    # from wording. Make the tools that act on it reachable.
+                    force_tools=AIService._CONFIG_OWNER_TOOLS if _config_sources else frozenset(),
                 )
                 if workflow_tools_schema:
                     tools_schema.extend(workflow_tools_schema)
@@ -1828,42 +1927,9 @@ ELASTICSEARCH QUERY RULES:
 
             _core_prompt = build_agent_system_prompt(investigation=investigation_mode, selected_tools=tools_schema)
 
-            # Deterministic pre-flight. The agent follows a discovery checklist
-            # unreliably (three identical runs each checked a different subset), so
-            # the judgement-free lookups are done here and handed over as facts.
-            # Deliberately NOT gated on investigation_mode: the classifier is itself
-            # unreliable ("why is api-gateway not running" scored investigate once and
-            # simple the next time, and the simple run then had no facts to work from).
-            # The sweep is a handful of read-only API calls and returns "" when the
-            # namespace is healthy, so running it whenever a namespace is named costs
-            # little and removes a dependency on a coin-flip.
-            _presweep = ""
-            from app.services.presweep import build_presweep, resolve_namespace
-            from app.services.context_manager import PRIOR_EVIDENCE_PREFIX
-            _ns = await resolve_namespace(query)
-            if not _ns and history:
-                # Follow-up turns ("please fix this") name no namespace; recover it
-                # from recent conversation text instead of silently skipping the sweep.
-                # Exclude prior-evidence blocks: they are verbatim tool output, and
-                # strict=True below still guards against a "namespace: X" fragment
-                # living INSIDE that output (e.g. a describe result) being read as
-                # if the user had named it — resolve only against real cluster
-                # namespaces, never the unvalidated regex.
-                _hist_text = " ".join(
-                    str(m.get("content") or "")[:2000]
-                    for m in history[-10:]
-                    if not str(m.get("content") or "").startswith(PRIOR_EVIDENCE_PREFIX)
-                )
-                _ns = await resolve_namespace(_hist_text, strict=True)
-            if _ns:
-                try:
-                    _presweep = await build_presweep(_ns, query=query)
-                except Exception as e:  # never let a sweep break the turn
-                    _agent_log.warning("[AGENT] presweep failed for %s: %s", _ns, e)
-                _agent_log.info("[AGENT] presweep ns=%s chars=%d", _ns, len(_presweep))
-
             _dynamic_context = f"""{_unavailability_block}
 {_presweep}
+{_config_sources}
 CLUSTER TOPOLOGY SNAPSHOT:
 {_topo_overview}
 
@@ -2378,7 +2444,8 @@ CLUSTER TOPOLOGY SNAPSHOT:
                         if _pre_gate_text.strip():
                             _final_text = f"{_pre_gate_text.rstrip()}\n\n{text.lstrip()}"
                         from app.services.presweep import append_missing_findings
-                        yield {"type": "result", "message": append_missing_findings(_presweep, _final_text, query)}
+                        yield {"type": "result", "message": append_missing_findings(
+                            _presweep, _final_text, query, _recent_text)}
                         return
                     if investigation_mode and text != "(No response from model)":
                         # Prefer the untrimmed evidence; fall back to message copies if empty.
@@ -2414,7 +2481,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             # rollout watcher / settle report carries the REAL end state,
                             # so appending the stale snapshot only contradicts it.
                             _answer = append_missing_findings(
-                                "" if _pending_op_seen else _presweep, _answer, query
+                                "" if _pending_op_seen else _presweep, _answer, query, _recent_text
                             )
                             yield {
                                 "type": "result",
@@ -2429,7 +2496,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             return
                     from app.services.presweep import append_missing_findings
                     yield {"type": "result", "message": append_missing_findings(
-                        "" if _pending_op_seen else _presweep, text, query
+                        "" if _pending_op_seen else _presweep, text, query, _recent_text
                     )}
                     return
 

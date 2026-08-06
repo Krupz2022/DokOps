@@ -944,7 +944,7 @@ TOOL_REGISTRY = {
     },
     "patch_deployment_env": {
         "function": k8s_tools.patch_deployment_env,
-        "description": "Update a single environment variable in a deployment container. Use to fix misconfigured credentials, service URLs, or feature flags. Triggers a rolling restart. Requires God Mode.",
+        "description": "Update an environment variable that is a LITERAL in the deployment's own pod spec. Do NOT use when the value comes from a ConfigMap or Secret (valueFrom/envFrom) — patching here detaches the deployment from its source instead of changing the value; use update_configmap for those. Triggers a rolling restart. Requires God Mode.",
         "inputs": ["deployment_name", "namespace", "container_name", "env_var", "value", "reason"],
         "operation_type": "write",
         "requires_confirmation": True,

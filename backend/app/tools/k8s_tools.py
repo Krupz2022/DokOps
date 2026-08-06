@@ -2574,6 +2574,82 @@ async def list_storage_classes():
         return {"success": False, "data": None, "error": str(e), "source": "k8s_client"}
 
 
+async def _env_var_owner(container, env_var: str, namespace: str) -> Optional[str]:
+    """A refusal message if `env_var` is OWNED by a ConfigMap/Secret/the downward
+    API rather than by the deployment itself, else None.
+
+    Patching a var that came from a configMapKeyRef sets `value_from = None`: it
+    does not change the ConfigMap, it silently detaches the deployment from it.
+    The ConfigMap keeps the stale value for every other consumer, and the next
+    helm/GitOps sync reverts the literal. Appending a literal for a var supplied
+    by envFrom is the same fault one step removed — the literal shadows the
+    ConfigMap, which still holds the old value.
+
+    Context alone does not prevent this. The agent is handed the owner map before
+    it chooses a tool (presweep.build_config_sources), but a model holding a fact
+    is not a model using it — the same reason append_missing_findings exists.
+    """
+    fix = "Use update_configmap to change the value where it actually lives."
+
+    existing = next((e for e in (container.env or []) if e.name == env_var), None)
+    value_from = getattr(existing, "value_from", None) if existing else None
+    if value_from is not None:
+        if value_from.config_map_key_ref:
+            ref = value_from.config_map_key_ref
+            return (f"'{env_var}' is not set in the deployment — it comes from "
+                    f"configmap/{ref.name} key '{ref.key}'. Patching the deployment "
+                    f"would detach it from that ConfigMap without changing the "
+                    f"value. {fix}")
+        if value_from.secret_key_ref:
+            ref = value_from.secret_key_ref
+            return (f"'{env_var}' comes from secret/{ref.name} key '{ref.key}'. "
+                    f"Patching the deployment would detach it and write the new value "
+                    f"into the pod spec in PLAINTEXT. Update the Secret instead.")
+        if value_from.field_ref or value_from.resource_field_ref:
+            source = (getattr(value_from.field_ref, "field_path", None)
+                      or getattr(value_from.resource_field_ref, "resource", None))
+            return (f"'{env_var}' is populated by the downward API ({source}) — "
+                    f"Kubernetes sets it per pod. A literal would freeze it to one value.")
+        return f"'{env_var}' is set from a valueFrom source, not a literal. {fix}"
+
+    if existing is not None:
+        return None  # a literal already in the deployment — this tool is the right one
+
+    # No entry of its own, but it may still arrive via envFrom.
+    core = k8s_service._get_api("CoreV1Api")
+    if core is None:
+        return None
+    for env_from in (container.env_from or []):
+        prefix = env_from.prefix or ""
+        if not env_var.startswith(prefix):
+            continue
+        key = env_var[len(prefix):]
+        if env_from.config_map_ref:
+            try:
+                config_map = await core.read_namespaced_config_map(
+                    env_from.config_map_ref.name, namespace)
+            except Exception:
+                continue  # unreadable ref is not proof of ownership — let the patch run
+            if key in (config_map.data or {}):
+                return (f"'{env_var}' is injected by envFrom from "
+                        f"configmap/{env_from.config_map_ref.name} (key '{key}'). Adding a "
+                        f"literal here would shadow it and leave the ConfigMap stale for "
+                        f"every other consumer. {fix}")
+        if env_from.secret_ref:
+            try:
+                secret = await core.read_namespaced_secret(
+                    env_from.secret_ref.name, namespace)
+            except Exception:
+                continue
+            # Key NAMES only. No value from this object is read, returned or logged.
+            if key in (secret.data or {}):
+                return (f"'{env_var}' is injected by envFrom from "
+                        f"secret/{env_from.secret_ref.name} (key '{key}'). A literal in the "
+                        f"deployment would shadow it and store the value in PLAINTEXT. "
+                        f"Update the Secret instead.")
+    return None
+
+
 async def patch_deployment_env(
     deployment_name: str,
     namespace: str,
@@ -2609,6 +2685,8 @@ async def patch_deployment_env(
             return {"success": False, "data": None, "error": f"Container '{container_name}' not found in deployment '{deployment_name}'", "source": "k8s_client"}
         env_list = container.env or []
         existing = next((e for e in env_list if e.name == env_var), None)
+        if owner := await _env_var_owner(container, env_var, namespace):
+            return {"success": False, "data": None, "error": owner, "source": "k8s_client"}
         if existing:
             existing.value = value
             existing.value_from = None
@@ -2629,7 +2707,15 @@ async def patch_deployment_env(
 
 
 async def apply_manifest(manifest_yaml: str, reason: str, confirmed: bool = False):
-    """Apply a raw YAML manifest to the cluster — equivalent to kubectl apply -f."""
+    """Apply a raw YAML manifest to the cluster — equivalent to kubectl apply -f.
+
+    ponytail: this bypasses _env_var_owner. A Deployment manifest that hardcodes an
+    env var currently sourced from a configMapKeyRef detaches it exactly as
+    patch_deployment_env would, and nothing here checks. Not closed because it needs
+    manifest parsing plus a live diff against the running spec, for a path the agent
+    does not take while a purpose-built tool exists. Close it by resolving the owner
+    for each env var in the parsed manifest if this ever shows up in a real trace.
+    """
     if not confirmed:
         preview = manifest_yaml[:500] + ("..." if len(manifest_yaml) > 500 else "")
         msg = (

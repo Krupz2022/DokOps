@@ -83,6 +83,12 @@ class Scenario:
     # but never hides them. See evals/scenarios/README.md for the current
     # list and why each is deferred.
     known_failing: bool = False
+    # The owner map (which ConfigMap/Secret actually holds each value) that
+    # presweep.build_config_sources hands over before the agent picks a tool.
+    # Separate from `presweep` because the two are injected separately and only
+    # `presweep` is fed to append_missing_findings. Defaulted: every existing
+    # scenario omits it and must keep constructing without it.
+    config_sources: str = ""
 
 
 @dataclass
@@ -103,6 +109,7 @@ def load_scenarios(directory: pathlib.Path) -> List[Scenario]:
                 history=raw.get("history") or [],
                 namespace=raw.get("namespace"),
                 presweep=raw.get("presweep") or "",
+                config_sources=raw.get("config_sources") or "",
                 topology=raw.get("topology") or "",
                 cluster=raw.get("cluster") or {},
                 expect=raw.get("expect") or {},
@@ -140,6 +147,13 @@ def _presweep_factory(scenario: Scenario, _trace: Trace):
         return scenario.presweep
 
     return _presweep
+
+
+def _config_sources_factory(scenario: Scenario, _trace: Trace):
+    async def _config_sources(_ns, _query: str = "", **_kw) -> str:
+        return scenario.config_sources
+
+    return _config_sources
 
 
 def _resolve_ns_factory(scenario: Scenario, _trace: Trace):
@@ -290,6 +304,8 @@ SEAMS: List[Tuple[str, Callable[[Scenario, Trace], Any]]] = [
      lambda scenario, trace: _no_prereqs),
     ("app.services.presweep.build_presweep",
      lambda scenario, trace: _presweep_factory(scenario, trace)),
+    ("app.services.presweep.build_config_sources",
+     lambda scenario, trace: _config_sources_factory(scenario, trace)),
     ("app.services.presweep.resolve_namespace",
      lambda scenario, trace: _resolve_ns_factory(scenario, trace)),
     ("app.services.topology_service.topology_service.get_cluster_overview",

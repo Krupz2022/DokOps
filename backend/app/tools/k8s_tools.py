@@ -416,12 +416,17 @@ async def get_pod_events(pod_name: str, namespace: Optional[str] = None) -> Dict
 
         data = []
         for e in events.items:
+            # events.k8s.io populates event_time and leaves last_timestamp null.
+            # Reading one field alone lost every timestamp on such clusters.
+            last = getattr(e, "last_timestamp", None) or getattr(e, "event_time", None)
+            first = getattr(e, "first_timestamp", None) or last
             data.append({
                 "type": e.type,
                 "reason": e.reason,
                 "message": e.message,
                 "count": e.count,
-                "last_timestamp": str(e.last_timestamp) if e.last_timestamp else None
+                "first_timestamp": str(first) if first else None,
+                "last_timestamp": str(last) if last else None
             })
             
         # sort by last_timestamp

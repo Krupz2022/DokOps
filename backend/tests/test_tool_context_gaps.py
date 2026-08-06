@@ -318,3 +318,21 @@ async def test_deployment_status_shows_the_controller_has_not_observed_the_spec(
 
     assert result["data"]["unavailable_replicas"] == 1
     assert result["data"]["spec_observed"] is False
+
+
+async def test_pod_events_fall_back_to_event_time():
+    """events.k8s.io leaves last_timestamp null. Reading it alone dropped every
+    timestamp and turned the sort into insertion order."""
+    from app.tools.k8s_tools import get_pod_events
+
+    api = MagicMock()
+    api.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=[
+        SimpleNamespace(type="Warning", reason="BackOff", message="Back-off restarting",
+                        count=400, last_timestamp=None, first_timestamp=None,
+                        event_time="2026-08-06T09:00:00Z"),
+    ]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_pod_events("checkoutapi-vw2m5", "uat")
+
+    assert result["data"][0]["last_timestamp"] == "2026-08-06T09:00:00Z"

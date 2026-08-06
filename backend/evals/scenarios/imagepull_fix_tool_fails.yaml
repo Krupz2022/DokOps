@@ -5,15 +5,26 @@ cluster:
   fix_image_pull:
     success: false
     error: "registry search timed out after 30s"
-  # Real describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.
-  # get_pod_details) returns "Phase: ...\nNode: ...\nCreated: ...\nLabels:
-  # ..." — a plain string with no image name and no container status field.
-  # It cannot tell the model the image or ErrImagePull directly; that comes
-  # from get_pod_events below, which is where a real image-pull failure
-  # actually surfaces.
+  # describe_pod (app/tools/k8s_tools.py -> k8s_service.get_pod_details) returns
+  # describe-equivalent TEXT: phase/node/labels, then per-container state,
+  # restarts, last-terminated reason, limits, conditions and recent events. The
+  # container state below shows ImagePullBackOff (what kubectl describe would
+  # actually show once the kubelet gives up retrying), but never the specific
+  # registry error text ("manifest unknown") — that detail legitimately comes
+  # only from get_pod_events below, which is where a real image-pull failure
+  # surfaces its message.
   describe_pod:
     success: true
-    data: "Phase: Pending\nNode: node-9\nCreated: 2026-08-03 08:50:00+00:00\nLabels: {'app': 'reports-api'}"
+    data: |
+      Phase: Pending
+      Node: node-9
+      Created: 2026-08-03 08:50:00+00:00
+      Labels: {'app': 'reports-api'}
+      Container reports-api: ready=False restarts=0
+        State: Waiting (ImagePullBackOff) Back-off pulling image "ghcr.io/acme/reports-api:v9.9.9"
+        reports-api image: ghcr.io/acme/reports-api:v9.9.9
+        reports-api limits: none set | requests: none set
+      Condition Ready=False (ContainersNotReady) containers with unready status: [reports-api]
   get_pod_events:
     success: true
     data:

@@ -465,6 +465,17 @@ class K8sService:
             return f"Error getting events: {e}"
 
     async def get_pod_details(self, namespace: str, pod_name: str, context: str = None) -> str:
+        """Describe-equivalent text for one pod.
+
+        The registry advertises this as showing "events, conditions, container
+        specs, mounts, resource limits". It returned four lines — phase, node,
+        created, labels — so an agent that picked it to investigate a crash got
+        "Phase: Running" for a pod 591 restarts deep. Text, not a dict: every
+        caller feeds the return value straight to the model.
+
+        Deliberately omits env vars and mounted ConfigMap/Secret contents —
+        CLAUDE.md 3a. Names, states and limits only.
+        """
         try:
             ctx = context or self.default_context
             await self._ensure_context_loaded(ctx)
@@ -472,7 +483,65 @@ class K8sService:
             if not core_api:
                 return "No Kubeconfig loaded."
             pod = await core_api.read_namespaced_pod(pod_name, namespace)
-            return f"Phase: {pod.status.phase}\nNode: {pod.spec.node_name}\nCreated: {pod.metadata.creation_timestamp}\nLabels: {pod.metadata.labels}"
+
+            lines = [
+                f"Phase: {pod.status.phase}",
+                f"Node: {pod.spec.node_name}",
+                f"Created: {pod.metadata.creation_timestamp}",
+                f"Labels: {pod.metadata.labels}",
+            ]
+
+            for cs in (pod.status.container_statuses or []):
+                lines.append(
+                    f"Container {cs.name}: ready={cs.ready} restarts={cs.restart_count}")
+                state = getattr(cs, "state", None)
+                if state and state.waiting:
+                    lines.append(
+                        f"  State: Waiting ({state.waiting.reason}) "
+                        f"{state.waiting.message or ''}".rstrip())
+                elif state and state.running:
+                    lines.append(f"  State: Running since {state.running.started_at}")
+                elif state and state.terminated:
+                    lines.append(
+                        f"  State: Terminated ({state.terminated.reason}, "
+                        f"exit {state.terminated.exit_code})")
+                # The kill reason for a crash loop lives here, never in state.waiting.
+                last_term = getattr(getattr(cs, "last_state", None), "terminated", None)
+                if last_term is not None:
+                    lines.append(
+                        f"  Last state: Terminated ({last_term.reason}, "
+                        f"exit {last_term.exit_code})")
+
+            for c in (pod.spec.containers or []):
+                res = getattr(c, "resources", None)
+                limits = dict(getattr(res, "limits", None) or {})
+                requests = dict(getattr(res, "requests", None) or {})
+                lines.append(f"  {c.name} image: {c.image}")
+                lines.append(
+                    f"  {c.name} limits: {limits or 'none set'} | "
+                    f"requests: {requests or 'none set'}")
+                mounts = ", ".join(
+                    f"{m.name}@{m.mount_path}" for m in (getattr(c, "volume_mounts", None) or []))
+                if mounts:
+                    lines.append(f"  {c.name} mounts: {mounts}")
+
+            for cond in (getattr(pod.status, "conditions", None) or []):
+                detail = f" ({cond.reason}) {cond.message or ''}".rstrip() if cond.reason else ""
+                lines.append(f"Condition {cond.type}={cond.status}{detail}")
+
+            try:
+                events = await core_api.list_namespaced_event(
+                    namespace, field_selector=f"involvedObject.name={pod_name}")
+                recent = sorted(
+                    events.items,
+                    key=lambda e: str(getattr(e, "last_timestamp", None)
+                                      or getattr(e, "event_time", None) or ""))[-8:]
+                for e in recent:
+                    lines.append(f"Event {e.type}/{e.reason} x{e.count or 1}: {e.message}")
+            except Exception as e:
+                logger.debug("get_pod_details: events unavailable for %s: %s", pod_name, e)
+
+            return "\n".join(lines)
         except ApiException as e:
             return f"Error getting pod details: {e}"
 

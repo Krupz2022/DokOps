@@ -2,14 +2,24 @@ name: configmap-is-not-a-namespace
 query: "the notify pod is in CreateContainerConfigError — create what it needs"
 namespace: notify
 cluster:
-  # Real describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.
-  # get_pod_details) returns "Phase: ...\nNode: ...\nCreated: ...\nLabels:
-  # ..." — a plain string. It has no status/message fields at all; the
-  # CreateContainerConfigError detail legitimately comes only from
-  # get_pod_events below.
+  # describe_pod (app/tools/k8s_tools.py -> k8s_service.get_pod_details) returns
+  # describe-equivalent TEXT: phase/node/labels, then per-container state,
+  # restarts, last-terminated reason, limits, conditions and recent events. The
+  # container state below shows CreateContainerConfigError with the missing
+  # configmap named directly, mirroring what kubectl describe actually puts in
+  # a container's waiting-state message for this condition.
   describe_pod:
     success: true
-    data: "Phase: Pending\nNode: node-4\nCreated: 2026-08-03 09:05:00+00:00\nLabels: {'app': 'notify-worker'}"
+    data: |
+      Phase: Pending
+      Node: node-4
+      Created: 2026-08-03 09:05:00+00:00
+      Labels: {'app': 'notify-worker'}
+      Container notify-worker: ready=False restarts=0
+        State: Waiting (CreateContainerConfigError) configmap "notify-config" not found
+        notify-worker image: notify-worker:1.0
+        notify-worker limits: none set | requests: none set
+      Condition Ready=False (ContainersNotReady) containers with unready status: [notify-worker]
   get_pod_events:
     success: true
     data:

@@ -104,12 +104,22 @@ cluster:
           available_replicas: 1
           updated_replicas: 1
       count: 1
-  # describe_pod (app/tools/k8s_tools.py:2261 -> k8s_service.get_pod_details)
-  # returns a plain "Phase: ...\nNode: ...\nCreated: ...\nLabels: ..." string
-  # — this is the real tool's only source for the pod's labels.
+  # describe_pod (app/tools/k8s_tools.py -> k8s_service.get_pod_details) returns
+  # describe-equivalent TEXT: phase/node/labels, then per-container state,
+  # restarts, last-terminated reason, limits, conditions and recent events.
+  # This is still the real tool's only source for the pod's labels.
   describe_pod:
     success: true
-    data: "Phase: Running\nNode: node-7\nCreated: 2026-08-01 10:15:00+00:00\nLabels: {'app': 'checkout-web'}"
+    data: |
+      Phase: Running
+      Node: node-7
+      Created: 2026-08-01 10:15:00+00:00
+      Labels: {'app': 'checkout-web'}
+      Container checkout-web: ready=True restarts=0
+        State: Running since 2026-08-01 10:15:30+00:00
+        checkout-web image: checkout-web:2.1
+        checkout-web limits: {'memory': '512Mi'} | requests: {'memory': '256Mi'}
+      Condition Ready=True
   # get_resource_yaml (app/tools/k8s_tools.py:2301) is a thin wrapper over
   # `kubectl get <kind> <name> -o yaml` and returns plain YAML text. This is
   # the one fixture where the Service's selector legitimately belongs — a

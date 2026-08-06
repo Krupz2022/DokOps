@@ -553,7 +553,16 @@ class K8sService:
         if not core_api:
             return []
         nodes = await core_api.list_node()
-        return [{"name": n.metadata.name, "status": n.status.conditions[-1].type} for n in nodes.items]
+        out = []
+        for n in nodes.items:
+            # Same defect as get_node_status had: conditions[-1].type is a label.
+            ready = next((c for c in (n.status.conditions or []) if c.type == "Ready"), None)
+            out.append({
+                "name": n.metadata.name,
+                "status": "Ready" if ready and ready.status == "True" else "NotReady",
+                "schedulable": not bool(getattr(n.spec, "unschedulable", False)),
+            })
+        return out
 
     # --- Management (Protected) ---
     async def delete_pod(self, namespace: str, pod_name: str, god_mode: bool = False, context: str = None) -> str:

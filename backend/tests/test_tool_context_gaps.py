@@ -98,3 +98,45 @@ async def test_rollout_history_reports_the_recorded_change_cause():
 
     assert result["success"] is True
     assert result["data"][0]["change_cause"] == "kubectl set image checkout=checkout:2.2"
+
+
+def _node(name="aks-node-b", *, ready="True", unschedulable=False):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name, labels={"kubernetes.io/os": "linux"}),
+        spec=SimpleNamespace(taints=[], unschedulable=unschedulable),
+        status=SimpleNamespace(
+            capacity={"cpu": "8"}, allocatable={"cpu": "7900m"},
+            node_info=SimpleNamespace(kubelet_version="v1.29.4"),
+            conditions=[
+                SimpleNamespace(type="MemoryPressure", status="False", reason=None, message=None),
+                SimpleNamespace(type="Ready", status=ready, reason="KubeletReady", message="ok"),
+            ],
+        ),
+    )
+
+
+async def test_node_status_reports_readiness_not_the_condition_name():
+    """conditions[-1].type is the condition's LABEL. A NotReady node reported
+    'Ready' because the code printed the name and never looked at the status."""
+    from app.tools.k8s_tools import get_node_status
+    api = MagicMock()
+    api.list_node = AsyncMock(return_value=SimpleNamespace(items=[_node(ready="False")]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_node_status()
+
+    assert result["data"][0]["status"] == "NotReady"
+
+
+async def test_node_status_surfaces_cordon():
+    """ChatMessage.tsx tells the agent to call get_node_status to confirm a
+    cordon took effect. spec.unschedulable was never in the payload."""
+    from app.tools.k8s_tools import get_node_status
+    api = MagicMock()
+    api.list_node = AsyncMock(return_value=SimpleNamespace(items=[_node(unschedulable=True)]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_node_status()
+
+    assert result["data"][0]["schedulable"] is False
+    assert result["data"][0]["status"] == "Ready"

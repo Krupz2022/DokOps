@@ -467,9 +467,13 @@ async def get_node_status(node_name: Optional[str] = None) -> Dict[str, Any]:
         data = []
         for n in nodes_to_process:
             conditions = [{"type": c.type, "status": c.status, "reason": c.reason, "message": c.message} for c in (n.status.conditions or [])]
+            # conditions[-1]["type"] returned the condition's NAME ("Ready"),
+            # never its value — so a NotReady node reported "Ready".
+            ready = next((c for c in conditions if c["type"] == "Ready"), None)
             data.append({
                 "name": n.metadata.name,
-                "status": conditions[-1]["type"] if conditions else "Unknown",
+                "status": "Ready" if ready and ready["status"] == "True" else "NotReady",
+                "schedulable": not bool(getattr(n.spec, "unschedulable", False)),
                 "conditions": conditions,
                 "capacity": n.status.capacity,
                 "allocatable": n.status.allocatable,

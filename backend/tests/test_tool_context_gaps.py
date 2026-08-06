@@ -265,3 +265,30 @@ async def test_list_pods_on_node_shows_crash_state_not_running_phase():
     entry = result["data"][0]
     assert "CrashLoopBackOff" in entry["status"]
     assert entry["restarts"] == 591
+
+
+async def test_pvc_status_explains_why_it_is_pending():
+    """'Why is my PVC Pending' returned 'phase: Pending'. The reason is in the
+    events, and the requested size was dropped too."""
+    from app.tools.k8s_tools import get_pvc_status
+
+    pvc = SimpleNamespace(
+        metadata=SimpleNamespace(name="data-checkout-0", namespace="uat"),
+        spec=SimpleNamespace(storage_class_name="managed-premium", volume_name=None,
+                             volume_mode="Filesystem",
+                             resources=SimpleNamespace(requests={"storage": "100Gi"})),
+        status=SimpleNamespace(phase="Pending", capacity=None, access_modes=None,
+                               conditions=[]),
+    )
+    api = MagicMock()
+    api.read_namespaced_persistent_volume_claim = AsyncMock(return_value=pvc)
+    api.list_namespaced_event = AsyncMock(return_value=SimpleNamespace(items=[
+        SimpleNamespace(type="Warning", reason="ProvisioningFailed", count=3,
+                        message="no persistent volumes available for this claim"),
+    ]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_pvc_status("data-checkout-0", "uat")
+
+    assert result["data"]["requested_storage"] == "100Gi"
+    assert "no persistent volumes available" in str(result["data"]["events"])

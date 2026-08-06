@@ -644,14 +644,34 @@ async def get_pvc_status(pvc_name: str, namespace: str) -> Dict[str, Any]:
     try:
         core_api = k8s_service._get_api("CoreV1Api")
         pvc = await core_api.read_namespaced_persistent_volume_claim(pvc_name, namespace)
-        
+
+        # A Pending PVC's reason is in its events, not its status — "phase: Pending"
+        # on its own is not an answer.
+        events = []
+        try:
+            found = await core_api.list_namespaced_event(
+                namespace, field_selector=f"involvedObject.name={pvc_name}")
+            events = [
+                {"type": e.type, "reason": e.reason, "message": e.message, "count": e.count}
+                for e in found.items
+            ]
+        except Exception as e:
+            logger.debug("get_pvc_status: events unavailable for %s: %s", pvc_name, e)
+
+        requested = getattr(getattr(pvc.spec, "resources", None), "requests", None) or {}
         data = {
             "phase": pvc.status.phase,
             "capacity": pvc.status.capacity,
+            "requested_storage": requested.get("storage"),
             "access_modes": pvc.status.access_modes,
             "storage_class": pvc.spec.storage_class_name,
             "bound_pv_name": pvc.spec.volume_name,
-            "volume_mode": pvc.spec.volume_mode
+            "volume_mode": pvc.spec.volume_mode,
+            "conditions": [
+                {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                for c in (getattr(pvc.status, "conditions", None) or [])
+            ],
+            "events": events,
         }
         return {"success": True, "data": data, "error": None, "source": "k8s_client"}
     except Exception as e:

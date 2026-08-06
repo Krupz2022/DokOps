@@ -606,6 +606,12 @@ async def get_replicasets(deployment_name: str, namespace: str) -> Dict[str, Any
                     # The annotation `kubectl --record` writes. Passed through so
                     # rollout history can answer "what changed" instead of "unknown".
                     "change_cause": (rs.metadata.annotations or {}).get("kubernetes.io/change-cause"),
+                    # ReplicaFailure carries the API server's rejection verbatim —
+                    # quota, LimitRange, forbidden securityContext.
+                    "conditions": [
+                        {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                        for c in (getattr(rs.status, "conditions", None) or [])
+                    ],
                 })
         
         return {"success": True, "data": data, "error": None, "source": "k8s_client"}

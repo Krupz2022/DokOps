@@ -336,3 +336,31 @@ async def test_pod_events_fall_back_to_event_time():
         result = await get_pod_events("checkoutapi-vw2m5", "uat")
 
     assert result["data"][0]["last_timestamp"] == "2026-08-06T09:00:00Z"
+
+
+async def test_replicasets_surface_the_replica_failure_reason():
+    """A Deployment that produced no pods is explained by ReplicaFailure, whose
+    message is the API server's verbatim rejection."""
+    from app.tools.k8s_tools import get_replicasets
+
+    dep = SimpleNamespace(spec=SimpleNamespace(
+        selector=SimpleNamespace(match_labels={"app": "checkout"})))
+    rs = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="checkout-abc", creation_timestamp="2026-08-05",
+            annotations={"deployment.kubernetes.io/revision": "7"},
+            owner_references=[SimpleNamespace(kind="Deployment", name="checkout")]),
+        spec=SimpleNamespace(replicas=1, template=SimpleNamespace(
+            spec=SimpleNamespace(containers=[SimpleNamespace(image="checkout:2.2")]))),
+        status=SimpleNamespace(ready_replicas=0, conditions=[
+            SimpleNamespace(type="ReplicaFailure", status="True", reason="FailedCreate",
+                            message="exceeded quota: mem-limit, requested: limits.memory=2Gi")]),
+    )
+    api = MagicMock()
+    api.read_namespaced_deployment = AsyncMock(return_value=dep)
+    api.list_namespaced_replica_set = AsyncMock(return_value=SimpleNamespace(items=[rs]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_replicasets("checkout", "uat")
+
+    assert "exceeded quota" in str(result["data"][0]["conditions"])

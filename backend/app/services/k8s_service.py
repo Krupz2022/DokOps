@@ -106,7 +106,11 @@ class K8sService:
                 configuration.key_file  = _write_tmp(decrypt(conn.client_key_data), ".key")
             else:
                 token = decrypt(conn.token)
-                configuration.api_key["authorization"] = f"Bearer {token}"
+                # Must be the 'BearerToken' api_key entry — kubernetes_asyncio ignores any
+                # other key and sends no Authorization header (→ anonymous → 403). See
+                # cluster_service._test_k8s_connectivity for the matching fix.
+                configuration.api_key["BearerToken"] = token
+                configuration.api_key_prefix["BearerToken"] = "Bearer"
 
             if conn.ca_cert:
                 configuration.ssl_ca_cert = _write_tmp(conn.ca_cert, ".pem")

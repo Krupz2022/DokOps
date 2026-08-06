@@ -121,6 +121,47 @@ def test_appended_crash_bullet_carries_its_log_body():
     assert "FATAL: could not connect to postgres" in out
 
 
+_SHARED_PREFIX_SWEEP = """PRE-FLIGHT SWEEP of namespace 'dokops-uat' — verified facts.
+Logs from crashing containers:
+  - documents-api-785d7689bc-b2xjj/app (CrashLoopBackOff):
+      Unhandled exception. Connection refused (consul-server:8501)
+  - documents-worker-6c9f88d4b7-k4tnv/app (CrashLoopBackOff):
+      FATAL: could not connect to postgres
+"""
+
+
+def test_scoped_followup_does_not_append_a_sibling_workload():
+    """The three-turn regression: "what's failing" → "why is documents-api
+    failing" → "give me a fix". The fix turn names no resource, so scoping falls
+    back to the previous exchange — which named documents-api only. The sibling
+    documents-worker was appended anyway, because the subject matcher shortened
+    it to "documents" and found that inside the documents-api mention."""
+    recent = (
+        "why is documents-api-785d7689bc-b2xjj failing? "
+        "The documents-api pod cannot reach consul."
+    )
+    answer = "Set ConsulLocation to the in-cluster service address and redeploy."
+    out = append_missing_findings(
+        _SHARED_PREFIX_SWEEP, answer, query="give me a fix for that", recent_text=recent
+    )
+
+    assert "documents-worker" not in out
+    assert "could not connect to postgres" not in out  # nor its log body
+
+
+def test_pod_suffixes_still_shorten_to_the_workload_name():
+    """The shortening must survive: a sweep bullet is keyed by the full pod name
+    while the user names the workload. Only the two generated segments go."""
+    out = append_missing_findings(
+        _SHARED_PREFIX_SWEEP,
+        "Everything is fine here.",
+        query="why is documents-api failing?",
+    )
+
+    assert "consul-server:8501" in out       # documents-api matched despite the hash
+    assert "documents-worker" not in out     # sibling still excluded
+
+
 def test_naming_the_resource_is_not_reporting_the_finding():
     """Scenario 02 regression: the answer said "api-gateway is not creating pods"
     and the quota rejection counted as covered purely because the name appeared.
@@ -528,6 +569,66 @@ async def test_reports_crash_log_line():
     assert "could not connect to postgres" in out
 
 
+_DOTNET_CRASH = """Updating ca-certificates...
+Starting Service...
+Initial configuration loaded: {
+  "ConsulLocation": "http://consul-server:8501",
+  "AppName": "Documents"
+}
+Unhandled exception. System.Net.Http.HttpRequestException: Connection refused (consul-server:8501)
+ ---> System.Net.Sockets.SocketException (111): Connection refused
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error)
+   at System.Net.Http.HttpConnectionPool.ConnectToTcpHostAsync(String host, Int32 port)
+   --- End of inner exception stack trace ---
+   at System.Net.Http.HttpConnectionPool.ConnectAsync(HttpRequestMessage request)
+   at System.Net.Http.HttpConnectionPool.CreateHttp11ConnectionAsync(HttpRequestMessage request)
+   at System.Net.Http.HttpConnectionPool.AddHttp11ConnectionAsync(HttpRequestMessage request)
+   at System.Net.Http.HttpConnectionPool.GetHttp11ConnectionAsync(HttpRequestMessage request)
+   at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request)
+   at Consul.GetRequest`1.Execute(CancellationToken ct)
+   at Winton.Extensions.Configuration.Consul.ConsulConfigurationProvider.GetKvPairs(Boolean w)
+   at Winton.Extensions.Configuration.Consul.ConsulConfigurationProvider.DoLoad(Cancellation c)
+   at Winton.Extensions.Configuration.Consul.ConsulConfigurationProvider.Load()
+   at Microsoft.Extensions.Configuration.ConfigurationRoot..ctor(IList`1 providers)
+   at Microsoft.Extensions.Configuration.ConfigurationBuilder.Build()"""
+
+
+@pytest.mark.asyncio
+async def test_crash_snippet_keeps_exception_header_not_stack_frames():
+    """A .NET/Java trace puts the cause FIRST and 15 lines of frames after it.
+    Tailing raw lines handed the agent nothing but frames ending at
+    ConfigurationBuilder.Build(), and it reported a generic "fails during host
+    build" instead of the Consul connection refused sitting above them."""
+    core = _fake_core(
+        endpoints=[], services=[],
+        pods=[_pod("documents-api-xyz", {"app": "documents-api"}, _crashing_container())],
+    )
+    core.read_namespaced_pod_log = AsyncMock(return_value=_DOTNET_CRASH)
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "Connection refused (consul-server:8501)" in out
+    assert "SocketException (111)" in out
+    assert "ConfigurationBuilder.Build()" not in out
+
+
+@pytest.mark.asyncio
+async def test_crash_snippet_falls_back_when_every_line_is_a_frame():
+    """Filtering must never empty the section — a trace deeper than the fetch
+    window has no non-frame lines left, and frames beat reporting nothing."""
+    core = _fake_core(
+        endpoints=[], services=[],
+        pods=[_pod("documents-api-xyz", {"app": "documents-api"}, _crashing_container())],
+    )
+    core.read_namespaced_pod_log = AsyncMock(
+        return_value="\n".join(f"   at Frame.Number{i}()" for i in range(40))
+    )
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "Frame.Number39()" in out
+
+
 @pytest.mark.asyncio
 async def test_reports_replicaset_failure_when_no_pods_exist():
     """Scenario 02: a ResourceQuota of pods=0 means no pod ever exists, so the
@@ -701,3 +802,62 @@ async def test_build_presweep_scopes_header_to_named_resource():
     assert "SPECIFIC resource" in targeted
     assert "report those findings alongside" not in targeted
     assert "report those findings alongside" in broad
+
+
+def test_answer_naming_workload_covers_its_pod_bullet():
+    """An answer that quotes the crash log must not have it re-appended.
+
+    Live regression: the bullet is keyed by the full pod name
+    (sample-catalog-api-785d7689bc-56xrs) while the answer referred to the
+    workload (sample-catalog-api), so coverage failed and the footer showed
+    the user the same log a second time.
+    """
+    sweep = (
+        "PRE-FLIGHT SWEEP of namespace 'dokops-demo' — verified facts.\n"
+        "Logs from crashing containers:\n"
+        "  - sample-catalog-api-785d7689bc-56xrs/api (restarting):\n"
+        "      Connection refused (consul-server:8501)\n"
+    )
+    answer = (
+        "The sample-catalog-api pod is failing: the log shows "
+        "Connection refused (consul-server:8501)."
+    )
+    assert append_missing_findings(sweep, answer, "why is sample-catalog-api failing?") == answer
+
+
+def test_uncovered_pod_bullet_is_still_appended():
+    """The duplicate-suppression must not silence a genuinely unreported finding."""
+    sweep = (
+        "PRE-FLIGHT SWEEP of namespace 'dokops-demo' — verified facts.\n"
+        "Logs from crashing containers:\n"
+        "  - sample-catalog-api-785d7689bc-56xrs/api (restarting):\n"
+        "      Connection refused (consul-server:8501)\n"
+    )
+    out = append_missing_findings(sweep, "Everything looks fine.", "")
+    assert "consul-server:8501" in out
+
+
+def test_followup_scopes_via_recent_exchange():
+    """A follow-up naming no resource must inherit scope from the last exchange.
+
+    Live regression: 'whats the fix ?' names nothing, fell back to namespace-wide
+    coverage, and appended an unrelated container's crash log to a conversation
+    that was entirely about sample-catalog-api.
+    """
+    recent = (
+        "why is sample-catalog-api failing in dokops-demo? "
+        "The sample-catalog-api pod cannot reach consul."
+    )
+    out = append_missing_findings(
+        _MULTI_SWEEP, "Here is the fix.", "whats the fix ?", recent
+    )
+    assert "sample-catalog-api" in out
+    assert "order-worker" not in out
+    assert "postgres" not in out
+
+
+def test_followup_without_recent_context_keeps_full_coverage():
+    """No query target and no recent target -> namespace-wide coverage stands."""
+    out = append_missing_findings(_MULTI_SWEEP, "Here is the fix.", "whats the fix ?", "")
+    assert "sample-catalog-api" in out
+    assert "order-worker" in out

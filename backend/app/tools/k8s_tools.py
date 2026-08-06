@@ -581,7 +581,10 @@ async def get_replicasets(deployment_name: str, namespace: str) -> Dict[str, Any
                     "ready": rs.status.ready_replicas or 0,
                     "image": rs.spec.template.spec.containers[0].image if rs.spec.template.spec.containers else "unknown",
                     "creation_timestamp": str(rs.metadata.creation_timestamp),
-                    "revision": rev
+                    "revision": rev,
+                    # The annotation `kubectl --record` writes. Passed through so
+                    # rollout history can answer "what changed" instead of "unknown".
+                    "change_cause": (rs.metadata.annotations or {}).get("kubernetes.io/change-cause"),
                 })
         
         return {"success": True, "data": data, "error": None, "source": "k8s_client"}
@@ -658,7 +661,8 @@ async def get_deployment_rollout_history(deployment_name: str, namespace: str) -
             history.append({
                 "revision": rs["revision"],
                 "image": rs["image"],
-                "change_cause": "unknown (can check annotations)", # In k8s client, usually kubernetes.io/change-cause annotation
+                "change_cause": rs.get("change_cause")
+                    or "not recorded (no kubernetes.io/change-cause annotation on this revision)",
                 "creation_timestamp": rs["creation_timestamp"]
             })
 

@@ -69,3 +69,32 @@ async def test_describe_pod_shows_restarts_state_and_limits():
     assert "ContainersNotReady" in out  # conditions
     assert "Back-off restarting" in out # events
     assert "Phase: Running" in out      # the old four fields still present
+
+
+async def test_rollout_history_reports_the_recorded_change_cause():
+    """'What changed in the last rollout' is the regression question, and the
+    tool answered it with a hardcoded 'unknown' while the annotation sat on the
+    ReplicaSet that get_replicasets already reads."""
+    from app.tools.k8s_tools import get_deployment_rollout_history
+
+    dep = SimpleNamespace(spec=SimpleNamespace(
+        selector=SimpleNamespace(match_labels={"app": "checkout"})))
+    rs = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="checkout-abc", creation_timestamp="2026-08-05",
+            annotations={"deployment.kubernetes.io/revision": "7",
+                         "kubernetes.io/change-cause": "kubectl set image checkout=checkout:2.2"},
+            owner_references=[SimpleNamespace(kind="Deployment", name="checkout")]),
+        spec=SimpleNamespace(replicas=1, template=SimpleNamespace(
+            spec=SimpleNamespace(containers=[SimpleNamespace(image="checkout:2.2")]))),
+        status=SimpleNamespace(ready_replicas=1, conditions=[]),
+    )
+    api = MagicMock()
+    api.read_namespaced_deployment = AsyncMock(return_value=dep)
+    api.list_namespaced_replica_set = AsyncMock(return_value=SimpleNamespace(items=[rs]))
+
+    with patch("app.tools.k8s_tools.k8s_service._get_api", return_value=api):
+        result = await get_deployment_rollout_history("checkout", "uat")
+
+    assert result["success"] is True
+    assert result["data"][0]["change_cause"] == "kubectl set image checkout=checkout:2.2"

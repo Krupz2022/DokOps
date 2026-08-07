@@ -20,6 +20,7 @@ import asyncio
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from app.services.k8s_service import k8s_service
@@ -231,7 +232,46 @@ async def resolve_namespace(query: str, *, strict: bool = False) -> Optional[str
     return None
 
 
-async def _zero_endpoint_services(core, namespace: str) -> list[str]:
+# ── the swept facts, as records ──────────────────────────────────────────────
+#
+# Collectors used to build formatted bullet strings and drop the structured data
+# at the f-string; sweep_subjects() then regexed the prose back into resource
+# names. Now they return records and _render() is the single place the prose
+# lives. One consumer per field is the test that this schema is right:
+# sweep_subjects -> name, reason -> symptom lookup, detail -> service domains,
+# formatter -> all.
+
+_SECTION_ENDPOINTS = "endpoints"
+_SECTION_DEPLOYMENTS = "deployments"
+_SECTION_REPLICASETS = "replicasets"
+_SECTION_BLOCKED = "blocked"
+_SECTION_CRASHLOGS = "crashlogs"
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One structured presweep fact.
+
+    `container` is separate from `name` because _crash_logs renders
+    "pod/container" while subject extraction wants the pod alone.
+
+    `qualifier` is render-only: header text that belongs to no other field and
+    that _render cannot derive from the rest. Two collectors need it — the owning
+    ReplicaSet's name for a replicaset finding, and the full crash tag
+    ("CrashLoopBackOff, last exit OOMKilled (137)") for a crash-log finding,
+    whose `reason` is narrowed to the one symptom word the symptom lookup keys
+    on. It is last and defaulted so the six fields above stay the schema.
+    """
+    section: str
+    kind: str
+    name: str
+    container: str | None
+    reason: str | None
+    detail: str
+    qualifier: str | None = None
+
+
+async def _zero_endpoint_services(core, namespace: str) -> list[Finding]:
     """Services with no ready backend addresses, with their selector and the pod
     labels actually present — enough for the model to name a selector mismatch."""
     endpoints = await core.list_namespaced_endpoints(namespace)
@@ -250,36 +290,43 @@ async def _zero_endpoint_services(core, namespace: str) -> list[str]:
         for pod in pods.items
     } - {""})
 
-    lines = []
+    out: list[Finding] = []
     for name in broken:
         svc = by_name.get(name)
         selector = (svc.spec.selector if svc and svc.spec else None) or {}
         if svc is not None and svc.spec.type == "ExternalName":
             continue  # no selector by design — not a fault
         if not selector:
-            lines.append(f"  - {name}: 0 endpoints, no selector (headless or manually managed)")
+            out.append(Finding(_SECTION_ENDPOINTS, "service", name, None, "ZeroEndpoints",
+                               "0 endpoints, no selector (headless or manually managed)"))
             continue
         rendered = ",".join(f"{k}={v}" for k, v in sorted(selector.items()))
-        lines.append(f"  - {name}: 0 endpoints. selector={{{rendered}}}")
-    if lines and pod_labels:
-        lines.append(f"  pod labels present in this namespace: {'; '.join(pod_labels)}")
-    return lines
+        out.append(Finding(_SECTION_ENDPOINTS, "service", name, None, "ZeroEndpoints",
+                           f"0 endpoints. selector={{{rendered}}}"))
+    # The labels belong to the section, not to any one Service: they are what the
+    # broken selectors have to be compared against.
+    if out and pod_labels:
+        out.append(Finding(_SECTION_ENDPOINTS, "labels", "", None, None,
+                           "; ".join(pod_labels)))
+    return out
 
 
-async def _unready_deployments(apps, namespace: str) -> list[str]:
+async def _unready_deployments(apps, namespace: str) -> list[Finding]:
     deployments = await apps.list_namespaced_deployment(namespace)
-    lines = []
+    out: list[Finding] = []
     for dep in deployments.items:
         desired = dep.spec.replicas or 0
         ready = dep.status.ready_replicas or 0
         if desired and ready < desired:
-            lines.append(f"  - {dep.metadata.name}: {ready}/{desired} ready")
+            out.append(Finding(_SECTION_DEPLOYMENTS, "deployment", dep.metadata.name,
+                               None, "NotReady", f"{ready}/{desired} ready"))
         elif desired == 0:
-            lines.append(f"  - {dep.metadata.name}: scaled to 0 (may be intentional)")
-    return lines
+            out.append(Finding(_SECTION_DEPLOYMENTS, "deployment", dep.metadata.name,
+                               None, "ScaledToZero", "scaled to 0 (may be intentional)"))
+    return out
 
 
-async def _replicaset_failures(core, apps, namespace: str) -> list[str]:
+async def _replicaset_failures(core, apps, namespace: str) -> list[Finding]:
     """Why a Deployment produced no pods at all.
 
     When the ReplicaSet cannot create pods — quota rejection, an invalid template —
@@ -305,15 +352,20 @@ async def _replicaset_failures(core, apps, namespace: str) -> list[str]:
         return []
 
     events = await core.list_namespaced_event(namespace)
-    lines, seen = [], set()
+    out: list[Finding] = []
+    seen: set[str] = set()
     for event in events.items:
         name = getattr(event.involved_object, "name", None)
         deployment = owned.get(name)
         if not deployment or deployment in seen or event.type != "Warning":
             continue
         seen.add(deployment)
-        lines.append(f"  - {deployment} (ReplicaSet {name}) {event.reason}: {event.message}")
-    return lines
+        # The finding is about the Deployment — that is the name the user asked
+        # about and the one subject extraction wants. The ReplicaSet is where the
+        # evidence happens to live, so it rides along as the header's qualifier.
+        out.append(Finding(_SECTION_REPLICASETS, "deployment", deployment, None,
+                           event.reason, event.message, qualifier=name))
+    return out
 
 
 _BLOCKED_REASONS = (
@@ -322,7 +374,7 @@ _BLOCKED_REASONS = (
 )
 
 
-async def _blocked_containers(core, namespace: str) -> list[str]:
+async def _blocked_containers(core, namespace: str) -> list[Finding]:
     """Containers that never started because of a config reference.
 
     These have no logs — the container was never created — so the crash-log sweep
@@ -349,20 +401,23 @@ async def _blocked_containers(core, namespace: str) -> list[str]:
         if name in blocked and event.type == "Warning" and event.message:
             messages[name] = event.message  # keep the most recent
 
-    lines = []
-    for pod_name, (container, reason) in blocked.items():
-        detail = messages.get(pod_name, "")
-        lines.append(f"  - {pod_name}/{container} {reason}: {detail}".rstrip(": "))
-    return lines
+    return [
+        Finding(_SECTION_BLOCKED, "container", pod_name, container, reason,
+                messages.get(pod_name, ""))
+        for pod_name, (container, reason) in blocked.items()
+    ]
 
 
-async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> list[str]:
+async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> list[Finding]:
     """Tail logs for containers that are crashing — the error line the agent
     otherwise reports as 'investigate the logs to determine the cause'."""
     pods = await core.list_namespaced_pod(namespace)
-    lines: list[str] = []
+    out: list[Finding] = []
     for pod in pods.items:
-        if len(lines) >= max_pods * 2:
+        # The budget is in rendered PROSE lines, not findings: a crash log is a
+        # bullet plus its excerpt, and an OOM with an empty tail is a bullet
+        # alone. Measured through the formatter so the two cannot drift.
+        if len(_render(out)) >= max_pods * 2:
             break
         for status in (pod.status.container_statuses or []):
             waiting = status.state.waiting if status.state else None
@@ -391,7 +446,7 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
                 line for line in (log or "").strip().splitlines()
                 if not line.strip().startswith(("at ", "--- End of"))
             ]
-            snippet = "\n      ".join((body or (log or "").strip().splitlines())[-8:])
+            excerpt = "\n".join((body or (log or "").strip().splitlines())[-8:])
             # ponytail: the kill reason costs one getattr and is the whole diagnosis.
             # An OOM kill writes NOTHING to the log — the kernel SIGKILLs the process
             # mid-run, so the tail just stops on an ordinary startup line. Without the
@@ -404,60 +459,126 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
             tag = (reason or "restarting") + (f", last exit {kill}" if kill else "")
             if code is not None and kill:
                 tag += f" ({code})"
+            # `reason` is narrowed to the one symptom word downstream keys on; the
+            # full tag rides along as the header qualifier.
             if kill == "OOMKilled":
+                out.append(Finding(_SECTION_CRASHLOGS, "container", pod.metadata.name,
+                                   status.name, "OOMKilled", excerpt, qualifier=tag))
+            elif excerpt:
+                out.append(Finding(_SECTION_CRASHLOGS, "container", pod.metadata.name,
+                                   status.name, reason, excerpt, qualifier=tag))
+            break
+    return out
+
+
+def _render(findings: list[Finding]) -> list[str]:
+    """Records -> the exact bullet prose that shipped before the refactor.
+
+    Every string here is byte-identical to its pre-refactor f-string, and the
+    goldens in tests/fixtures/presweep_golden assert that. Changing one is a
+    coverage change, not a refactor.
+
+    This is the only place presweep's prose contract lives, so read it to learn
+    what the sweep looks like. Section HEADERS are not here — they belong to
+    _collect_sections, which knows which sections came back non-empty.
+
+    A finding whose section has no branch below is dropped rather than raising:
+    presweep is best-effort and build_presweep must never break a chat turn. The
+    section constants are a closed set, and _collect_sections only ever renders
+    sections it has a header for, so an unrenderable section cannot reach here
+    without someone adding a constant and forgetting both places at once.
+    """
+    lines: list[str] = []
+    for f in findings:
+        if f.section == _SECTION_ENDPOINTS:
+            if f.kind == "labels":
+                # Section-level, so no "- ": it is context for the bullets above.
+                lines.append(f"  pod labels present in this namespace: {f.detail}")
+            else:
+                lines.append(f"  - {f.name}: {f.detail}")
+        elif f.section == _SECTION_DEPLOYMENTS:
+            lines.append(f"  - {f.name}: {f.detail}")
+        elif f.section == _SECTION_REPLICASETS:
+            lines.append(f"  - {f.name} (ReplicaSet {f.qualifier}) {f.reason}: {f.detail}")
+        elif f.section == _SECTION_BLOCKED:
+            # NOTE rstrip takes a character SET, not a suffix: this drops the
+            # dangling ": " when no event message was found, but also eats any
+            # trailing ':' or space the message itself ended with. Pre-refactor
+            # behaviour, preserved deliberately — byte-identity governs.
+            lines.append(f"  - {f.name}/{f.container} {f.reason}: {f.detail}".rstrip(": "))
+        elif f.section == _SECTION_CRASHLOGS:
+            if f.reason == "OOMKilled":
                 lines.append(
-                    f"  - {pod.metadata.name}/{status.name} ({tag}): killed at its memory "
+                    f"  - {f.name}/{f.container} ({f.qualifier}): killed at its memory "
                     "limit. Any log below is cut short by the kill, NOT an application "
                     "error — check the container's memory limit against actual usage."
                 )
-                if snippet:
-                    lines.append(f"      {snippet}")
-            elif snippet:
-                lines.append(f"  - {pod.metadata.name}/{status.name} ({tag}):")
-                lines.append(f"      {snippet}")
-            break
+                if f.detail:
+                    lines.append(_indent_log(f.detail))
+            else:
+                lines.append(f"  - {f.name}/{f.container} ({f.qualifier}):")
+                lines.append(_indent_log(f.detail))
     return lines
 
 
+def _indent_log(detail: str) -> str:
+    """A log excerpt as one continuation block under its bullet.
+
+    Every line is indented, not just the first: append_missing_findings() reads
+    a bullet's body back by indentation, and an unindented line would terminate
+    it early."""
+    return "      " + detail.replace("\n", "\n      ")
+
+
+async def _collect_findings(
+    core, apps, namespace: str, max_log_pods: int, tail_lines: int
+) -> list[Finding]:
+    """Every swept fact about `namespace`, in section order.
+
+    Each check is independent — one failing must not suppress the others, so each
+    gets its own handler and the sweep degrades to the sections that did work."""
+    # Called, not pre-awaited: a cancelled chat turn must not leave four
+    # never-awaited coroutines behind warning into the logs.
+    checks = (
+        ("endpoint", lambda: _zero_endpoint_services(core, namespace)),
+        ("deployment", lambda: _unready_deployments(apps, namespace)),
+        ("replicaset", lambda: _replicaset_failures(core, apps, namespace)),
+        ("blocked-container", lambda: _blocked_containers(core, namespace)),
+        ("crash-log", lambda: _crash_logs(core, namespace, max_log_pods, tail_lines)),
+    )
+    findings: list[Finding] = []
+    for label, check in checks:
+        try:
+            findings.extend(await check())
+        except Exception as e:
+            logger.debug("presweep: %s check failed for %s: %s", label, namespace, e)
+    return findings
+
+
+# Rendered in this order, and only for sections that came back with findings.
+_SECTION_HEADERS = (
+    (_SECTION_ENDPOINTS,
+     "Services with NO ready endpoints (broken even if their pods are Running):"),
+    (_SECTION_DEPLOYMENTS,
+     "Deployments not at full readiness:"),
+    (_SECTION_REPLICASETS,
+     "Deployments that produced NO pods (failure is on the ReplicaSet):"),
+    (_SECTION_BLOCKED,
+     "Containers blocked before start (no logs exist — the event is the evidence):"),
+    (_SECTION_CRASHLOGS,
+     "Logs from crashing containers:"),
+)
+
+
 async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_lines: int) -> list[str]:
-    """Gather every problem section for `namespace`. Each check is independent —
-    one failing must not suppress the others."""
+    """Every problem section for `namespace` as prose: a header per non-empty
+    section, followed by that section's rendered bullets."""
+    findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
     sections: list[str] = []
-    try:
-        if services := await _zero_endpoint_services(core, namespace):
-            sections.append("Services with NO ready endpoints (broken even if their pods are Running):")
-            sections.extend(services)
-    except Exception as e:
-        logger.debug("presweep: endpoint check failed for %s: %s", namespace, e)
-
-    try:
-        if deployments := await _unready_deployments(apps, namespace):
-            sections.append("Deployments not at full readiness:")
-            sections.extend(deployments)
-    except Exception as e:
-        logger.debug("presweep: deployment check failed for %s: %s", namespace, e)
-
-    try:
-        if stalled := await _replicaset_failures(core, apps, namespace):
-            sections.append("Deployments that produced NO pods (failure is on the ReplicaSet):")
-            sections.extend(stalled)
-    except Exception as e:
-        logger.debug("presweep: replicaset check failed for %s: %s", namespace, e)
-
-    try:
-        if blocked := await _blocked_containers(core, namespace):
-            sections.append("Containers blocked before start (no logs exist — the event is the evidence):")
-            sections.extend(blocked)
-    except Exception as e:
-        logger.debug("presweep: blocked-container check failed for %s: %s", namespace, e)
-
-    try:
-        if logs := await _crash_logs(core, namespace, max_log_pods, tail_lines):
-            sections.append("Logs from crashing containers:")
-            sections.extend(logs)
-    except Exception as e:
-        logger.debug("presweep: crash-log check failed for %s: %s", namespace, e)
-
+    for section, header in _SECTION_HEADERS:
+        if lines := _render([f for f in findings if f.section == section]):
+            sections.append(header)
+            sections.extend(lines)
     return sections
 
 

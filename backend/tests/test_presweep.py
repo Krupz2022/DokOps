@@ -887,3 +887,113 @@ def test_followup_without_recent_context_keeps_full_coverage():
     out = append_missing_findings(_MULTI_SWEEP, "Here is the fix.", "whats the fix ?", "")
     assert "sample-catalog-api" in out
     assert "order-worker" in out
+
+
+# ── branches no fixture reached before (presweep.py:260, :278, and the
+#    _collect_sections except handlers). A golden file cannot protect output
+#    it has never seen, so these must exist before goldens are generated.
+#
+# NOTE: a `_svc` helper already exists above (line ~485:
+# `_svc(name, selector, type_="ClusterIP")`) and is used by pre-existing tests,
+# including one that passes `type_=...` by keyword. Redefining it here with the
+# brief's `_svc(name, selector=None, svc_type="ClusterIP")` signature would
+# silently shadow that one for the whole module (last def wins) and break
+# test_externalname_service_is_not_reported_as_broken's `type_="ExternalName"`
+# call. The existing signature already satisfies every call the tests below
+# make (`_svc(name, selector=...)`), so it is reused unchanged, not redefined.
+
+
+def _empty_endpoints(name):
+    return SimpleNamespace(metadata=SimpleNamespace(name=name), subsets=[])
+
+
+def _dep(name, replicas, ready):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name),
+        spec=SimpleNamespace(replicas=replicas),
+        status=SimpleNamespace(ready_replicas=ready),
+    )
+
+
+async def test_service_with_no_selector_is_reported_as_such():
+    """presweep.py:260 — a rendered line no test has produced. A headless or
+    manually-managed Service has 0 endpoints legitimately and must not be
+    described as a selector mismatch."""
+    core = _fake_core(endpoints=[_empty_endpoints("web")],
+                      services=[_svc("web", selector=None)], pods=[])
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "no selector (headless or manually managed)" in out
+
+
+async def test_deployment_scaled_to_zero_is_flagged_as_possibly_intentional():
+    """presweep.py:278 — the other never-produced rendered line."""
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    with _patch_apis(core, _fake_apps([_dep("batch-worker", replicas=0, ready=0)])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "scaled to 0 (may be intentional)" in out
+
+
+async def test_deployment_collector_failure_degrades_without_killing_the_sweep():
+    """_collect_sections handler for _unready_deployments. The refactor moves
+    code INSIDE this try block, and a regression here only shows on the day a
+    collector actually raises — the worst day to discover it."""
+    core = _fake_core(endpoints=[_empty_endpoints("web")],
+                      services=[_svc("web", selector={"app": "web"})], pods=[])
+    apps = _fake_apps([])
+    apps.list_namespaced_deployment = AsyncMock(side_effect=RuntimeError("apps API down"))
+    with _patch_apis(core, apps):
+        out = await build_presweep("dokops-chaos")
+
+    assert out != ""                      # other sections survive
+    assert "0 endpoints" in out
+    assert "apps API down" not in out     # the exception is logged, not rendered
+
+
+async def test_replicaset_collector_failure_degrades_without_killing_the_sweep():
+    """_collect_sections handler for _replicaset_failures. _replicaset_failures
+    calls list_namespaced_deployment first and only reaches
+    list_namespaced_replica_set when a deployment is stalled — so the fixture
+    must provide a stalled deployment or the raise is never reached."""
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    apps = _fake_apps([_dep("api", replicas=1, ready=0)])   # stalled -> proceeds to RS
+    apps.list_namespaced_replica_set = AsyncMock(side_effect=RuntimeError("rs list failed"))
+    with _patch_apis(core, apps):
+        out = await build_presweep("dokops-chaos")
+
+    assert "api: 0/1 ready" in out        # the deployments section still rendered
+    assert "rs list failed" not in out
+
+
+async def test_pod_listing_failure_degrades_both_pod_collectors():
+    """_collect_sections handlers for _blocked_containers AND _crash_logs.
+
+    Both call core.list_namespaced_pod, so one injected failure exercises both
+    handlers. Injecting into read_namespaced_pod_log instead would NOT reach
+    either: _crash_logs has its own `except Exception: continue` around the log
+    read that swallows it first."""
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    core.list_namespaced_pod = AsyncMock(side_effect=RuntimeError("pod list failed"))
+    with _patch_apis(core, _fake_apps([_dep("api", replicas=1, ready=0)])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "api: 0/1 ready" in out
+    assert "pod list failed" not in out
+
+
+async def test_container_with_no_previous_log_falls_back_to_current():
+    """_crash_logs 379-385 — a container that never started has no previous log;
+    the fallback re-reads without previous=True."""
+    container = _crashing_container()
+    core = _fake_core(endpoints=[], services=[],
+                      pods=[_pod("api-xyz", {"app": "api"}, container)])
+    core.read_namespaced_pod_log = AsyncMock(
+        side_effect=[RuntimeError("previous terminated container not found"),
+                     "starting up\nFATAL: config missing"]
+    )
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos")
+
+    assert "FATAL: config missing" in out

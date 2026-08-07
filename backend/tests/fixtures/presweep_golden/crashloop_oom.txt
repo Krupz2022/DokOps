@@ -1,0 +1,5 @@
+PRE-FLIGHT SWEEP of namespace 'dokops-chaos' — verified facts, already gathered for you. Do not re-fetch these with tools.
+This is a HEAD START, NOT the scope of your investigation. It covers only service endpoints, deployment readiness, ReplicaSet failures and crash logs. Quote these facts directly — they are the answer, not a hint. You must STILL investigate every failing pod yourself and report those findings alongside these — an answer that covers only what appears below is incomplete.
+Logs from crashing containers:
+  - checkoutapi-vw2m5/checkoutapi (CrashLoopBackOff, last exit OOMKilled (137)): killed at its memory limit. Any log below is cut short by the kill, NOT an application error — check the container's memory limit against actual usage.
+      Minimum worker threads: 100

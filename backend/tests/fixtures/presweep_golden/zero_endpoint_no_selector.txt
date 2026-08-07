@@ -1,0 +1,4 @@
+PRE-FLIGHT SWEEP of namespace 'dokops-chaos' — verified facts, already gathered for you. Do not re-fetch these with tools.
+This is a HEAD START, NOT the scope of your investigation. It covers only service endpoints, deployment readiness, ReplicaSet failures and crash logs. Quote these facts directly — they are the answer, not a hint. You must STILL investigate every failing pod yourself and report those findings alongside these — an answer that covers only what appears below is incomplete.
+Services with NO ready endpoints (broken even if their pods are Running):
+  - headless: 0 endpoints, no selector (headless or manually managed)

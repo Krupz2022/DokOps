@@ -1,0 +1,8 @@
+CONFIG SOURCES for deployment/checkout-api (resolved — do not re-fetch):
+  container checkout:
+    resources: limits {'memory': '50Mi'} | requests {'memory': '50Mi'} (patch with patch_deployment_resources)
+    LOG_LEVEL <- configmap/checkout-config key 'log_level'
+    PORT = '8080' (literal in the deployment — patch it HERE)
+    DB_PASSWORD = <redacted> (literal in the deployment — patch it HERE)
+    envFrom: configmap/checkout-flags — ALL its keys become env vars
+To CHANGE a value, write to the object that OWNS it — the ConfigMap or Secret named above, not the deployment. Patching the deployment detaches it from its source: the ConfigMap keeps the old value for every other consumer, and the next helm/GitOps sync reverts you.

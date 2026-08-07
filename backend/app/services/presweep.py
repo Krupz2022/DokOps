@@ -261,13 +261,19 @@ class Finding:
     ("CrashLoopBackOff, last exit OOMKilled (137)") for a crash-log finding,
     whose `reason` is narrowed to the one symptom word the symptom lookup keys
     on. It is last and defaulted so the six fields above stay the schema.
+
+    `reason` and `detail` are Optional because the Kubernetes API says they are:
+    a replicaset finding takes both straight off a Warning Event, whose `reason`
+    and `message` are both optional fields, and a crash-log finding has no
+    waiting reason when the container is merely restarting. Consumers must treat
+    them as `str | None` — `f.detail or ""`, not `keyword in f.detail`.
     """
     section: str
     kind: str
     name: str
     container: str | None
     reason: str | None
-    detail: str
+    detail: str | None
     qualifier: str | None = None
 
 
@@ -576,7 +582,19 @@ async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_
     findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
     sections: list[str] = []
     for section, header in _SECTION_HEADERS:
-        if lines := _render([f for f in findings if f.section == section]):
+        # Rendering used to happen inside the collectors, so a formatting fault was
+        # caught by that collector's handler and cost exactly one section. Keep that
+        # property: build_presweep documents "never raises" and has no handler of
+        # its own, and resting that on _render happening to be raise-proof is an
+        # unenforced invariant in front of a live chat turn. Collection is already
+        # guarded in _collect_findings, so this can only ever see a formatter fault
+        # — it cannot mask a collector bug.
+        try:
+            lines = _render([f for f in findings if f.section == section])
+        except Exception as e:
+            logger.debug("presweep: rendering %s failed for %s: %s", section, namespace, e)
+            continue
+        if lines:
             sections.append(header)
             sections.extend(lines)
     return sections

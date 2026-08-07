@@ -816,12 +816,19 @@ def test_appended_log_bodies_are_fenced():
 
 
 async def test_build_presweep_scopes_header_to_named_resource():
-    """A targeted query must not get the 'report every failing pod' instruction."""
-    with patch("app.services.presweep._collect_sections", new=AsyncMock(return_value=[
-        "Deployments not at full readiness:",
-        "  - sample-catalog-api: 0/1 ready",
-        "  - order-worker: 0/2 ready",
-    ])), patch("app.services.presweep.k8s_service._get_api", return_value=object()):
+    """A targeted query must not get the 'report every failing pod' instruction.
+
+    Drives build_presweep through real fixtures (not a mocked _collect_sections):
+    the refactor moved subject/targeting derivation onto the findings records
+    build_presweep already holds, so it no longer routes through _collect_sections
+    at all — a mock of that function would silently stop being exercised.
+    """
+    core = _fake_core(endpoints=[], services=[], pods=[])
+    apps = _fake_apps([
+        _dep("sample-catalog-api", replicas=1, ready=0),
+        _dep("order-worker", replicas=2, ready=0),
+    ])
+    with _patch_apis(core, apps):
         targeted = await build_presweep("dokops-demo", query="why is sample-catalog-api failing?")
         broad = await build_presweep("dokops-demo", query="what is broken?")
 
@@ -997,3 +1004,47 @@ async def test_container_with_no_previous_log_falls_back_to_current():
         out = await build_presweep("dokops-chaos")
 
     assert "FATAL: config missing" in out
+
+
+# ── subjects_of: records-based scoping (Task 4) ──────────────────────────────
+
+def test_subjects_of_names_every_reported_resource_once():
+    """Order-preserving, deduplicated, one entry per resource."""
+    from app.services.presweep import Finding, subjects_of
+
+    findings = [
+        Finding("endpoints", "service", "web", None, "ZeroEndpoints", "0 endpoints"),
+        Finding("crashlogs", "pod", "api-1", "app", "OOMKilled", "killed"),
+        Finding("blocked", "pod", "api-1", "app", "CreateContainerError", "bad key"),
+    ]
+    assert subjects_of(findings) == ["web", "api-1"]
+
+
+def test_subjects_of_skips_the_section_level_labels_trailer():
+    """The labels finding names no resource and must never become a subject —
+    it would make every query look targeted at a label dump."""
+    from app.services.presweep import Finding, subjects_of
+
+    findings = [
+        Finding("endpoints", "service", "web", None, "ZeroEndpoints", "0 endpoints"),
+        Finding("endpoints", "labels", "", None, None, "app=web, app=api"),
+    ]
+    assert subjects_of(findings) == ["web"]
+
+
+async def test_a_log_line_starting_with_a_dash_no_longer_scopes_the_answer():
+    """The behaviour fix. _BULLET matched crash-log BODY lines, so a log excerpt
+    like "- connecting to db" yielded a spurious subject and could flip `targeted`
+    on for a resource the user never asked about. Records cannot: only real
+    findings carry names."""
+    container = _crashing_container()
+    core = _fake_core(endpoints=[], services=[],
+                      pods=[_pod("api-xyz", {"app": "api"}, container)])
+    core.read_namespaced_pod_log = AsyncMock(
+        return_value="- payments-gateway: connection refused\nFATAL: giving up")
+    with _patch_apis(core, _fake_apps([])):
+        out = await build_presweep("dokops-chaos", query="why is payments-gateway down?")
+
+    # "payments-gateway" appears ONLY inside the log body, never as a finding name,
+    # so the sweep must not treat the question as scoped to a swept resource.
+    assert "The user asked about a SPECIFIC resource" not in out

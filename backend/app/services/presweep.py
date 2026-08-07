@@ -110,6 +110,21 @@ def sweep_subjects(presweep: str) -> list[str]:
     return [m.group(1) for line in presweep.splitlines() if (m := _BULLET.match(line))]
 
 
+def subjects_of(findings: list[Finding]) -> list[str]:
+    """Resource names the sweep reported, in order, deduplicated.
+
+    The records-based counterpart to sweep_subjects(), which regexes these back
+    out of prose the collectors had just finished formatting. Both exist on
+    purpose: this one serves callers that hold the findings, sweep_subjects()
+    serves append_missing_findings(), which receives prose by contract.
+    """
+    seen: dict[str, None] = {}
+    for f in findings:
+        if f.kind != "labels":
+            seen.setdefault(f.name, None)
+    return list(seen)
+
+
 def append_missing_findings(
     presweep: str, answer: str, query: str = "", recent_text: str = ""
 ) -> str:
@@ -486,11 +501,11 @@ def _render(findings: list[Finding]) -> list[str]:
 
     This is the only place presweep's prose contract lives, so read it to learn
     what the sweep looks like. Section HEADERS are not here — they belong to
-    _collect_sections, which knows which sections came back non-empty.
+    _render_sections, which knows which sections came back non-empty.
 
     A finding whose section has no branch below is dropped rather than raising:
     presweep is best-effort and build_presweep must never break a chat turn. The
-    section constants are a closed set, and _collect_sections only ever renders
+    section constants are a closed set, and _render_sections only ever renders
     sections it has a header for, so an unrenderable section cannot reach here
     without someone adding a constant and forgetting both places at once.
     """
@@ -576,10 +591,11 @@ _SECTION_HEADERS = (
 )
 
 
-async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_lines: int) -> list[str]:
-    """Every problem section for `namespace` as prose: a header per non-empty
-    section, followed by that section's rendered bullets."""
-    findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
+def _render_sections(findings: list[Finding]) -> list[str]:
+    """Every problem section as prose: a header per non-empty section, followed
+    by that section's rendered bullets. Split out of _collect_sections so a
+    caller that already holds `findings` (build_presweep, for subjects_of) does
+    not need a second cluster read to get the rendered prose too."""
     sections: list[str] = []
     for section, header in _SECTION_HEADERS:
         # Rendering used to happen inside the collectors, so a formatting fault was
@@ -592,12 +608,22 @@ async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_
         try:
             lines = _render([f for f in findings if f.section == section])
         except Exception as e:
-            logger.debug("presweep: rendering %s failed for %s: %s", section, namespace, e)
+            logger.debug("presweep: rendering %s failed: %s", section, e)
             continue
         if lines:
             sections.append(header)
             sections.extend(lines)
     return sections
+
+
+async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_lines: int) -> list[str]:
+    """Every problem section for `namespace` as prose: a header per non-empty
+    section, followed by that section's rendered bullets.
+
+    Thin wrapper over _collect_findings + _render_sections: settle_after_write
+    only ever needs the prose, never the records, so it keeps calling this."""
+    findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
+    return _render_sections(findings)
 
 
 async def build_presweep(
@@ -617,15 +643,15 @@ async def build_presweep(
     if core is None or apps is None:
         return ""  # mock mode or no reachable cluster
 
-    sections = await _collect_sections(core, apps, namespace, max_log_pods, tail_lines)
+    findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
+    sections = _render_sections(findings)
     if not sections:
         return ""
     body = "\n".join(sections)
 
     lowered_query = (query or "").lower()
     targeted = bool(lowered_query) and any(
-        _subject_matches_query(m.group(1), lowered_query)
-        for line in sections if (m := _BULLET.match(line))
+        _subject_matches_query(s, lowered_query) for s in subjects_of(findings)
     )
     if targeted:
         scope_line = (

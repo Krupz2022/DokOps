@@ -3,4 +3,3 @@ This is a HEAD START, NOT the scope of your investigation. It covers only servic
 Containers blocked before start (no logs exist — the event is the evidence):
   - notify-svc-x/app CreateContainerConfigError: couldn't find key smtp_host in ConfigMap notify-config
 Rollout state: failed
-  - notify-svc-x/app: CreateContainerConfigError

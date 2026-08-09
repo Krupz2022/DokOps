@@ -120,7 +120,12 @@ def subjects_of(findings: list[Finding]) -> list[str]:
     """
     seen: dict[str, None] = {}
     for f in findings:
-        if f.kind != "labels":
+        # "labels" is section-level context, not a resource; "verdict" carries
+        # the namespace itself as its `name` (so a header can say which rollout
+        # this is), and the namespace is not a resource a query can target the
+        # way a pod/service/deployment name is — letting it through here would
+        # flip `targeted` on for any query that merely mentions the namespace.
+        if f.kind not in ("labels", "verdict"):
             seen.setdefault(f.name, None)
     return list(seen)
 
@@ -261,6 +266,7 @@ _SECTION_DEPLOYMENTS = "deployments"
 _SECTION_REPLICASETS = "replicasets"
 _SECTION_BLOCKED = "blocked"
 _SECTION_CRASHLOGS = "crashlogs"
+_SECTION_ROLLOUT = "rollout"
 
 
 @dataclass(frozen=True)
@@ -497,6 +503,29 @@ async def _crash_logs(core, namespace: str, max_pods: int, tail_lines: int) -> l
     return out
 
 
+async def _rollout_verdict(core, apps, namespace: str) -> list[Finding]:
+    """The namespace's rollout classification, as one Finding — not one per
+    fatal/progressing line.
+
+    _rollout_state's bullet lines restate facts a full collector above already
+    rendered (the crash reason, the deployment's ready count, ...): the verdict
+    word is the only fact in them that isn't already a Finding elsewhere. So
+    only the word becomes a Finding here; the lines themselves are read only to
+    decide whether to emit at all, then discarded. Making this a Finding (not
+    prose appended after _render_sections, as it was before) is what makes the
+    verdict visible to `reason`-keyed lookups over `findings`, the same as any
+    other collector's result.
+
+    The `verdict != "healthy" and rollout_lines` guard is kept byte-for-byte
+    from the pre-Finding version: it exists to skip a non-healthy verdict that
+    carries no lines, not to gate on the lines' content once non-empty.
+    """
+    verdict, rollout_lines = await _rollout_state(core, apps, namespace)
+    if verdict != "healthy" and rollout_lines:
+        return [Finding(_SECTION_ROLLOUT, "verdict", namespace, None, verdict, "")]
+    return []
+
+
 def _render(findings: list[Finding]) -> list[str]:
     """Records -> the exact bullet prose that shipped before the refactor.
 
@@ -544,6 +573,10 @@ def _render(findings: list[Finding]) -> list[str]:
             else:
                 lines.append(f"  - {f.name}/{f.container} ({f.qualifier}):")
                 lines.append(_indent_log(f.detail))
+        elif f.section == _SECTION_ROLLOUT:
+            # No "  - " bullet: this isn't a resource among peers, it's the
+            # namespace-wide verdict, rendered as its own trailing line.
+            lines.append(f"Rollout state: {f.reason}")
     return lines
 
 
@@ -571,6 +604,7 @@ async def _collect_findings(
         ("replicaset", lambda: _replicaset_failures(core, apps, namespace)),
         ("blocked-container", lambda: _blocked_containers(core, namespace)),
         ("crash-log", lambda: _crash_logs(core, namespace, max_log_pods, tail_lines)),
+        ("rollout", lambda: _rollout_verdict(core, apps, namespace)),
     )
     findings: list[Finding] = []
     for label, check in checks:
@@ -582,6 +616,11 @@ async def _collect_findings(
 
 
 # Rendered in this order, and only for sections that came back with findings.
+# _SECTION_ROLLOUT is last on purpose: it's the namespace-wide verdict, not a
+# per-resource section, so it trails everything else. Its header is None —
+# "Rollout state: <verdict>" is dynamic and rendered as the finding's own line
+# in _render, so there is no static header string to put here; _render_sections
+# below treats a None header as "no header line, just the rendered lines."
 _SECTION_HEADERS = (
     (_SECTION_ENDPOINTS,
      "Services with NO ready endpoints (broken even if their pods are Running):"),
@@ -593,6 +632,7 @@ _SECTION_HEADERS = (
      "Containers blocked before start (no logs exist — the event is the evidence):"),
     (_SECTION_CRASHLOGS,
      "Logs from crashing containers:"),
+    (_SECTION_ROLLOUT, None),
 )
 
 
@@ -616,7 +656,8 @@ def _render_sections(findings: list[Finding]) -> list[str]:
             logger.debug("presweep: rendering %s failed: %s", section, e)
             continue
         if lines:
-            sections.append(header)
+            if header is not None:
+                sections.append(header)
             sections.extend(lines)
     return sections
 
@@ -650,13 +691,6 @@ async def build_presweep(
 
     findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
     sections = _render_sections(findings)
-    try:
-        verdict, rollout_lines = await _rollout_state(core, apps, namespace)
-        if verdict != "healthy" and rollout_lines:
-            sections.append(f"Rollout state: {verdict}")
-            sections.extend(rollout_lines)
-    except Exception as e:
-        logger.debug("presweep: rollout check failed for %s: %s", namespace, e)
     if not sections:
         return ""
     body = "\n".join(sections)

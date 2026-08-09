@@ -3,4 +3,3 @@ This is a HEAD START, NOT the scope of your investigation. It covers only servic
 Containers blocked before start (no logs exist — the event is the evidence):
   - api-abc/app ImagePullBackOff: Failed to pull image "registry.io/api:2.9": not found
 Rollout state: failed
-  - api-abc/app: ImagePullBackOff

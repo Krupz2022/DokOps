@@ -91,3 +91,82 @@ Regenerated goldens will differ from committed goldens ONLY in:
 
 Everything else byte-identical. Any other changed line is a regression — stop and
 investigate; do not accept it because a diff was expected.
+
+---
+
+# 2026-08-09 — second predicted golden diff: rollout verdict becomes a Finding
+
+This section is appended on top of the first change above (which is already
+committed and correct). It predicts a SECOND, separate rendered-output change,
+against the goldens as they stand right now (i.e. already containing the first
+change's `Rollout state: <verdict>` header + one bullet in six files). The first
+section above is left unedited — it is the record of what actually happened for
+the first change and was verified correct.
+
+## What's changing and why
+
+Review found that the rollout section's bullet line always restates a fact
+already rendered by an earlier section (the crash reason, the deployment's
+ready count, ...) — the verdict word is the only new information — and,
+separately, that the verdict was appended to `sections` as raw prose in
+`build_presweep`, so it never became part of `findings` and is invisible to
+anything (Task 6/8) that reads `f.reason` off the finding list.
+
+Fix: `_rollout_verdict(core, apps, namespace)` becomes a new collector inside
+`_collect_findings`, returning at most one
+`Finding(_SECTION_ROLLOUT, "verdict", namespace, None, verdict, "")` — no
+bullets. `_render` renders that Finding as exactly one line,
+`Rollout state: <verdict>`, with `_SECTION_ROLLOUT` added as the final entry in
+`_SECTION_HEADERS` with a `None` header (skipped by `_render_sections`, so no
+header line precedes it — position stays last, same as before). The emission
+guard (`verdict != "healthy" and rollout_lines`) is preserved byte-for-byte:
+`_rollout_state` itself is untouched, and its `rollout_lines` are still
+computed and still gate emission — they are simply not rendered anymore. The
+now-dead `try/except` block in `build_presweep` that used to append the header
+and bullets directly is deleted; `_collect_findings` (shared by `build_presweep`
+*and* `_collect_sections`/`settle_after_write`) is now the single place the
+verdict is produced.
+
+## Verified per-scenario (traced against the new code, not assumed)
+
+`_rollout_state`'s own classification is unchanged for every fixture (verified
+in the first prediction and re-confirmed: nothing about `_rollout_state` or the
+fixtures changed in this task). What changes is only how a non-healthy verdict
+is *rendered*: a 2-line block (header + 1 bullet) becomes a 1-line block (just
+the verdict line), for every scenario that currently has one.
+
+| golden                          | rollout portion before this change | rollout portion after | net effect |
+|----------------------------------|--------------------------------------|--------------------------|------------|
+| crashloop_oom.txt                 | `Rollout state: failed` + 1 bullet   | `Rollout state: failed` only | -1 line |
+| crashloop_plain.txt               | `Rollout state: failed` + 1 bullet   | `Rollout state: failed` only | -1 line |
+| blocked_configmap.txt             | `Rollout state: failed` + 1 bullet   | `Rollout state: failed` only | -1 line |
+| no_previous_log.txt               | `Rollout state: failed` + 1 bullet   | `Rollout state: failed` only | -1 line |
+| replicaset_quota_failure.txt      | `Rollout state: progressing` + 1 bullet | `Rollout state: progressing` only | -1 line |
+| image_pull_backoff.txt            | `Rollout state: failed` + 1 bullet (trailing, after the blocked-container section) | `Rollout state: failed` only | -1 line |
+| zero_endpoint_selector_mismatch   | (none — healthy)                     | (none — healthy)         | NO CHANGE |
+| zero_endpoint_no_selector         | (none — healthy)                     | (none — healthy)         | NO CHANGE |
+| deployment_scaled_to_zero         | (none — healthy)                     | (none — healthy)         | NO CHANGE |
+| collector_raises_deployments      | (none — `_rollout_state` raises, caught by the old block-level try/except) | (none — same raise, now caught by `_collect_findings`'s per-check try/except instead) | NO CHANGE |
+| collector_raises_pod_listing      | (none — same reasoning)              | (none — same reasoning)  | NO CHANGE |
+| empty_namespace.txt               | (none — healthy, sections already empty, early return fires) | same | NO CHANGE — stays 0 bytes |
+| config_sources_with_resources.txt | n/a — exercises `build_config_sources`, never touches `_collect_findings`'s rollout check | same | NO CHANGE |
+
+I agree with the reviewer's stated expectation: exactly `-1` line in each of the
+six goldens that currently carry a rollout section (the five `+2`-line files
+from the first change, plus the new `image_pull_backoff.txt`, whose trailing
+rollout portion shrinks the same way even though the file as a whole was
+"new," not "+2," in the first change). No other file changes.
+
+## Assertion
+
+Regenerated goldens will differ from the currently-committed goldens ONLY in:
+  - exactly `-1` line each in: `crashloop_oom.txt`, `crashloop_plain.txt`,
+    `blocked_configmap.txt`, `no_previous_log.txt`,
+    `replicaset_quota_failure.txt`, `image_pull_backoff.txt`
+  - the removed line in each case is the `  - ...` bullet that followed
+    `Rollout state: <verdict>`; the verdict line itself is unchanged and stays
+
+No new files, no deleted files, no other file's content changes.
+`empty_namespace.txt` stays 0 bytes. `config_sources_with_resources.txt` is
+byte-identical. Any other changed line is a regression — stop and investigate;
+do not accept it because a diff was expected.

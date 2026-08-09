@@ -5,4 +5,3 @@ Logs from crashing containers:
       starting up
       FATAL: could not connect to postgres at db.internal:5432
 Rollout state: failed
-  - order-worker-qz/worker: CrashLoopBackOff

@@ -5,4 +5,3 @@ Deployments not at full readiness:
 Deployments that produced NO pods (failure is on the ReplicaSet):
   - api (ReplicaSet api-755d) FailedCreate: pods "x" is forbidden: exceeded quota: no-pods-allowed
 Rollout state: progressing
-  - deployment/api: 0/1 ready

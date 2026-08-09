@@ -4,3 +4,5 @@ Logs from crashing containers:
   - api-xyz/app (CrashLoopBackOff):
       starting up
       FATAL: config missing
+Rollout state: failed
+  - api-xyz/app: CrashLoopBackOff

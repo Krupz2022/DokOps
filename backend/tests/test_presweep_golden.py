@@ -173,6 +173,17 @@ async def _s_empty_namespace():
         return await build_presweep("dokops-chaos")
 
 
+async def _s_image_pull_backoff():
+    cs = SimpleNamespace(name="app", restart_count=0,
+                         state=SimpleNamespace(waiting=SimpleNamespace(reason="ImagePullBackOff")))
+    ev = SimpleNamespace(type="Warning", reason="Failed",
+                         involved_object=SimpleNamespace(name="api-abc"),
+                         message='Failed to pull image "registry.io/api:2.9": not found')
+    core = _core(pods=[_pod("api-abc", {"app": "api"}, cs)], events=[ev])
+    with _apis(core, _apps()):
+        return await build_presweep("dokops-chaos")
+
+
 _WORKLOAD_CONFIG = {
     "success": True,
     "data": {
@@ -218,6 +229,7 @@ SCENARIOS = {
     "collector_raises_pod_listing": _s_collector_raises_pod_listing,
     "no_previous_log": _s_no_previous_log,
     "empty_namespace": _s_empty_namespace,
+    "image_pull_backoff": _s_image_pull_backoff,
     "config_sources_with_resources": _s_config_sources_with_resources,
 }
 

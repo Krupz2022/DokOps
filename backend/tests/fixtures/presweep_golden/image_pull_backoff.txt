@@ -1,8 +1,6 @@
 PRE-FLIGHT SWEEP of namespace 'dokops-chaos' — verified facts, already gathered for you. Do not re-fetch these with tools.
 This is a HEAD START, NOT the scope of your investigation. It covers only service endpoints, deployment readiness, ReplicaSet failures and crash logs. Quote these facts directly — they are the answer, not a hint. You must STILL investigate every failing pod yourself and report those findings alongside these — an answer that covers only what appears below is incomplete.
-Logs from crashing containers:
-  - order-worker-qz/worker (CrashLoopBackOff):
-      starting up
-      FATAL: could not connect to postgres at db.internal:5432
+Containers blocked before start (no logs exist — the event is the evidence):
+  - api-abc/app ImagePullBackOff: Failed to pull image "registry.io/api:2.9": not found
 Rollout state: failed
-  - order-worker-qz/worker: CrashLoopBackOff
+  - api-abc/app: ImagePullBackOff

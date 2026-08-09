@@ -392,6 +392,11 @@ async def _replicaset_failures(core, apps, namespace: str) -> list[Finding]:
 _BLOCKED_REASONS = (
     "CreateContainerConfigError", "CreateContainerError",
     "InvalidImageName", "InvalidValue",
+    # An image-pull failure IS a container that never started: no logs exist and
+    # the kubelet event carries the only precise detail — exactly what this
+    # collector is documented to handle. Absent before, so tier 1 could never
+    # fire on the single most common workload failure.
+    "ImagePullBackOff", "ErrImagePull",
 )
 
 
@@ -645,6 +650,13 @@ async def build_presweep(
 
     findings = await _collect_findings(core, apps, namespace, max_log_pods, tail_lines)
     sections = _render_sections(findings)
+    try:
+        verdict, rollout_lines = await _rollout_state(core, apps, namespace)
+        if verdict != "healthy" and rollout_lines:
+            sections.append(f"Rollout state: {verdict}")
+            sections.extend(rollout_lines)
+    except Exception as e:
+        logger.debug("presweep: rollout check failed for %s: %s", namespace, e)
     if not sections:
         return ""
     body = "\n".join(sections)

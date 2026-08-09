@@ -3,3 +3,5 @@ This is a HEAD START, NOT the scope of your investigation. It covers only servic
 Logs from crashing containers:
   - checkoutapi-vw2m5/checkoutapi (CrashLoopBackOff, last exit OOMKilled (137)): killed at its memory limit. Any log below is cut short by the kill, NOT an application error — check the container's memory limit against actual usage.
       Minimum worker threads: 100
+Rollout state: failed
+  - checkoutapi-vw2m5/checkoutapi: CrashLoopBackOff

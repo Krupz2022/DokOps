@@ -1009,6 +1009,29 @@ Rules:
         "image pull":         "registry_",
     }
 
+    # Tier 1b only (`_domains_from_evidence`): keys too generic to trust against
+    # up to 3 pods x 8 log lines of ordinary application text, where they false-
+    # positive on things like "Now listening on: ... binding to all interfaces",
+    # "Cache warmed in 42ms", "queued for processing", "invalid vhost". A ten-
+    # word user question or an assistant follow-up (tier 2, `_domains_from_query`)
+    # does not carry that volume of incidental prose, so tier 2 keeps matching
+    # these keys unfiltered — a user typing "cache" means Redis; a log line
+    # saying "Cache warmed" does not. Not a fork of _SERVICE_TOOL_MAP: this is
+    # an exclusion list checked against the same map's keys, not a copy of it.
+    #
+    # registry/acr/ecr included deliberately, not by omission: both are 3-4
+    # character substrings (already flagged in Task 7 as colliding with
+    # "sacrifice", "sacred", "massacre") and ImagePullBackOff/ErrImagePull
+    # already have a dedicated SYMPTOM_TOOLS row (fix_image_pull,
+    # get_secret_exists, list_secrets) that tier 1 emits directly from the
+    # Finding.reason — evidence-driven registry_ coverage would be a marginal
+    # add on top of an already-covered symptom, not a floor that would go
+    # missing without it.
+    _EVIDENCE_SKIP_KEYS: frozenset[str] = frozenset({
+        "binding", "cache", "queue", "queues", "exchange", "vhost",
+        "registry", "acr", "ecr",
+    })
+
     # Canonical block order for the provider's prefix cache. Both Gemini and
     # OpenAI/Azure cache LINEAR PREFIXES only — "the model treats cached content
     # as a prefix to the prompt" — so block order is a correctness concern, not
@@ -1031,9 +1054,16 @@ Rules:
         """Tier 1b: the SAME _SERVICE_TOOL_MAP, run over what the cluster said
         rather than over what the user typed. Names external dependencies that
         never appear as cluster resources, at evidence precision. New caller,
-        same map — the map is not forked."""
+        same map — the map is not forked.
+
+        Keys in `_EVIDENCE_SKIP_KEYS` are excluded here only — log text is long
+        enough and generic enough to false-positive on them (see that set's
+        comment). `_domains_from_query` (tier 2) does not apply this filter."""
         text = " ".join((f.detail or "") for f in findings).lower()
-        return {prefix for kw, prefix in AIService._SERVICE_TOOL_MAP.items() if kw in text}
+        return {
+            prefix for kw, prefix in AIService._SERVICE_TOOL_MAP.items()
+            if kw not in AIService._EVIDENCE_SKIP_KEYS and kw in text
+        }
 
     @staticmethod
     def _domains_from_query(q: str, history: Optional[list] = None) -> set:

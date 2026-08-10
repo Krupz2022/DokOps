@@ -109,6 +109,47 @@ async def test_evidence_domains_are_empty_without_a_dependency_mention():
     assert AIService._domains_from_evidence(findings) == set()
 
 
+async def test_evidence_domains_skip_generic_english_words_in_log_text():
+    """A log line saying ordinary things -- 'binding to all interfaces', 'Cache
+    warmed', 'threads queued', 'invalid vhost' -- must not be read as dependency
+    evidence. These keys stay live for tier 2 (a user typing 'cache' means
+    Redis); only tier 1b's log-derived text excludes them."""
+    from app.services.ai_service import AIService
+    from app.services.presweep import Finding
+
+    lines = [
+        "Now listening on: http://0.0.0.0:8080 (binding to all interfaces)",
+        "INFO Cache warmed in 42ms; 1200 entries",
+        "Worker started, 8 threads queued for processing",
+        "nginx: [emerg] invalid vhost in /etc/nginx/nginx.conf",
+    ]
+    findings = [
+        Finding("crashlogs", "pod", f"pod-{i}", "app", "Error", line)
+        for i, line in enumerate(lines)
+    ]
+    assert AIService._domains_from_evidence(findings) == set()
+
+
+async def test_evidence_domains_still_match_a_real_dependency_mention():
+    """The skip list must not blind tier 1b to genuine evidence: a connection-
+    refused line naming postgres must still route to postgres_."""
+    from app.services.ai_service import AIService
+    from app.services.presweep import Finding
+
+    findings = [Finding("crashlogs", "pod", "checkout-1", "app", "Error",
+                        "connection refused: could not connect to postgres server")]
+    assert "postgres_" in AIService._domains_from_evidence(findings)
+
+
+def test_evidence_skip_keys_do_not_affect_tier_two_query_scan():
+    """Tier 2 (_domains_from_query) must keep matching the same generic words
+    unfiltered: a user typing 'cache' means Redis, and this fix is scoped to
+    tier 1b's log-text scan only."""
+    from app.services.ai_service import AIService
+    assert AIService._domains_from_query("is the cache healthy") == {"redis_"}
+    assert AIService._domains_from_query("what's blocking the queue") == {"rabbitmq_"}
+
+
 def test_domain_order_is_a_literal_tuple_covering_every_emittable_domain():
     """sorted() would couple cache correctness to an implicit property a rename
     could shift silently, invalidating every downstream prefix with nothing

@@ -258,8 +258,9 @@ async def resolve_namespace(query: str, *, strict: bool = False) -> Optional[str
 # at the f-string; sweep_subjects() then regexed the prose back into resource
 # names. Now they return records and _render() is the single place the prose
 # lives. One consumer per field is the test that this schema is right:
-# sweep_subjects -> name, reason -> symptom lookup, detail -> service domains,
-# formatter -> all.
+# subjects_of -> name, reason -> symptom lookup, detail -> service domains,
+# formatter -> all. (sweep_subjects() still exists and still regexes prose —
+# it now reads build_presweep's rendered output, not this record schema.)
 
 _SECTION_ENDPOINTS = "endpoints"
 _SECTION_DEPLOYMENTS = "deployments"
@@ -429,6 +430,11 @@ SYMPTOM_TOOLS: dict[str, tuple[str, ...]] = {
     "OOMKilled":                   ("patch_deployment_resources", "get_pod_metrics",
                                     "get_limit_range"),
     "Error":                       ("get_deployment_rollout_history", "rollback_deployment"),
+    # Diagnostics only, no write tool — rollback is already reachable via the
+    # co-emitted "failed" rollout verdict row above, so this row does not need
+    # to duplicate it.
+    "CrashLoopBackOff":            ("get_pod_events", "get_workload_config",
+                                    "get_deployment_rollout_history"),
     "NotReady":                    ("get_deployment_status", "get_hpa", "get_pod_events"),
     "ZeroEndpoints":               ("get_endpoints", "get_service", "get_network_policies"),
     "FailedCreate":                ("get_resource_quota", "get_limit_range", "get_replicasets"),
@@ -444,10 +450,18 @@ INTENTIONALLY_UNMAPPED: frozenset[str] = frozenset({
 
 
 def evidence_reasons() -> frozenset[str]:
-    """Every reason that can reach a Finding.reason. Assertion 2 keys off this;
-    it must widen in lockstep with any collector that emits a new reason."""
+    """The reasons this table intends to route — not a closed set of every
+    reason that can reach a Finding.reason, and it cannot be one. Two collectors
+    pass reason through unfiltered rather than from a fixed vocabulary:
+    `_crash_logs` emits the container's waiting reason verbatim, and `crashed`
+    is true on `restart_count > 0` alone, so any waiting reason can arrive, not
+    just the ones named below; `_replicaset_failures` emits `event.reason`
+    straight off a Kubernetes Warning Event with no allowlist. Assertion 2 keys
+    off this set, so it must widen in lockstep with any collector that emits a
+    new INTENTIONAL reason — but it cannot promise every reason a collector
+    could ever emit is covered here."""
     return frozenset(_BLOCKED_REASONS) | frozenset({
-        "OOMKilled", "Error", "NotReady", "ScaledToZero",
+        "OOMKilled", "Error", "NotReady", "ScaledToZero", "CrashLoopBackOff",
         "ZeroEndpoints", "FailedCreate", "failed", "progressing",
     })
 
@@ -650,7 +664,7 @@ async def _collect_findings(
 
     Each check is independent — one failing must not suppress the others, so each
     gets its own handler and the sweep degrades to the sections that did work."""
-    # Called, not pre-awaited: a cancelled chat turn must not leave four
+    # Called, not pre-awaited: a cancelled chat turn must not leave six
     # never-awaited coroutines behind warning into the logs.
     checks = (
         ("endpoint", lambda: _zero_endpoint_services(core, namespace)),

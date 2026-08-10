@@ -289,6 +289,9 @@ async def test_every_turn_logs_exactly_one_selection_line(caplog, monkeypatch):
     assert len(lines) == 1, f"expected exactly one [SEL] line, got {len(lines)}"
     assert "tier1_ran=False" in lines[0].getMessage()
     assert "called=0 expansions=0 expansions_ok=0" in lines[0].getMessage()
+    # Crashed before the provider setting was read, and the line says so rather
+    # than naming a provider it never saw.
+    assert "provider=?" in lines[0].getMessage()
 
 
 async def test_a_real_turn_logs_one_line_with_the_tiers_actually_wired(caplog):
@@ -318,6 +321,10 @@ async def test_a_real_turn_logs_one_line_with_the_tiers_actually_wired(caplog):
     msg = lines[0].getMessage()
     assert "tier2=['redis_']" in msg, msg      # tier 2 is read from the real scan
     assert "loaded=0" not in msg, msg          # and `loaded` from the real schema
+    # Read from the turn, not defaulted: a GEMINI turn skips the cascade and emits
+    # every tier empty with a real `called` count, which is only readable as
+    # "the cascade did not run here" if the provider is on the line.
+    assert "provider=gpt-3.5-turbo" in msg, msg
 
 
 def test_the_selection_line_is_emitted_from_a_finally_exactly_once():
@@ -349,3 +356,39 @@ def test_tier_two_domains_come_from_the_same_scan_the_selection_uses():
     assert any(n.startswith("redis_") for n in names)
     assert "_domains_from_query" in inspect.getsource(AIService._select_dynamic_tools), \
         "the selection must read tier 2 from the same helper the log does"
+
+
+def test_the_scanned_tier_two_set_is_injected_not_rescanned():
+    """One scan per turn: the agent loop runs it (it needs the set for the [SEL]
+    line) and hands it over. `query_domains` must therefore DRIVE the injection —
+    if the selector rescanned the query instead, this query names no service and
+    no redis tool would appear, and the logged number would describe a scan the
+    selection ignored."""
+    from app.services.ai_service import AIService
+    names = {t["function"]["name"] for t in AIService._select_dynamic_tools(
+        "why is checkout failing", [], _full_schema(), [], [], max_total=200,
+        query_domains={"redis_"})}
+    assert any(n.startswith("redis_") for n in names)
+
+
+def test_the_query_scan_runs_once_per_turn():
+    """The plan's standing constraint: no parallel selector, nothing runs twice.
+    The loop needs tier 2 for its log AND for the injection; counting calls is the
+    only way to catch a second walk, since two walks of the same map agree and so
+    no assertion on the RESULT can ever fail."""
+    from app.services.ai_service import AIService
+    calls: list = []
+    real = AIService._domains_from_query        # a plain function via the class
+
+    def _counting(q, history=None):
+        calls.append(q)
+        return real(q, history)
+
+    AIService._domains_from_query = staticmethod(_counting)
+    try:
+        AIService._select_dynamic_tools(
+            "why is redis slow", [], _full_schema(), [], [], max_total=200,
+            query_domains=AIService._domains_from_query("why is redis slow"))
+    finally:
+        AIService._domains_from_query = staticmethod(real)
+    assert len(calls) == 1, f"the keyword scan ran {len(calls)} times, must run once"

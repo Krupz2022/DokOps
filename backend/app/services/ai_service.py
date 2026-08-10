@@ -1086,7 +1086,7 @@ Rules:
 
     @staticmethod
     def _log_selection(*, tier1_ran, tier1_tools, tier1b_domains, tier2_domains,
-                       loaded, called, expansions) -> None:
+                       loaded, called, expansions, provider: str = "?") -> None:
         """One line per turn. The tier-2 split is the point: contribution WHEN
         tier 1 ran is redundancy (retirement candidate); contribution when tier 1
         was EMPTY is irreplaceable cold-start coverage. The unsplit number
@@ -1098,15 +1098,24 @@ Rules:
         inherit and could not fix — the opposite conclusion from a high success
         rate. A bare count cannot tell them apart.
 
+        provider is on the line because the GEMINI path loads the full schema and
+        skips the cascade entirely, so its turns report every tier empty while
+        `called` still counts real tool calls — `loaded=0 called=3` reads as a
+        selection bug unless the reader can see which provider produced it. There is
+        no correlation id on these lines, so the neighbouring [AGENT] provider line
+        cannot be joined to this one under concurrent traffic; the field has to be
+        here. "?" means the turn failed before the provider was even read.
+
         Names, prefixes and counts only — never tool arguments, tool output or the
-        user's query (CLAUDE.md section 3a).
+        user's query (CLAUDE.md section 3a). The provider is the `ai_provider`
+        setting's value, an identifier like GEMINI or AZURE, never a credential.
         """
         contributed = len(tier2_domains)
         AIService._sel_log.info(
-            "[SEL] tier1_ran=%s tier1_tools=%d tier1b=%s tier2=%s "
+            "[SEL] provider=%s tier1_ran=%s tier1_tools=%d tier1b=%s tier2=%s "
             "tier2_when_tier1_ran=%d tier2_when_tier1_empty=%d "
             "loaded=%d called=%d expansions=%d expansions_ok=%d",
-            tier1_ran, len(tier1_tools), sorted(tier1b_domains), sorted(tier2_domains),
+            provider, tier1_ran, len(tier1_tools), sorted(tier1b_domains), sorted(tier2_domains),
             contributed if tier1_ran else 0,
             0 if tier1_ran else contributed,
             len(loaded), len(called), len(expansions),
@@ -1172,6 +1181,7 @@ Rules:
         force_tools: frozenset = frozenset(),
         evidence_tools: frozenset = frozenset(),
         evidence_domains: frozenset = frozenset(),
+        query_domains: Optional[set] = None,
     ) -> list:
         """force_tools: names that must be in the result whatever the scoring says,
         for turns where the caller has already established relevance deterministically.
@@ -1182,7 +1192,13 @@ Rules:
 
         evidence_tools (tier 1) / evidence_domains (tier 1b): names and domain
         prefixes the cluster itself established this turn. Evidence is a FLOOR —
-        the lower tiers only ADD, nothing here removes a tier-1 selection."""
+        the lower tiers only ADD, nothing here removes a tier-1 selection.
+
+        query_domains (tier 2): the keyword scan's result, when the caller has
+        already run it — the agent loop has, because the same set goes in its
+        [SEL] line. Passed rather than recomputed so the scan runs ONCE per turn:
+        no parallel selector, nothing runs twice. Callers that have not run it
+        (tests, other entry points) leave it None and the scan happens here."""
         q = query.lower()
 
         # force_tools already exempts names from cap eviction, so tier 1 reuses
@@ -1198,9 +1214,14 @@ Rules:
                                               "troubleshoot", "why", "check"))
 
         # Tier 2: which service tool prefixes the query (or recent history) names.
-        # Read from the shared helper so the per-turn [SEL] log reports this exact
-        # set — the log exists to judge tier 2, so it cannot use a second copy.
-        matched_service_prefixes: set = AIService._domains_from_query(q, history)
+        # One scan per turn, whichever side runs it: the agent loop passes the set it
+        # needs for the [SEL] line, so the log reports the exact set injected below
+        # without a second walk of the map. Copied because the caller keeps the
+        # original for that line.
+        matched_service_prefixes: set = (
+            AIService._domains_from_query(q, history) if query_domains is None
+            else set(query_domains)
+        )
 
         # is_service selects a whole BRANCH below, and the service branch omits the
         # relevance-scored k8s_rest tail. So it stays derived from the user's text and
@@ -1851,6 +1872,7 @@ When done, give a per-pod root cause analysis.
         _sel_tier1b: frozenset = frozenset()
         _sel_tier2: set = set()
         _sel_loaded: list[str] = []
+        _sel_provider: str = "?"             # "?" until the setting has been read
         try:
             caching_client = self._get_caching_client()
             yield {"type": "model", "message": caching_client.full_model}
@@ -1866,6 +1888,7 @@ When done, give a per-pod root cause analysis.
                 yield _ev
 
             provider = self._get_setting("ai_provider")
+            _sel_provider = provider or "?"     # [SEL] needs it on every exit path
             _agent_log.info("[AGENT] provider=%s", provider)
 
             custom_tools = self._get_custom_tools_definitions()
@@ -2063,9 +2086,13 @@ When done, give a per-pod root cause analysis.
                     except Exception as _e:
                         _agent_log.debug("[AGENT] evidence tiers unavailable: %s", _e)
 
+                # Tier 2, scanned once and used twice without running twice: the
+                # selection injects from it below, the [SEL] line reports it.
+                _sel_tier2 = self._domains_from_query(query.lower(), history)
                 tools_schema = self._select_dynamic_tools(
                     query, _obs_tools_schema, _full_k8s_schema, _mcp_schema, _custom_schema,
                     history=history,
+                    query_domains=_sel_tier2,
                     # A non-empty owner map means this turn is about a workload's
                     # config — established by reading the pod spec, not by guessing
                     # from wording. Make the tools that act on it reachable.
@@ -2076,11 +2103,11 @@ When done, give a per-pod root cause analysis.
                 if workflow_tools_schema:
                     tools_schema.extend(workflow_tools_schema)
 
-                # What each tier contributed, snapshotted for the one [SEL] line this
-                # turn emits. Names only, taken before discover_tools can extend the
-                # schema — expansions are counted separately, not as loaded tools.
+                # What tiers 1/1b contributed and what was loaded, snapshotted for the
+                # one [SEL] line this turn emits (tier 2 is captured above, before the
+                # selection consumes it). Names only, taken before discover_tools can
+                # extend the schema — expansions are counted separately.
                 _sel_tier1, _sel_tier1b = _evidence_tools, _evidence_domains
-                _sel_tier2 = self._domains_from_query(query.lower(), history)
                 _sel_loaded = [t["function"]["name"] for t in tools_schema]
 
             _agent_log.info("[AGENT] tools_schema built: %d tools", len(tools_schema))
@@ -2740,6 +2767,9 @@ CLUSTER TOPOLOGY SNAPSHOT:
             try:
                 _called_set = set(_called)
                 self._log_selection(
+                    # GEMINI skips the cascade, so its line is every-tier-empty with a
+                    # real `called` count. Without this field that reads as a bug.
+                    provider=_sel_provider,
                     # tier1_ran = tier 1 PRODUCED something. "The block executed" is
                     # true on nearly every namespaced turn and would file genuine
                     # cold-start coverage under redundancy, collapsing the split.

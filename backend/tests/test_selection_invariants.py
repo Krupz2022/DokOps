@@ -218,3 +218,134 @@ def test_domain_blocks_follow_the_tuple_and_precede_the_evidence_block():
     evidence = [i for i, n in enumerate(names) if n == "patch_deployment_resources"]
     assert max(i for i, n in enumerate(names)
                if n != "patch_deployment_resources") < min(evidence)
+
+
+async def test_tier_two_contribution_is_logged_split_by_whether_tier_one_ran(caplog):
+    """Unsplit, this number averages redundancy against irreplaceable cold-start
+    coverage — opposite conclusions. It must never be reported unsplit."""
+    import logging
+    from app.services.ai_service import AIService
+    with caplog.at_level(logging.INFO, logger="ai_service.selection"):
+        AIService._log_selection(
+            tier1_ran=False, tier1_tools=set(), tier1b_domains=set(),
+            tier2_domains={"redis_"}, loaded=["get_pod_logs"], called=[], expansions=[],
+        )
+    msg = caplog.text
+    assert "tier2_when_tier1_empty=1" in msg
+    assert "tier2_when_tier1_ran=0" in msg
+
+
+async def test_tier_two_contribution_counts_as_redundancy_when_tier_one_ran(caplog):
+    """The other half of the split: the same contribution must land in the
+    redundancy column, never both columns and never neither."""
+    import logging
+    from app.services.ai_service import AIService
+    with caplog.at_level(logging.INFO, logger="ai_service.selection"):
+        AIService._log_selection(
+            tier1_ran=True, tier1_tools={"get_pod_logs"}, tier1b_domains={"postgres_"},
+            tier2_domains={"redis_"}, loaded=["get_pod_logs"], called=[], expansions=[],
+        )
+    assert "tier2_when_tier1_ran=1" in caplog.text
+    assert "tier2_when_tier1_empty=0" in caplog.text
+
+
+async def test_expansion_outcome_is_logged_not_only_the_count(caplog):
+    """A bare count cannot separate a registry-description gap (the model had to
+    discover a tool the cascade should have loaded, and used it) from noise (it
+    discovered tools and used none). The success count is the whole signal."""
+    import logging
+    from app.services.ai_service import AIService
+    with caplog.at_level(logging.INFO, logger="ai_service.selection"):
+        AIService._log_selection(
+            tier1_ran=True, tier1_tools={"get_pod_logs"}, tier1b_domains=set(),
+            tier2_domains=set(), loaded=["get_pod_logs"], called=["update_configmap"],
+            expansions=[
+                {"new_tools": ["update_configmap"], "expansion_succeeded": True},
+                {"new_tools": ["redis_get_key"], "expansion_succeeded": False},
+            ],
+        )
+    assert "expansions=2 expansions_ok=1" in caplog.text
+
+
+async def test_every_turn_logs_exactly_one_selection_line(caplog, monkeypatch):
+    """The loop has nine result-producing exits, so the line is emitted from a
+    finally rather than from each branch. Verified on the error exit, which is
+    also the one where no tier variable is ever assigned: a per-branch call logs
+    zero lines here, and a finally reading unassigned locals would raise."""
+    import logging
+    from app.services.ai_service import AIService
+
+    def _boom():
+        raise RuntimeError("no client configured")
+
+    svc = AIService()
+    monkeypatch.setattr(svc, "_get_caching_client", _boom)
+    with caplog.at_level(logging.INFO, logger="ai_service.selection"):
+        events = [e async for e in
+                  svc._run_global_agentic_loop_inner(query="is the cluster healthy")]
+
+    assert any(e.get("type") == "result" for e in events), events
+    lines = [r for r in caplog.records if r.name == "ai_service.selection"]
+    assert len(lines) == 1, f"expected exactly one [SEL] line, got {len(lines)}"
+    assert "tier1_ran=False" in lines[0].getMessage()
+    assert "called=0 expansions=0 expansions_ok=0" in lines[0].getMessage()
+
+
+async def test_a_real_turn_logs_one_line_with_the_tiers_actually_wired(caplog):
+    """The gap this closes: a defined-but-uncalled _log_selection, or a call site
+    handed empty literals, both look fine in a unit test and produce a log whose
+    fields are structurally always zero. So drive a whole turn and assert the line
+    exists once AND that tier 2 carries the domain the query really named."""
+    import logging
+    from unittest.mock import MagicMock, patch
+    from app.services.ai_service import ai_service
+
+    def fake_create(**kwargs):
+        resp = MagicMock()
+        resp.choices[0].message.content = "Final Answer: redis looks healthy"
+        return resp
+
+    with caplog.at_level(logging.INFO, logger="ai_service.selection"), \
+         patch.object(ai_service, "_get_client") as mock_client, \
+         patch.object(ai_service, "_get_setting", return_value="gpt-3.5-turbo"):
+        mock_client.return_value.chat.completions.create.side_effect = fake_create
+        events = [e async for e in
+                  ai_service.run_global_agentic_loop("is redis healthy")]
+
+    assert any(e.get("type") == "result" for e in events), events
+    lines = [r for r in caplog.records if r.name == "ai_service.selection"]
+    assert len(lines) == 1, f"expected exactly one [SEL] line, got {len(lines)}"
+    msg = lines[0].getMessage()
+    assert "tier2=['redis_']" in msg, msg      # tier 2 is read from the real scan
+    assert "loaded=0" not in msg, msg          # and `loaded` from the real schema
+
+
+def test_the_selection_line_is_emitted_from_a_finally_exactly_once():
+    """Structural, because the alternative is unobservable: per-branch calls would
+    need one at each of the loop's nine result-producing exits, and a forgotten one
+    logs nothing while a duplicate double-counts every ratio read off these lines.
+    Only the source shows there is exactly one call and that it sits in the
+    outermost finally, where every exit — including consumer abandonment — passes."""
+    import inspect
+    from app.services.ai_service import AIService
+    src = inspect.getsource(AIService._run_global_agentic_loop_inner)
+    assert src.count("_log_selection(") == 1, "exactly one call site, or the count lies"
+    after_outer_finally = src.split("\n        finally:\n")[-1]
+    assert "_log_selection(" in after_outer_finally, \
+        "the call must live in the loop's outermost finally, not on one exit path"
+
+
+def test_tier_two_domains_come_from_the_same_scan_the_selection_uses():
+    """The logged tier-2 number and the tools actually injected must be the same
+    scan. A second copy of the keyword walk would let the number drift from the
+    selection with nothing failing — so the selector is required to call the
+    helper the log reads, not to keep its own copy."""
+    import inspect
+    from app.services.ai_service import AIService
+    q = "why is redis slow"
+    assert AIService._domains_from_query(q) == {"redis_"}
+    names = {t["function"]["name"] for t in AIService._select_dynamic_tools(
+        q, [], _full_schema(), [], [], max_total=200)}
+    assert any(n.startswith("redis_") for n in names)
+    assert "_domains_from_query" in inspect.getsource(AIService._select_dynamic_tools), \
+        "the selection must read tier 2 from the same helper the log does"

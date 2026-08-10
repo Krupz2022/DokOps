@@ -1036,6 +1036,86 @@ Rules:
         return {prefix for kw, prefix in AIService._SERVICE_TOOL_MAP.items() if kw in text}
 
     @staticmethod
+    def _domains_from_query(q: str, history: Optional[list] = None) -> set:
+        """Tier 2: the SAME _SERVICE_TOOL_MAP, run over what the user typed (and,
+        for follow-ups that name no service, over the recent conversation). `q` is
+        expected already lowercased, as the map's keys are.
+
+        Extracted so the per-turn selection log reports tier 2's contribution from
+        the same scan the selection injects from. A second copy of this walk would
+        let the logged number drift from the tools actually loaded, and the whole
+        point of the log is deciding whether tier 2 still earns its place.
+        """
+        matched: set = set()
+        for kw, prefix in AIService._SERVICE_TOOL_MAP.items():
+            if kw in q:
+                matched.add(prefix)
+
+        # If no service keyword in current message, scan recent history so follow-up
+        # messages ("now show slow queries") retain the same service tools.
+        # Check both message text AND previous tool call names (e.g. rabbitmq_list_queues).
+        if not matched and history:
+            recent_msgs = history[-8:]
+            # Collect all text: message content + tool call function names
+            text_parts: list = []
+            for m in recent_msgs:
+                content = m.get("content", "")
+                if isinstance(content, str):
+                    text_parts.append(content)
+                # Tool call names in assistant messages
+                for tc in m.get("tool_calls", []) or []:
+                    fn_name = ""
+                    if isinstance(tc, dict):
+                        fn_name = tc.get("function", {}).get("name", "")
+                    elif hasattr(tc, "function"):
+                        fn_name = getattr(tc.function, "name", "")
+                    if fn_name:
+                        text_parts.append(fn_name)
+            recent_text = " ".join(text_parts).lower()
+            for kw, prefix in AIService._SERVICE_TOOL_MAP.items():
+                if kw in recent_text:
+                    matched.add(prefix)
+            # Also match by tool name prefix directly (catches tool results like source="rabbitmq")
+            for pfx in set(AIService._SERVICE_TOOL_MAP.values()):
+                short = pfx.rstrip("_")  # e.g. "rabbitmq_" → "rabbitmq"
+                if short in recent_text:
+                    matched.add(pfx)
+        return matched
+
+    _sel_log = logging.getLogger("ai_service.selection")
+
+    @staticmethod
+    def _log_selection(*, tier1_ran, tier1_tools, tier1b_domains, tier2_domains,
+                       loaded, called, expansions) -> None:
+        """One line per turn. The tier-2 split is the point: contribution WHEN
+        tier 1 ran is redundancy (retirement candidate); contribution when tier 1
+        was EMPTY is irreplaceable cold-start coverage. The unsplit number
+        averages the two and will lie — never emit it unsplit.
+
+        Expansions carry an outcome, not just a count: an expansion is successful
+        when a tool it newly surfaced is called in the same turn. A high FAILED
+        rate is a registry-description gap that an embedding classifier would
+        inherit and could not fix — the opposite conclusion from a high success
+        rate. A bare count cannot tell them apart.
+
+        Names, prefixes and counts only — never tool arguments, tool output or the
+        user's query (CLAUDE.md section 3a).
+        """
+        contributed = len(tier2_domains)
+        AIService._sel_log.info(
+            "[SEL] tier1_ran=%s tier1_tools=%d tier1b=%s tier2=%s "
+            "tier2_when_tier1_ran=%d tier2_when_tier1_empty=%d "
+            "loaded=%d called=%d expansions=%d expansions_ok=%d",
+            tier1_ran, len(tier1_tools), sorted(tier1b_domains), sorted(tier2_domains),
+            contributed if tier1_ran else 0,
+            0 if tier1_ran else contributed,
+            len(loaded), len(called), len(expansions),
+            # isinstance guard: this runs inside the agent loop's finally, and a
+            # malformed record must not cost the whole line.
+            sum(1 for e in expansions if isinstance(e, dict) and e.get("expansion_succeeded")),
+        )
+
+    @staticmethod
     def _score_tool(query_words: set[str], tool: dict) -> int:
         """Relevance score = count of query words (len > 3) found in name+description."""
         fn = tool["function"]
@@ -1117,42 +1197,10 @@ Rules:
                                               "investigate", "issue", "error", "crash", "debug",
                                               "troubleshoot", "why", "check"))
 
-        # Detect which service tool prefixes are relevant to this query
-        matched_service_prefixes: set = set()
-        for kw, prefix in AIService._SERVICE_TOOL_MAP.items():
-            if kw in q:
-                matched_service_prefixes.add(prefix)
-
-        # If no service keyword in current message, scan recent history so follow-up
-        # messages ("now show slow queries") retain the same service tools.
-        # Check both message text AND previous tool call names (e.g. rabbitmq_list_queues).
-        if not matched_service_prefixes and history:
-            recent_msgs = history[-8:]
-            # Collect all text: message content + tool call function names
-            text_parts: list = []
-            for m in recent_msgs:
-                content = m.get("content", "")
-                if isinstance(content, str):
-                    text_parts.append(content)
-                # Tool call names in assistant messages
-                for tc in m.get("tool_calls", []) or []:
-                    fn_name = ""
-                    if isinstance(tc, dict):
-                        fn_name = tc.get("function", {}).get("name", "")
-                    elif hasattr(tc, "function"):
-                        fn_name = getattr(tc.function, "name", "")
-                    if fn_name:
-                        text_parts.append(fn_name)
-            recent_text = " ".join(text_parts).lower()
-            for kw, prefix in AIService._SERVICE_TOOL_MAP.items():
-                if kw in recent_text:
-                    matched_service_prefixes.add(prefix)
-            # Also match by tool name prefix directly (catches tool results like source="rabbitmq")
-            _all_svc_prefixes = set(AIService._SERVICE_TOOL_MAP.values())
-            for pfx in _all_svc_prefixes:
-                short = pfx.rstrip("_")  # e.g. "rabbitmq_" → "rabbitmq"
-                if short in recent_text:
-                    matched_service_prefixes.add(pfx)
+        # Tier 2: which service tool prefixes the query (or recent history) names.
+        # Read from the shared helper so the per-turn [SEL] log reports this exact
+        # set — the log exists to judge tier 2, so it cannot use a second copy.
+        matched_service_prefixes: set = AIService._domains_from_query(q, history)
 
         # is_service selects a whole BRANCH below, and the service branch omits the
         # relevance-scored k8s_rest tail. So it stays derived from the user's text and
@@ -1794,6 +1842,15 @@ When done, give a per-pod root cause analysis.
         conversation_id: str | None = None,
         user_id: int | None = None,
     ):
+        # Per-turn selection telemetry, declared BEFORE the try so the finally at the
+        # end of it can emit exactly one [SEL] line however this turn exits — including
+        # a failure that raises before the selection cascade has run.
+        _called: list[str] = []              # tool names actually invoked this turn
+        _expansions: list[frozenset] = []    # per discover_tools call: what it newly surfaced
+        _sel_tier1: frozenset = frozenset()
+        _sel_tier1b: frozenset = frozenset()
+        _sel_tier2: set = set()
+        _sel_loaded: list[str] = []
         try:
             caching_client = self._get_caching_client()
             yield {"type": "model", "message": caching_client.full_model}
@@ -2019,6 +2076,13 @@ When done, give a per-pod root cause analysis.
                 if workflow_tools_schema:
                     tools_schema.extend(workflow_tools_schema)
 
+                # What each tier contributed, snapshotted for the one [SEL] line this
+                # turn emits. Names only, taken before discover_tools can extend the
+                # schema — expansions are counted separately, not as loaded tools.
+                _sel_tier1, _sel_tier1b = _evidence_tools, _evidence_domains
+                _sel_tier2 = self._domains_from_query(query.lower(), history)
+                _sel_loaded = [t["function"]["name"] for t in tools_schema]
+
             _agent_log.info("[AGENT] tools_schema built: %d tools", len(tools_schema))
 
             mcp_tools_prompt = await _mcp_svc.get_all_tools_for_prompt()
@@ -2233,6 +2297,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             tool_inputs = json.loads(action_input) if action_input.startswith("{") else {"query": action_input}
                         except Exception:
                             tool_inputs = {"query": action_input}
+                        _called.append(action)           # [SEL] telemetry, name only
                         exec_res = await _registry.execute_tool_async(action, tool_inputs)
                         observation = sanitize_for_llm(str(exec_res))
                         yield {"type": "step", "message": f"{action} done."}
@@ -2263,6 +2328,7 @@ CLUSTER TOPOLOGY SNAPSHOT:
 
                     for tc in tool_calls:
                         tool_name = tc.function.name
+                        _called.append(tool_name)        # [SEL] telemetry, name only
                         try:
                             tool_inputs = json.loads(tc.function.arguments)
                         except Exception:
@@ -2296,6 +2362,12 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 _approval_event = asyncio.Event()
                                 _pending_approval_events[op_id] = _approval_event
                                 _pending_op_seen = True
+                                if not _wants_action:      # observation only, never a control
+                                    AIService._sel_log.warning(
+                                        "[SEL] canary: write tool %s called with the action gate CLOSED — "
+                                        "measures proposal noise, not risk (writes are execution-gated)",
+                                        tool_name,
+                                    )
                                 yield {"type": "pending_operation", "message": new_op["confirmation_message"], "operation": new_op}
                                 try:
                                     await asyncio.wait_for(_approval_event.wait(), timeout=300)
@@ -2416,6 +2488,12 @@ CLUSTER TOPOLOGY SNAPSHOT:
                             _new = [s for s in _registry.schema_for_tools(_names)
                                     if s["function"]["name"] not in _existing]
                             tools_schema.extend(_new)
+                            if _new:
+                                # An expansion: tools the cascade did NOT select, now
+                                # reachable. Its outcome (was one of them actually
+                                # called this turn?) is resolved at turn end.
+                                _expansions.append(frozenset(
+                                    s["function"]["name"] for s in _new))
                             observation = (
                                 ("Discovered tools now available: " + ", ".join(_names))
                                 if _names
@@ -2450,6 +2528,12 @@ CLUSTER TOPOLOGY SNAPSHOT:
                                 _approval_event = asyncio.Event()
                                 _pending_approval_events[op_id] = _approval_event
                                 _pending_op_seen = True
+                                if not _wants_action:      # observation only, never a control
+                                    AIService._sel_log.warning(
+                                        "[SEL] canary: write tool %s called with the action gate CLOSED — "
+                                        "measures proposal noise, not risk (writes are execution-gated)",
+                                        tool_name,
+                                    )
                                 yield {"type": "pending_operation", "message": new_op["confirmation_message"], "operation": new_op}
                                 # Pause loop until user approves or rejects (5-minute timeout)
                                 try:
@@ -2645,5 +2729,35 @@ CLUSTER TOPOLOGY SNAPSHOT:
                 yield {"type": "result", "message": _CONTENT_FILTER_USER_MESSAGE}
             else:
                 yield {"type": "result", "message": f"Agent error: {str(e)}"}
+        finally:
+            # Exactly one [SEL] line per turn. This loop has nine result-producing
+            # exits (the ReAct branches, the "Blocked:" short-circuit, the
+            # final-review return, the plain return, the max-iterations fallthrough,
+            # the error handler) plus abandonment by the consumer — all of them leave
+            # through here, and only once, which no set of per-branch calls could
+            # guarantee. Telemetry must never break a live turn or mask the exception
+            # this frame is already unwinding, hence the blanket except.
+            try:
+                _called_set = set(_called)
+                self._log_selection(
+                    # tier1_ran = tier 1 PRODUCED something. "The block executed" is
+                    # true on nearly every namespaced turn and would file genuine
+                    # cold-start coverage under redundancy, collapsing the split.
+                    tier1_ran=bool(_sel_tier1),
+                    tier1_tools=_sel_tier1,
+                    tier1b_domains=_sel_tier1b,
+                    tier2_domains=_sel_tier2,
+                    loaded=_sel_loaded,
+                    called=_called,
+                    # Outcome, not count: an expansion succeeded when a tool it newly
+                    # surfaced was called this turn.
+                    expansions=[
+                        {"new_tools": sorted(_n),
+                         "expansion_succeeded": bool(_n & _called_set)}
+                        for _n in _expansions
+                    ],
+                )
+            except Exception as _sel_err:
+                _agent_log.debug("[SEL] selection log skipped: %s", _sel_err)
 
 ai_service = AIService()

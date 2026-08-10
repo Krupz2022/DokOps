@@ -53,6 +53,13 @@ def verify_selection_invariants() -> None:
         elif not re.search(r"if\s+not\s+confirmed", src):
             problems.append(f"write tool {name!r} accepts 'confirmed' but never guards on it")
 
+    # 4 — ordering completeness: a domain absent from the tuple lands undefined.
+    from app.services.ai_service import AIService
+    emittable = set(AIService._SERVICE_TOOL_MAP.values())
+    for domain in sorted(emittable - set(AIService._DOMAIN_ORDER)):
+        problems.append(
+            f"domain {domain!r} is emittable by tier 1b/2 but absent from _DOMAIN_ORDER")
+
     if problems:
         raise RuntimeError(
             "tool-selection invariants violated:\n  - " + "\n  - ".join(problems))

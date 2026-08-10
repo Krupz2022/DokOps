@@ -1009,6 +1009,23 @@ Rules:
         "image pull":         "registry_",
     }
 
+    # Canonical block order for the provider's prefix cache. Both Gemini and
+    # OpenAI/Azure cache LINEAR PREFIXES only — "the model treats cached content
+    # as a prefix to the prompt" — so block order is a correctness concern, not
+    # cosmetics. A literal tuple, never sorted() at runtime: sorted() couples
+    # cache correctness to an implicit property that a rename could shift with
+    # no test failing.
+    #
+    # Tier-1 tools are appended AFTER these, deliberately. They are the most
+    # per-turn-variable block in the assembly because they track cluster state,
+    # which makes them the worst prefix citizens. VOLATILE LAST.
+    # Do NOT move them earlier because they are "the important ones" — that
+    # reintroduces the volatility-early mistake this ordering exists to prevent.
+    _DOMAIN_ORDER: tuple = (
+        "registry_", "postgres_", "mysql_", "mssql_", "mongo_",
+        "couchdb_", "redis_", "rabbitmq_",
+    )
+
     @staticmethod
     def _domains_from_evidence(findings) -> set:
         """Tier 1b: the SAME _SERVICE_TOOL_MAP, run over what the cluster said
@@ -1026,6 +1043,43 @@ Rules:
         return sum(1 for w in query_words if len(w) > 3 and w in haystack)
 
     @staticmethod
+    def _canonical_block_order(tools: list, evidence_tools: frozenset) -> list:
+        """Reorder a finished selection into the cache-stable block order:
+        core k8s, then service domains in _DOMAIN_ORDER, then everything else,
+        then tier-1 evidence tools.
+
+        Position and survival are SEPARATE concerns and must not be conflated.
+        Evidence tools ride `force_tools` into `protected` so the cap cannot
+        evict them — that is survival. This function then moves them to the END
+        — that is prefix-cache stability. A tool can be exempt from eviction and
+        still belong last; solving one by giving up the other loses either a
+        tier-1 selection or the cached prefix.
+
+        Called as the LAST step, after the cap and the discover_tools swap, so
+        the tool the swap sacrifices is still the lowest-ranked unprotected one
+        rather than an evidence tool that happens to sit at the tail.
+
+        The sort is stable, so within-block order (relevance rank, group order)
+        survives untouched.
+        """
+        domains = AIService._DOMAIN_ORDER
+        _OTHER = len(domains) + 1
+        _VOLATILE = len(domains) + 2
+
+        def block(tool: dict) -> int:
+            name = tool["function"]["name"]
+            if name in evidence_tools:
+                return _VOLATILE
+            if name in AIService._CORE_K8S:
+                return 0
+            for i, prefix in enumerate(domains):
+                if name.startswith(prefix):
+                    return i + 1
+            return _OTHER
+
+        return sorted(tools, key=block)
+
+    @staticmethod
     def _select_dynamic_tools(
         query: str,
         obs_tools_schema: list,
@@ -1036,14 +1090,25 @@ Rules:
         min_score: int = 1,
         history: Optional[list] = None,
         force_tools: frozenset = frozenset(),
+        evidence_tools: frozenset = frozenset(),
+        evidence_domains: frozenset = frozenset(),
     ) -> list:
         """force_tools: names that must be in the result whatever the scoring says,
         for turns where the caller has already established relevance deterministically.
         Relevance here is word overlap with a tool's description, which cannot see that
         "set the log level to debug" is a ConfigMap write — update_configmap scores 0
         on that query. Without a way to override, such a tool is reachable only if the
-        model happens to call discover_tools, which it does inconsistently."""
+        model happens to call discover_tools, which it does inconsistently.
+
+        evidence_tools (tier 1) / evidence_domains (tier 1b): names and domain
+        prefixes the cluster itself established this turn. Evidence is a FLOOR —
+        the lower tiers only ADD, nothing here removes a tier-1 selection."""
         q = query.lower()
+
+        # force_tools already exempts names from cap eviction, so tier 1 reuses
+        # that mechanism rather than introducing a second one. Position is handled
+        # separately, at the end, by _canonical_block_order.
+        force_tools = frozenset(force_tools) | frozenset(evidence_tools)
 
         is_obs      = any(kw in q for kw in AIService._OBS_KEYWORDS)
         is_minion   = any(kw in q for kw in AIService._MINION_KEYWORDS)
@@ -1088,6 +1153,13 @@ Rules:
                 short = pfx.rstrip("_")  # e.g. "rabbitmq_" → "rabbitmq"
                 if short in recent_text:
                     matched_service_prefixes.add(pfx)
+
+        # Tier 1b merges into the SAME set the query and history scans fill — the
+        # map is not forked and nothing runs twice. Merged AFTER the stickiness
+        # scan above on purpose: that scan is gated on `not matched_service_prefixes`,
+        # so seeding evidence domains any earlier would suppress it and silently
+        # change follow-up behaviour on exactly the turns evidence is richest.
+        matched_service_prefixes |= set(evidence_domains)
 
         is_service  = bool(matched_service_prefixes)
 
@@ -1204,7 +1276,10 @@ Rules:
             deduped.append(AIService._DISCOVER_TOOL_SCHEMA)
 
         if len(deduped) <= max_total:
-            return deduped
+            # Ordered on this path too: block order is a cache-correctness
+            # contract, and leaving it undefined for small selections would make
+            # the prefix depend on how many tools happened to match.
+            return AIService._canonical_block_order(deduped, evidence_tools)
         qwords = set(q.split())
         # Keep core k8s AND observability tools unconditionally; rank the remainder by
         # relevance. Obs tools are the input set of *healthy* integrations — a diagnosis
@@ -1222,7 +1297,11 @@ Rules:
         # lowest-ranked tool to make room rather than lose the ability to load more.
         if not any(t["function"]["name"] == "discover_tools" for t in result):
             result = result[:max_total - 1] + [AIService._DISCOVER_TOOL_SCHEMA]
-        return result
+        # Ordering is the last thing that happens: membership is decided by
+        # protection and relevance above, position only afterwards. Reordering
+        # earlier would put the evidence block at the tail and hand the
+        # discover_tools swap an evidence tool to sacrifice.
+        return AIService._canonical_block_order(result, evidence_tools)
 
     @staticmethod
     def _detect_stall(messages: list, window: int = 2) -> bool:
@@ -1878,6 +1957,38 @@ When done, give a per-pod root cause analysis.
                 _custom_schema = _registry.build_openai_tools_schema(extra_tools=custom_tools or [])[len(_full_k8s_schema):]
                 _mcp_schema = await _mcp_svc.build_openai_tools_schema()
 
+                # Tier 1 + 1b inputs: the same swept facts the prose above was
+                # rendered from, read as records instead of as text. Failure here
+                # must cost tools, never the turn — empty sets degrade to the
+                # pre-existing text-first selection.
+                #
+                # Gated on _presweep being non-empty, not just on _ns: build_presweep
+                # returns "" exactly when the sweep rendered no section, i.e. when it
+                # found nothing, and findings-empty means both tiers would come back
+                # empty anyway. Healthy namespaces — the common case — therefore pay
+                # nothing here. When there IS something to report this does re-collect
+                # (build_presweep collects internally and returns only prose), which
+                # is a second read of the same namespace; removing it needs presweep
+                # to hand its records back, which is a change to presweep.py.
+                _evidence_tools: frozenset = frozenset()
+                _evidence_domains: frozenset = frozenset()
+                if _ns and _presweep:
+                    try:
+                        from app.services.k8s_service import k8s_service as _k8s
+                        from app.services.presweep import (
+                            _collect_findings, tools_for_findings,
+                        )
+                        _core_api = _k8s._get_api("CoreV1Api")
+                        _apps_api = _k8s._get_api("AppsV1Api")
+                        if _core_api is not None and _apps_api is not None:
+                            _findings = await _collect_findings(
+                                _core_api, _apps_api, _ns, 3, 80)
+                            _evidence_tools = frozenset(tools_for_findings(_findings))
+                            _evidence_domains = frozenset(
+                                self._domains_from_evidence(_findings))
+                    except Exception as _e:
+                        _agent_log.debug("[AGENT] evidence tiers unavailable: %s", _e)
+
                 tools_schema = self._select_dynamic_tools(
                     query, _obs_tools_schema, _full_k8s_schema, _mcp_schema, _custom_schema,
                     history=history,
@@ -1885,6 +1996,8 @@ When done, give a per-pod root cause analysis.
                     # config — established by reading the pod spec, not by guessing
                     # from wording. Make the tools that act on it reachable.
                     force_tools=AIService._CONFIG_OWNER_TOOLS if _config_sources else frozenset(),
+                    evidence_tools=_evidence_tools,
+                    evidence_domains=_evidence_domains,
                 )
                 if workflow_tools_schema:
                     tools_schema.extend(workflow_tools_schema)

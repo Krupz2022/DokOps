@@ -82,3 +82,23 @@ def test_every_write_tool_guards_on_confirmed():
             verify_selection_invariants()
     finally:
         registry.TOOL_REGISTRY = original
+
+
+async def test_crash_log_text_selects_the_dependency_domain():
+    """The crash log already names the failing dependency. Matching it beats
+    classifying the user's question: 'why is checkout failing' names no
+    database, but its log says postgres."""
+    from app.services.ai_service import AIService
+    from app.services.presweep import Finding
+
+    findings = [Finding("crashlogs", "pod", "checkout-1", "app", "CrashLoopBackOff",
+                        "FATAL: could not connect to postgres at db.internal:5432")]
+    assert "postgres_" in AIService._domains_from_evidence(findings)
+
+
+async def test_evidence_domains_are_empty_without_a_dependency_mention():
+    from app.services.ai_service import AIService
+    from app.services.presweep import Finding
+
+    findings = [Finding("crashlogs", "pod", "api-1", "app", "OOMKilled", "Minimum worker threads: 100")]
+    assert AIService._domains_from_evidence(findings) == set()

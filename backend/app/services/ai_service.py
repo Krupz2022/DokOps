@@ -1010,6 +1010,15 @@ Rules:
     }
 
     @staticmethod
+    def _domains_from_evidence(findings) -> set:
+        """Tier 1b: the SAME _SERVICE_TOOL_MAP, run over what the cluster said
+        rather than over what the user typed. Names external dependencies that
+        never appear as cluster resources, at evidence precision. New caller,
+        same map — the map is not forked."""
+        text = " ".join((f.detail or "") for f in findings).lower()
+        return {prefix for kw, prefix in AIService._SERVICE_TOOL_MAP.items() if kw in text}
+
+    @staticmethod
     def _score_tool(query_words: set[str], tool: dict) -> int:
         """Relevance score = count of query words (len > 3) found in name+description."""
         fn = tool["function"]

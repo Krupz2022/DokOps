@@ -1021,7 +1021,7 @@ Rules:
     # which makes them the worst prefix citizens. VOLATILE LAST.
     # Do NOT move them earlier because they are "the important ones" — that
     # reintroduces the volatility-early mistake this ordering exists to prevent.
-    _DOMAIN_ORDER: tuple = (
+    _DOMAIN_ORDER: tuple[str, ...] = (
         "registry_", "postgres_", "mysql_", "mssql_", "mongo_",
         "couchdb_", "redis_", "rabbitmq_",
     )
@@ -1154,14 +1154,19 @@ Rules:
                 if short in recent_text:
                     matched_service_prefixes.add(pfx)
 
-        # Tier 1b merges into the SAME set the query and history scans fill — the
-        # map is not forked and nothing runs twice. Merged AFTER the stickiness
-        # scan above on purpose: that scan is gated on `not matched_service_prefixes`,
-        # so seeding evidence domains any earlier would suppress it and silently
-        # change follow-up behaviour on exactly the turns evidence is richest.
-        matched_service_prefixes |= set(evidence_domains)
-
+        # is_service selects a whole BRANCH below, and the service branch omits the
+        # relevance-scored k8s_rest tail. So it stays derived from the user's text and
+        # the conversation history only: if evidence_domains fed it, a crash log that
+        # happens to say "postgres" would take a plain k8s question down the service
+        # branch and REMOVE its query-scored tools. Evidence is a floor — it only adds.
         is_service  = bool(matched_service_prefixes)
+
+        # Tier 1b's contribution: the domain toolsets to inject, WITHOUT switching
+        # branches. Same _SERVICE_TOOL_MAP prefixes the text and history scans
+        # produce (the map is not forked, nothing runs twice) — and evaluated after
+        # those scans, since the stickiness scan above is gated on
+        # `not matched_service_prefixes` and seeding it would suppress the scan.
+        domain_prefixes = matched_service_prefixes | set(evidence_domains)
 
         selected: list = []
 
@@ -1169,16 +1174,19 @@ Rules:
         if is_obs or is_diagnose:
             selected.extend(obs_tools_schema)
 
-        # Service tools: inject ALL tools for matched service(s) when a service keyword is detected
-        if is_service:
+        # Service tools: inject ALL tools for every matched domain — whether the match
+        # came from the user's words, the history, or the cluster's own evidence.
+        # Driven by domain_prefixes, not is_service, so an evidence-only match adds a
+        # toolset without also rerouting the k8s selection below.
+        if domain_prefixes:
             for t in full_k8s_schema:
                 fn_name = t["function"]["name"]
-                if any(fn_name.startswith(pfx) for pfx in matched_service_prefixes):
+                if any(fn_name.startswith(pfx) for pfx in domain_prefixes):
                     selected.append(t)
 
         # K8s tools: core always (unless pure service query), extras only when write intent or not obs-only
         # Service tools (redis_*, rabbitmq_*, couchdb_*, ...) have their own selection
-        # path above (matched_service_prefixes), gated on a keyword match. k8s_write
+        # path above (domain_prefixes), gated on a keyword or evidence match. k8s_write
         # and k8s_rest must both exclude them here, or a service tool leaks into every
         # write-intent query regardless of which service (if any) it named -- and
         # because k8s_write's keyword list includes "delete"/"patch"/"restart", the
@@ -1957,32 +1965,41 @@ When done, give a per-pod root cause analysis.
                 _custom_schema = _registry.build_openai_tools_schema(extra_tools=custom_tools or [])[len(_full_k8s_schema):]
                 _mcp_schema = await _mcp_svc.build_openai_tools_schema()
 
-                # Tier 1 + 1b inputs: the same swept facts the prose above was
-                # rendered from, read as records instead of as text. Failure here
-                # must cost tools, never the turn — empty sets degrade to the
-                # pre-existing text-first selection.
+                # Tier 1 + 1b inputs: the facts the prose above was rendered from, read
+                # as records instead of as text. Failure here must cost tools, never
+                # the turn — empty sets degrade to the pre-existing text-first
+                # selection.
                 #
-                # Gated on _presweep being non-empty, not just on _ns: build_presweep
-                # returns "" exactly when the sweep rendered no section, i.e. when it
-                # found nothing, and findings-empty means both tiers would come back
-                # empty anyway. Healthy namespaces — the common case — therefore pay
-                # nothing here. When there IS something to report this does re-collect
-                # (build_presweep collects internally and returns only prose), which
-                # is a second read of the same namespace; removing it needs presweep
-                # to hand its records back, which is a change to presweep.py.
+                # THIS IS A SECOND READ of the namespace. build_presweep collects the
+                # same records internally and returns only the rendered prose, so there
+                # is no way to get the records back from it and the sweep runs twice.
+                # It is gated on _presweep being non-empty, not just on _ns, to keep
+                # that cost proportionate: build_presweep returns "" exactly when no
+                # section rendered, i.e. when it found nothing, and no findings means
+                # both tiers would be empty anyway — so a healthy namespace, the common
+                # case, pays nothing here. The turns that do pay are the ones that
+                # already found a fault and are about to spend far more on tokens.
+                # The fix is for build_presweep to hand its records back; that is a
+                # change to presweep.py and its own review.
+                #
+                # Swept at the SHARED depth constants, never at literals: at a
+                # different depth the tools would stop describing the prose the user
+                # is reading, and nothing would fail.
                 _evidence_tools: frozenset = frozenset()
                 _evidence_domains: frozenset = frozenset()
                 if _ns and _presweep:
                     try:
                         from app.services.k8s_service import k8s_service as _k8s
                         from app.services.presweep import (
+                            SWEEP_MAX_LOG_PODS, SWEEP_TAIL_LINES,
                             _collect_findings, tools_for_findings,
                         )
                         _core_api = _k8s._get_api("CoreV1Api")
                         _apps_api = _k8s._get_api("AppsV1Api")
                         if _core_api is not None and _apps_api is not None:
                             _findings = await _collect_findings(
-                                _core_api, _apps_api, _ns, 3, 80)
+                                _core_api, _apps_api, _ns,
+                                SWEEP_MAX_LOG_PODS, SWEEP_TAIL_LINES)
                             _evidence_tools = frozenset(tools_for_findings(_findings))
                             _evidence_domains = frozenset(
                                 self._domains_from_evidence(_findings))

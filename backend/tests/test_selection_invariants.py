@@ -112,9 +112,25 @@ async def test_evidence_domains_are_empty_without_a_dependency_mention():
 def test_domain_order_is_a_literal_tuple_covering_every_emittable_domain():
     """sorted() would couple cache correctness to an implicit property a rename
     could shift silently, invalidating every downstream prefix with nothing
-    failing. Assertion 4."""
+    failing. Assertion 4 covers completeness; only reading the source covers
+    literalness — `tuple(sorted(set(_SERVICE_TOOL_MAP.values())))` is complete
+    by construction and would leave the coverage check green forever."""
+    import inspect
+    import re
+    from app.services.ai_service import AIService
     from app.services.selection_invariants import verify_selection_invariants
-    verify_selection_invariants()
+
+    verify_selection_invariants()                      # completeness
+    src = inspect.getsource(AIService)
+    literal = re.search(r"^\s*_DOMAIN_ORDER\s*:[^=]*=\s*\((.*?)\)",
+                        src, re.MULTILINE | re.DOTALL)
+    assert literal, "_DOMAIN_ORDER is no longer assigned a parenthesised literal"
+    body = literal.group(1)
+    assert "sorted" not in body, "_DOMAIN_ORDER must be a literal, not sorted() at runtime"
+    # Every element is a plain quoted string, not a name or a call.
+    assert all(re.fullmatch(r"""['"][a-z0-9_]+['"]""", part.strip())
+               for part in body.split(",") if part.strip()), \
+        f"_DOMAIN_ORDER must hold only string literals, got: {body!r}"
 
 
 def test_a_domain_missing_from_the_ordering_tuple_is_rejected():
@@ -123,7 +139,9 @@ def test_a_domain_missing_from_the_ordering_tuple_is_rejected():
     original = AIService._DOMAIN_ORDER
     AIService._DOMAIN_ORDER = tuple(d for d in original if d != "redis_")
     try:
-        with pytest.raises(RuntimeError, match="redis_"):
+        # Matched on assertion 4's own wording, not just on "redis_": the domain
+        # name alone would let any future unrelated message carrying it pass.
+        with pytest.raises(RuntimeError, match="absent from _DOMAIN_ORDER"):
             verify_selection_invariants()
     finally:
         AIService._DOMAIN_ORDER = original
@@ -150,3 +168,53 @@ def test_tier_one_tools_are_ordered_last():
     )
     names = [t["function"]["name"] for t in selected]
     assert names[-1] == "patch_deployment_resources"
+
+
+def test_evidence_domains_only_add_never_remove():
+    """A floor means a superset, on every turn. Merging evidence domains into
+    matched_service_prefixes would have fed `is_service`, and the service branch
+    omits the relevance-scored k8s_rest tail — so a crash log that merely says
+    'postgres' would have REMOVED query-scored tools from a plain k8s question.
+    Evidence drives which domain toolsets are injected, never which branch runs."""
+    from app.services.ai_service import AIService
+    schema = _full_schema()
+    query = "why is the checkout deployment failing"
+
+    def _names(**kw):
+        return {t["function"]["name"] for t in AIService._select_dynamic_tools(
+            query, [], schema, [], [], max_total=200, **kw)}
+
+    baseline = _names()
+    with_evidence = _names(evidence_domains=frozenset({"postgres_"}))
+    assert baseline <= with_evidence, (
+        f"evidence removed {sorted(baseline - with_evidence)}")
+    assert any(n.startswith("postgres_") for n in with_evidence)
+
+
+def test_domain_blocks_follow_the_tuple_and_precede_the_evidence_block():
+    """The cache contract itself: domains appear in _DOMAIN_ORDER order (not
+    registry order), and the whole stable prefix precedes the volatile tier-1
+    block. Asserted at BLOCK level — a [-1] check alone passes an implementation
+    that ignores _DOMAIN_ORDER entirely."""
+    from app.services.ai_service import AIService
+    order = AIService._DOMAIN_ORDER
+    assert order.index("postgres_") < order.index("redis_")   # premise of (a)
+
+    selected = AIService._select_dynamic_tools(
+        "why is checkout failing", [], _full_schema(), [], [],
+        max_total=200,          # ordering under test, not the cap
+        evidence_tools=frozenset({"patch_deployment_resources"}),
+        evidence_domains=frozenset({"postgres_", "redis_"}),
+    )
+    names = [t["function"]["name"] for t in selected]
+    postgres = [i for i, n in enumerate(names) if n.startswith("postgres_")]
+    redis = [i for i, n in enumerate(names) if n.startswith("redis_")]
+    assert postgres and redis, f"both domains must be injected, got {names}"
+
+    # (a) tuple order, not registry order: postgres_ precedes redis_ as a block.
+    assert max(postgres) < min(redis)
+
+    # (b) every stable tool precedes every volatile one.
+    evidence = [i for i, n in enumerate(names) if n == "patch_deployment_resources"]
+    assert max(i for i, n in enumerate(names)
+               if n != "patch_deployment_resources") < min(evidence)

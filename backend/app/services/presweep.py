@@ -726,8 +726,21 @@ async def _collect_sections(core, apps, namespace: str, max_log_pods: int, tail_
     return _render_sections(findings)
 
 
+# Sweep depth for a chat turn. Named constants, not literals at each call site:
+# build_presweep returns only the rendered PROSE, so a caller that also needs the
+# RECORDS behind that prose (ai_service's tier-1/1b tool selection) has to collect
+# them itself, and it must sweep to the same depth or the tools the model gets
+# stop describing the facts the user is reading. Both sides read these.
+SWEEP_MAX_LOG_PODS: int = 3
+SWEEP_TAIL_LINES: int = 80
+
+
 async def build_presweep(
-    namespace: str, *, query: str = "", max_log_pods: int = 3, tail_lines: int = 80
+    namespace: str,
+    *,
+    query: str = "",
+    max_log_pods: int = SWEEP_MAX_LOG_PODS,
+    tail_lines: int = SWEEP_TAIL_LINES,
 ) -> str:
     """Return a context block of facts for `namespace`, or '' if nothing to report.
 

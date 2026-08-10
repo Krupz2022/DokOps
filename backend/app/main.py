@@ -9,20 +9,32 @@ def _configure_app_logging() -> None:
     from app.core.config import settings
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
-    # Ensure the root dokops logger has a console handler so messages aren't swallowed
-    # (uvicorn configures its own loggers but leaves the root logger handler-less)
-    _dokops_root = logging.getLogger("dokops")
-    if not _dokops_root.handlers:
-        _handler = logging.StreamHandler()
-        _handler.setFormatter(logging.Formatter("%(levelname)s  [%(name)s] %(message)s"))
-        _dokops_root.addHandler(_handler)
-    _dokops_root.setLevel(level)
-    _dokops_root.propagate = False  # don't double-print via root
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s  [%(name)s] %(message)s"))
+
+    # Every app family needs the handler on ITS root, not just "dokops". uvicorn
+    # configures only its own loggers and leaves the real root handler-less, so
+    # setLevel() on a logger with no handler in its chain drops the record anyway
+    # — which is how the whole ai_service.* family, including the per-turn [SEL]
+    # selection line, emitted nothing at any LOG_LEVEL. Only lastResort got
+    # through, so WARNING appeared and INFO silently did not.
+    #
+    # ponytail: propagate is left alone deliberately. Setting it False here would
+    # stop records reaching pytest's caplog handler, which lives on the root
+    # logger — the [SEL] tests would then capture nothing. Double-printing is not
+    # a risk under uvicorn precisely because root has no handler.
+    for _family in ("dokops", "ai_service", "integration_manager", "app"):
+        _lg = logging.getLogger(_family)
+        if not any(isinstance(h, logging.StreamHandler) for h in _lg.handlers):
+            _lg.addHandler(_handler)
+        _lg.setLevel(level)
+    logging.getLogger("dokops").propagate = False  # pre-existing: no double-print
 
     _app_loggers = [
         "ai_service.tools",
         "ai_service.model",
         "ai_service.obs",
+        "ai_service.selection",
         "integration_manager",
         "app.services.integrations.elasticsearch",
         "app.services.integrations.prometheus",

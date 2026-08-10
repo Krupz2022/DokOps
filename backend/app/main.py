@@ -159,6 +159,11 @@ async def lifespan(app: FastAPI):
     await _run_patch_migrations()   # ← run AFTER create_db_and_tables; IF NOT EXISTS makes this safe on fresh DBs too
     await init_db()
 
+    # Fail fast: a dead symptom-table row or an unguarded write tool is a silent
+    # correctness hole, not a runtime degradation.
+    from app.services.selection_invariants import verify_selection_invariants
+    verify_selection_invariants()
+
     # Seed blueprints from scope-encoded directory (if present). Errors are
     # caught and logged so a bad seed file never blocks application startup.
     import os as _os_seed

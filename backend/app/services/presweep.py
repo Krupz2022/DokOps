@@ -405,6 +405,60 @@ _BLOCKED_REASONS = (
     "ImagePullBackOff", "ErrImagePull",
 )
 
+# Evidence verdict -> the tools that answer it. Tier 1 emits TOOL NAMES, not
+# domains, because its targets (patch_deployment_resources, get_hpa,
+# get_limit_range ...) sit in the 68 registry tools that carry no domain prefix
+# and are therefore unreachable by _SERVICE_TOOL_MAP at any tier.
+#
+# † = also in _CORE_K8S. Kept deliberately: the union dedupes, so duplicates
+# cost nothing, and a row that omitted them would lie about the intended
+# response. This table is an audit surface for remediation coverage.
+#
+# Every row pairs write tools with diagnostics (rollback WITH history, patch
+# WITH metrics/limits) so remediation is never the only thing on offer. A row
+# holding a write tool ALONE is the most action-provoking shape — do not add one.
+SYMPTOM_TOOLS: dict[str, tuple[str, ...]] = {
+    "ImagePullBackOff":            ("fix_image_pull", "get_secret_exists", "list_secrets"),
+    "ErrImagePull":                ("fix_image_pull", "get_secret_exists", "list_secrets"),
+    "InvalidImageName":            ("fix_image_pull", "get_secret_exists", "list_secrets"),
+    "CreateContainerConfigError":  ("get_workload_config", "get_configmap",
+                                    "get_secret_keys", "update_configmap"),
+    "CreateContainerError":        ("get_workload_config", "get_configmap",
+                                    "get_secret_keys", "update_configmap"),
+    "InvalidValue":                ("get_workload_config", "get_limit_range"),
+    "OOMKilled":                   ("patch_deployment_resources", "get_pod_metrics",
+                                    "get_limit_range"),
+    "Error":                       ("get_deployment_rollout_history", "rollback_deployment"),
+    "NotReady":                    ("get_deployment_status", "get_hpa", "get_pod_events"),
+    "ZeroEndpoints":               ("get_endpoints", "get_service", "get_network_policies"),
+    "FailedCreate":                ("get_resource_quota", "get_limit_range", "get_replicasets"),
+    "failed":                      ("get_deployment_rollout_history", "rollback_deployment",
+                                    "get_replicasets"),
+}
+
+# Reasons that can appear in evidence but deliberately map to no tools.
+INTENTIONALLY_UNMAPPED: frozenset[str] = frozenset({
+    "ScaledToZero",   # "may be intentional" — not a fault
+    "progressing",    # a slow rollout is not broken
+})
+
+
+def evidence_reasons() -> frozenset[str]:
+    """Every reason that can reach a Finding.reason. Assertion 2 keys off this;
+    it must widen in lockstep with any collector that emits a new reason."""
+    return frozenset(_BLOCKED_REASONS) | frozenset({
+        "OOMKilled", "Error", "NotReady", "ScaledToZero",
+        "ZeroEndpoints", "FailedCreate", "failed", "progressing",
+    })
+
+
+def tools_for_findings(findings: list[Finding]) -> set[str]:
+    """Tier 1: structured verdicts -> tool names."""
+    out: set[str] = set()
+    for f in findings:
+        out.update(SYMPTOM_TOOLS.get(f.reason or "", ()))
+    return out
+
 
 async def _blocked_containers(core, namespace: str) -> list[Finding]:
     """Containers that never started because of a config reference.
